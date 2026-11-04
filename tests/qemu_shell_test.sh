@@ -270,12 +270,12 @@ text_lo=$(($1)); text_hi=$(($2)); data_lo=$(($3)); data_hi=$(($4)); bss_lo=$(($5
 [ $((text_lo & 4095)) -eq 0 ] && [ $((text_hi & 4095)) -eq 0 ] || fail "nx text is not page aligned"
 [ "$text_hi" -gt "$text_lo" ] && [ "$text_hi" -le "$data_lo" ] || fail "nx text overlaps data"
 [ "$data_hi" -le "$bss_lo" ] && [ "$bss_hi" -gt "$bss_lo" ] || fail "nx data/bss range is wrong"
-# put_hex imprime 32 bits. 0xFFFFFFFF80010000 sale como 0x80010000.
-[ "$text_lo" -ge $((0x80000000)) ] && [ "$text_lo" -lt $((0x80200000)) ] || fail "nx text is not in the higher half"
+# put_hex imprime 32 bits. 0xFFFFFFFF80400000 sale como 0x80400000.
+[ "$text_lo" -ge $((0x80400000)) ] && [ "$text_lo" -lt $((0x80600000)) ] || fail "nx text is not in the higher half"
 phys_text=$((text_lo - 0x80000000))
 phys_bss=$((bss_hi - 0x80000000))
-[ "$phys_text" -eq $((0x10000)) ] || fail "nx text is not physical 0x10000"
-[ "$phys_bss" -gt "$phys_text" ] && [ "$phys_bss" -le $((0x200000)) ] || fail "nx bss extends past 2MB"
+[ "$phys_text" -eq $((0x400000)) ] || fail "nx text is not physical 0x400000"
+[ "$phys_bss" -gt "$phys_text" ] && [ "$phys_bss" -le $((0x600000)) ] || fail "nx bss extends past the 2 MiB image page"
 fetch=$(printf '%s\n' "$clean" | sed -n 's/^nx ok fetch err=\(0x[0-9a-f]*\) cr2=\(0x[0-9a-f]*\)$/\1 \2/p' | head -1)
 write=$(printf '%s\n' "$clean" | sed -n 's/^nx ok write err=\(0x[0-9a-f]*\) cr2=\(0x[0-9a-f]*\)$/\1 \2/p' | head -1)
 ustack=$(printf '%s\n' "$clean" | sed -n 's/^nx ok user stack err=\(0x[0-9a-f]*\) cr2=\(0x[0-9a-f]*\)$/\1 \2/p' | head -1)
@@ -335,7 +335,7 @@ hhcpu=$(printf '%s\n' "$clean" | sed -n 's/^hh rip=\(0x[0-9a-f]*\) rsp=\(0x[0-9a
 set -- $hhcpu
 hh_rip=$(($1)); hh_rsp=$(($2))
 hh_lo=$((0xFFFFFFFF80000000))
-hh_hi=$((0xFFFFFFFF80200000))
+hh_hi=$((0xFFFFFFFF80600000))
 [ "$hh_rip" -ge "$hh_lo" ] && [ "$hh_rip" -lt "$hh_hi" ] || fail "rip is not in the higher half"
 [ "$hh_rsp" -ge "$hh_lo" ] && [ "$hh_rsp" -lt "$hh_hi" ] || fail "rsp is not in the higher half"
 printf '%s\n' "$clean" | grep -qx "hh ok cpu" || fail "hh cpu check missing"
@@ -349,7 +349,7 @@ set -- $hh_rd; hh_re=$(($1)); hh_rc=$(($2))
 set -- $hh_wr; hh_we=$(($1)); hh_wc=$(($2))
 [ $((hh_re & 5)) -eq 5 ] && [ $((hh_re & 18)) -eq 0 ] || fail "user kernel read err is not a present user read"
 [ $((hh_we & 7)) -eq 7 ] && [ $((hh_we & 16)) -eq 0 ] || fail "user kernel write err is not a present user write"
-[ "$hh_rc" -eq $((0xFFFFFFFF80010000)) ] && [ "$hh_wc" -eq $((0xFFFFFFFF80010000)) ] || fail "user kernel cr2 is not the higher-half text"
+[ "$hh_rc" -eq $((0xFFFFFFFF80400000)) ] && [ "$hh_wc" -eq $((0xFFFFFFFF80400000)) ] || fail "user kernel cr2 is not the higher-half text"
 hha=$(printf '%s\n' "$clean" | sed -n 's/^hh ok audit wx=\([0-9][0-9]*\) leaves=\([0-9][0-9]*\) code=\([0-9][0-9]*\) nx=\([0-9][0-9]*\) huge=\([0-9][0-9]*\)$/\1 \2 \3 \4 \5/p' | head -1)
 [ -n "${hha:-}" ] || fail "hh audit line missing"
 set -- $hha; hhwx=$1; hhleaves=$2; hhcode=$3; hhnx=$4; hhhuge=$5
@@ -830,7 +830,7 @@ atk_run() {
     printf '%s\n' "$win" | grep -q 'user leak' && fail "attack $mode ran a denied syscall"
     attack_n=$((attack_n + 1))
 }
-K=0xffffffff80010000
+K=0xffffffff80400000
 H=0xffff800000001000
 # Mitad alta del kernel: leer y escribir. P|U sin escritura es 0x5; con
 # escritura, 0x7. La página es de supervisor: el bit de usuario del error

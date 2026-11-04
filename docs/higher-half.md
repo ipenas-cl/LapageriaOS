@@ -1,8 +1,27 @@
 # Kernel en la mitad alta
 
-El kernel se enlaza en `0xFFFFFFFF80010000` y se carga en el físico `0x10000`. La base de la ventana es `0xFFFFFFFF80000000`: PML4[511], PDPT[510], PD[0], los 2 MiB de arriba de los 2 GiB altos. Esa dirección cabe en un desplazamiento con signo de 32 bits. Copihue v0.31.0 la acepta con `--flat`; no hay un pedido nuevo en [PEDIDOS_COPIHUE.md](PEDIDOS_COPIHUE.md).
+Desde SG-02 el kernel se enlaza en `0xFFFFFFFF80400000` y la etapa 2 lo copia al físico `0x400000`. Antes se enlazaba en `0xFFFFFFFF80010000` y se cargaba en `0x10000`, y ese `0x10000` no dejaba crecer el archivo: las pilas fijas de `0x60000` para arriba y el borde de 1 MiB limitaban imagen + `.bss` a `0x58000` (512 sectores). La base de la ventana sigue siendo `0xFFFFFFFF80000000`: PML4[511], PDPT[510], y la PD de `0x5000`, donde ahora [0] es la RAM baja (0..2 MiB, con la pila del shell) y [2] es la imagen (físico `0x400000`..`0x5FFFFF`, una página de 2 MiB). Esa dirección cabe en un desplazamiento con signo de 32 bits. Copihue v0.31.0 la acepta con `--flat`; no hay un pedido nuevo en [PEDIDOS_COPIHUE.md](PEDIDOS_COPIHUE.md) por la dirección.
 
-`0xFFFFFFFF80000000` es un `i64` negativo. `(va >> 39) & 511` igual da 511, y el índice de PDPT da 510. `hh_phys(va)` resta la base y recupera el físico.
+`0xFFFFFFFF80000000` es un `i64` negativo. `(va >> 39) & 511` igual da 511, y el índice de PDPT da 510. `hh_phys(va)` resta la base y recupera el físico. `kimg_phys()` (`0x400000`) y `kimg_va()` (`hh_base() + 0x400000`) están en `paging.lap`.
+
+## Layout del disco y de la carga (SG-02)
+
+Imagen de arranque `build/lapageriaos.img`, 2880 sectores de 512 bytes (1,44 MB):
+
+| LBA | Sectores | Contenido |
+|---|---|---|
+| 0 | 1 | etapa 1 (`boot.lap`) |
+| 1..8 | 8 | etapa 2 (`stage2.lap`, cargada en `0x8200`) |
+| 9..2056 | 2048 | región del kernel: `kernel.bin` ocupa el comienzo (`ceil(bytes / 512)`), el resto queda reservado |
+| 2057..2879 | 823 | libre |
+
+`KERNEL_MAX_SECTORS` del `Makefile` es `min(FLOPPY_SECTORS − 9, KERNEL_SECTOR_CAP)` = 2048 (1 MiB). Con este kernel: `kernel.bin` 239796 bytes = 469 sectores (LBA 9..477), `.bss` 22252 bytes; quedan 1579 de los 2048 sectores libres en la región (y 823 más después de ella). `make` rechaza (`kernel too large for stage 2`) un `kernel.bin` de más de 2048 sectores, y también uno cuyo archivo + `.bss` pase de `0x600000` (el fin de la página de 2 MiB de la imagen: queda 1 MiB para la `.bss`). Subir el tope más allá de 1 MiB de archivo pide una segunda entrada de PD (`0x600000`) y su división NX; ahora no hace falta.
+
+Carga (stage2.lap): `INT 13h AH=42h` lee hasta 128 sectores (64 KiB) a `0x1000:0` (físico `0x10000`, el rebote) y `INT 15h AH=87h` copia ese trozo a `0x400000 + 64 KiB · k`. El destino es la base de 32 bits de un descriptor de esa llamada: no hace falta modo irreal ni código en `bits 32`. A20 ya está prendido. Después la etapa 2 arma la PD alta con [0] = `0x83` y [2] = `0x400083`, y salta con `jmp rax` a `0xFFFFFFFF80400000`. La región `0x10000`..`0x1FFFF` (el rebote) queda libre; `hh_retire` la saca de la tabla baja, así que leerla desde anillo 3 sigue siendo un `#PF` no presente (error `0x4`), como antes con la imagen.
+
+El PMM reserva toda la página de 2 MiB de la imagen (512 páginas; `pmm free` pasó de 32480 a 31968): así ninguna otra asignación puede quedar a la vez en esa página de la ventana alta del kernel y en un proceso. El disco de datos (`build/data.img`, [disco.md](disco.md)) y el sistema de archivos ([fs.md](fs.md)) no se tocan: son otro archivo, esclavo del IDE, y el layout de arriba es solo el de la imagen de arranque.
+
+Probado: `tests/stage2_big_test.sh` (lo corre `make qemu-test`) arma una imagen con la región llena, `kernel.bin` seguido de bytes aleatorios hasta 2048 sectores y la etapa 2 pidiendo 2048. El kernel llega al prompt (`hh on text=0xffffffff80400000`) y el volcado de la memoria física `0x480000`..`0x4FFFFF` (QEMU `pmemsave`, 512 KiB, 8 de los 16 trozos de 64 KiB) es idéntico a esos bytes del archivo. Los primeros 512 KiB de la región no se comparan: el kernel escribe en su `.data` y `.bss`, pero el arranque con ellos cargados sí pasó. Solo se corrió en QEMU 11.1.3 (TCG); INT 15h AH=87h en hardware real o con otro BIOS no se probó.
 
 ## Mapa
 
@@ -11,7 +30,8 @@ El kernel se enlaza en `0xFFFFFFFF80010000` y se carga en el físico `0x10000`. 
 | Etapa 2 | `0x8200` | `0x8200` | Sigue. El salto ya ocurrió |
 | Tablas del arranque | `0x1000`..`0x5FFF` | igual | Siguen. CR3 es `0x1000` |
 | E820 | `0x8000` | `0x8000` | Sigue |
-| Imagen (`.text`, `.data`, `.bss`) | `0xFFFFFFFF80010000` + offset | `0x10000` + offset | Solo la ventana alta |
+| Imagen (`.text`, `.data`, `.bss`) | `0xFFFFFFFF80400000` + offset | `0x400000` + offset | Solo la ventana alta (nunca tuvo identidad baja) |
+| Rebote de la etapa 2 (INT 13h) | `0x10000`..`0x1FFFF` | igual | Retirado de la tabla baja (`hh_retire`) |
 | VGA | `0xB8000` | `0xB8000` | Sigue, supervisor |
 | Pilas de proceso, syscall y `TSS.rsp0` | `0x60000`, `0x68000`, `0x70000`, `0x78000`, `0x81000`, `0x86000` | igual | Siguen, supervisor, NX |
 | Pila del shell | `0xFFFFFFFF80090000` | `0x90000` | Las dos vistas; RSP usa la alta |
@@ -20,7 +40,7 @@ El kernel se enlaza en `0xFFFFFFFF80010000` y se carga en el físico `0x10000`. 
 | Código y pila de usuario | `0x400000`, `0x401000`, `0x402000` | marcos del PMM | Mitad baja, bit de usuario |
 | Página privada de `sched` | `0x500000` | un marco | Mitad baja, bit de usuario |
 
-En este binario (`ndisasm -b 64` de `build/kernel.bin`, org `0xFFFFFFFF80010000`):
+Las cifras de esta sección y de "Qué se midió" son de v0.31.0 con el enlace viejo en `0xFFFFFFFF80010000` (físico `0x10000`); el layout actual es el de arriba. En ese binario (`ndisasm -b 64` de `build/kernel.bin`, org `0xFFFFFFFF80010000`):
 
 | Símbolo | Virtual | Físico |
 |---|---|---|
@@ -34,6 +54,8 @@ En este binario (`ndisasm -b 64` de `build/kernel.bin`, org `0xFFFFFFFF80010000`
 El archivo mide 157775 bytes (`0x2684F`) y empieza en `_start` (`55 48 89 E5`). `.text` llega alineado a 4096 en el offset `0x25000`. Entre `__data_end` y `__bss_start` hay un byte de alineación. `put_hex` imprime 32 bits, así que el mapa del comando `nx` muestra `0x80010000` para el inicio de `.text`.
 
 GDT, IDT y TSS están en la `.bss`. `lgdt` y `lidt` reciben esa dirección alta. Al retirar la identidad, esas páginas dejan de estar en la tabla baja y el CPU las sigue por la ventana alta.
+
+> **SG-02.** Las secciones de abajo describen la mecánica con la imagen en `0x10000`. Hoy cambia esto: la imagen no tiene identidad baja (solo la PD alta [2] = `0x400083`, que `nx_split` parte en una tabla de 4 KiB con `.text` sin escritura y el resto NX); las dos tablas de la RAM baja (`kern_low_pt` y `kern_hh_pt`) llevan todo NX porque ya no hay código ahí; `nx_split` pide tres marcos bajos en vez de dos; y `hh_retire` retira de la tabla baja el rebote `0x10000`..`0x1FFFF`, no la imagen. La cuenta de hojas de la auditoría cambia (1521 hojas, 57 de código, 1464 NX en la corrida de SG-02); la prueba solo exige `leaves == code + nx`, `wx=0` y `huge=0`.
 
 ## Qué queda en identidad, y hasta cuándo
 

@@ -34,14 +34,22 @@ fn hh_phys(va: i64) -> i64 {
     return va - hh_base();
 }
 
-// La ventana del kernel son 2MB desde la base. Por debajo (más
-// negativo) y por encima no entran. Una dirección >= 0 tampoco:
-// 0xFFFFFFFF80000000 es el entero con signo más chico de esa ventana.
+// Ventana alta del kernel: base .. base + 6 MiB. Los primeros 2 MiB son
+// la RAM baja (pila del shell en 0xFFFFFFFF80090000, tablas); la imagen
+// está en la página de 2 MiB que empieza en kimg_phys() (PD alta [2]).
+// Por debajo (más negativo) y por encima no entran. Una dirección >= 0
+// tampoco: 0xFFFFFFFF80000000 es el entero con signo más chico de esa
+// ventana.
 fn hh_window(va: i64) -> i64 {
     if (va < hh_base()) { return 0; }
-    if (va >= hh_base() + 0x200000) { return 0; }
+    if (va >= hh_base() + 0x600000) { return 0; }
     return 1;
 }
+
+// Dónde la etapa 2 copia kernel.bin (Makefile KERNEL_LOAD_ADDR) y su
+// dirección virtual, que es hh_base() + kimg_phys() (Makefile KERNEL_LINK).
+fn kimg_phys() -> i64 { return 0x400000; }
+fn kimg_va() -> i64 { return hh_base() + 0x400000; }
 
 fn pte_nx_bit() -> i64 {
     let b = 1;

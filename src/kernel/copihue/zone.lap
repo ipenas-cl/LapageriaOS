@@ -548,7 +548,7 @@ fn zone_plant_atk() -> i64 {
     let r = fs_write("zatk", exec_buf, n);
     if (r != 0) { return exec_fail(r); }
     let h: *Axe = axe_of(exec_buf);
-    h.entry = (hh_base() + 0x10000) as u64;
+    h.entry = (kimg_va()) as u64;
     r = fs_write("kentry", exec_buf, n);
     if (r != 0) { return exec_fail(r); }
     puts("zone atk plant ok\n");

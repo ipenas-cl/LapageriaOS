@@ -1,5 +1,7 @@
 # Bit NX y W^X
 
+> **SG-02:** desde esta versión la imagen está en el físico `0x400000` (VA `0xFFFFFFFF80400000`), no en `0x10000`; ver [higher-half.md](higher-half.md). Las direcciones de abajo son las de antes.
+
 QEMU arranca con `-cpu qemu64` (`make qemu`, `make debug`, `make qemu-test`, el humo de CI y `scripts/pre-commit.sh`). Ese modelo deja puesto el bit 20 de EDX en la hoja CPUID `0x80000001`. Sin ese bit el kernel no toca el MSR.
 
 `nx_init` corre después de la IDT. Lee el bit, prende EFER.NXE (MSR `0xC0000080`, bit 11) y lo vuelve a leer. En el humo de 10 s y en `make qemu-test` la serie dice `nx efer on`.

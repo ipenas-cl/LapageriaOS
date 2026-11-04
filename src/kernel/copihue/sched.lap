@@ -324,7 +324,7 @@ naked fn resume_frame() {
 }
 
 fn alias_capture() -> i64 {
-    let p: *u8 = (hh_base() + 0x10000) as *u8;
+    let p: *u8 = (kimg_va()) as *u8;
     alias_b0 = p[0];
     alias_b1 = p[1];
     alias_b7 = p[7];
@@ -332,7 +332,7 @@ fn alias_capture() -> i64 {
 }
 
 fn alias_at(off: i64) -> i64 {
-    alias_ptr = hh_base() + 0x10000 + off;
+    alias_ptr = kimg_va() + off;
     let p: *u8 = alias_ptr as *u8;
     alias_byte = p[0];
     return alias_byte;

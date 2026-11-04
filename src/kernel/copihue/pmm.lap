@@ -83,17 +83,18 @@ fn pmm_mark_range(base: i64, len: i64) -> i64 {
     return 0;
 }
 
-// The image is loaded at 0x10000. .bss follows kernel.bin and is not in
-// the file. Both have to end before 0x58000: process 0's kernel stack
-// starts at 0x60000 and grows down through the 32 KiB under that top.
-// Pages below 1MB stay reserved, so a .bss that stays under 1MB is not
-// handed out. Overlapping that stack would still corrupt it. make
-// rejects a kernel.bin past 512 sectors and an image+bss past 0x58000.
+// The image is copied to kimg_phys() (0x400000) by stage 2. .bss follows
+// kernel.bin and is not in the file. The whole 2 MiB page that holds the
+// image (PD[2] of the high window, kimg_phys() .. +2 MiB) belongs to the
+// kernel: file, .bss and the room to grow. Reserving all of it keeps the
+// PMM from handing out a frame that the high window also maps. make
+// rejects an image+bss past that page. Pages below 1MB are not managed.
 fn pmm_reserve_image() -> i64 {
-    let a = 0x10000;
+    let a = kimg_phys();
     // bss_end es la dirección de enlace, en la mitad alta.
     let end = hh_phys(bss_end() as i64);
-    let b = ((end + 4095) >> 12) << 12;
+    if (end > a + 0x200000) { return 0; }
+    let b = a + 0x200000;
     while (a < b) {
         pmm_take(a >> 12);
         a = a + 4096;
