@@ -36,15 +36,17 @@
 //
 // Copihue v0.34.1. lodsb y rep_stosd usan el índice tal como está DF,
 // así que clear_df lo deja en claro con cld(). El token de INT 15h
-// vive en ebx. Un while, un if y un + de bits 16 lo restauran
-// (push/pop alrededor del operador). get_e820 lo escribe directo:
-// ebx = 0 antes del primer int 0x15, y if (ebx == 0) cierra el mapa.
-// Entre ese int y el if no hay un store cuya dirección no sea número,
-// registro desnudo o reg±disp, ni lgdt/lidt/invlpg de un puntero que
-// no sea etiqueta. *((di + 20) as *u32) = 1 es [di+20] y va antes del
-// int. *(0x8000 as *u16) es un número. Los stores de kern_packet+N
-// pasan por ebx, y están en load_kernel, antes de get_e820. lgdt(&gdtr)
-// es la etiqueta gdtr y va después. check_long_mode sigue usando
+// vive en ebx. v0.34.1 preserva ebx y edx: cada operador binario, cada
+// comparación y cada store por registro compila a push ebx / push eax /
+// push edx ... pop edx / pop eax / pop ebx alrededor del cálculo, en
+// 16 bits también. Se verificó desensamblando build/stage2.bin con
+// ndisasm -b 16 (no se leyó el .asm de -S): en get_e820, ebx = 0 es
+// `mov ebx,0` antes del bucle, y if (ebx == 0) es `mov eax,ebx` sin
+// ningún write a ebx entre el int 0x15 y esa lectura. Los stores de
+// kern_packet+N de load_kernel también pasan por ebx, pero lo guardan y
+// lo restauran. Ya no hace falta evitar los operadores entre el int y
+// el if; aun así get_e820 deja los stores como número o [di+20], y
+// lgdt(&gdtr) usa la etiqueta gdtr. check_long_mode sigue usando
 // pushfd/popfd: ahí se prueba el bit ID, no se limpia DF. Las llamadas
 // de aquí no tienen argumentos.
 

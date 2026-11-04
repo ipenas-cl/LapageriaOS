@@ -665,60 +665,136 @@ echo "ok   exec desde disco, missing, bad magic, bad size, corrupt"
 # para plantar ztest y dejar un cupo al archivo de la zona.
 typefs "fs rm malo"
 typefs "fs rm gordo"
+typefs "fs rm hola"
 typefs "zone plant"
 typefs "zone create a za 12"
 typefs "zone create b zb 12"
+# SG-01: crear zonas que pisan el espacio de otra o con tope absurdo tiene
+# que fallar con `zone fail 11` y no crear nada: mismo prefijo, prefijo
+# que es cabeza del de a, prefijo que lo extiende, tope 0, tope sobre
+# 4096, tope negativo y nombre repetido.
+typefs "zone create c za 5"
+typefs "zone create d z 5"
+typefs "zone create e zab 5"
+typefs "zone create f zf 0"
+typefs "zone create g zg 5000"
+typefs "zone create h zh -5"
+typefs "zone create a zq 5"
 typefs "zone ls"
-typewait "zone exec a ztest" 120
+# Directorio antes del ataque: tiene que quedar igual salvo `zan`.
+typefs "fs ls"
+typewait "zone exec a ztest" 200
 typefs "zone ls"
 typefs "fs cat zan"
 typefs "fs cat n"
 typefs "fs cat c"
+typefs "fs cat zbx"
+typefs "fs cat x"
+typefs "fs ls"
+# SG-01: tope de 1 página. armar el proceso no cabe: `zone fail 6`, sin
+# páginas ni procesos retenidos. `zone exec t nosuch` solo imprime
+# `zone mem` y vuelve: sirve de sonda de memoria libre entre intentos.
+typefs "zone create t zt 1"
+typefs "zone exec t nosuch"
+typefs "zone exec t ztest"
+typefs "zone exec t nosuch"
+typefs "zone exec t ztest"
+typefs "zone exec t nosuch"
+typefs "zone ls"
 tr -d '\r' < "$SERIAL" | awk '
 {
     if (i==0 && $0=="fs rm ok") i=1
     else if (i==1 && $0=="fs rm ok") i=2
-    else if (i==2 && $0=="zone plant ok") i=3
-    else if (i==3 && $0=="zone created 1") i=4
-    else if (i==4 && $0=="zone created 2") i=5
-    else if (i==5 && $0=="zone fs ok") i=6
-    else if (i==6 && $0=="zone fs denied") i=7
-    else if (i==7 && $0=="zone syscall denied") i=8
-    else if (i==8 && $0=="zone quota ok") i=9
-    else if (i==9 && $0=="zone escape denied") i=10
-    else if (i==10 && $0=="zone exec ok") i=11
-    else if (i==11 && $0=="fs live Z") i=12
-    else if (i==12 && $0=="fs fail 7") i=13
-    else if (i==13 && $0=="fs empty") i=14
+    else if (i==2 && $0=="fs rm ok") i=3
+    else if (i==3 && $0=="zone plant ok") i=4
+    else if (i==4 && $0=="zone created 1") i=5
+    else if (i==5 && $0=="zone created 2") i=6
+    else if (i==6 && $0=="zone fs ok") i=7
+    else if (i==7 && $0=="zone fs denied") i=8
+    else if (i==8 && $0=="zone fs denied create") i=9
+    else if (i==9 && $0=="zone syscall denied") i=10
+    else if (i==10 && $0=="zone syscall flood denied") i=11
+    else if (i==11 && $0=="zone quota ok") i=12
+    else if (i==12 && $0=="zone quota hold") i=13
+    else if (i==13 && $0=="zone escape denied") i=14
+    else if (i==14 && $0=="zone exec ok") i=15
+    else if (i==15 && $0=="fs live Z") i=16
+    else if (i==16 && $0=="fs fail 7") i=17
+    else if (i==17 && $0=="fs empty") i=18
 }
 END {
-    if (i != 14) {
+    if (i != 18) {
         print "zone story stuck at " i > "/dev/stderr"
         exit 1
     }
 }
 ' || fail "zone story missing a line"
-mems=$(tr -d '\r' < "$SERIAL" | sed -n 's/^zone mem \([0-9][0-9]*\)$/\1/p')
+clean=$(tr -d '\r' < "$SERIAL")
+# Ninguna syscall negada tuvo efecto: dentro de la ventana de la zona no
+# salen las líneas de las syscalls 2, 3, 10 y 11, ni la X de rdi=88.
+win=$(printf '%s\n' "$clean" | awk '/^lapageria> zone exec a ztest$/ {f=1; next} f && /^zone exec ok$/ {exit} f {print}')
+[ -n "$win" ] || fail "no zone window to inspect"
+printf '%s\n' "$win" | grep -q 'user leak' && fail "denied syscall 2 ran inside the zone"
+printf '%s\n' "$win" | grep -q 'getpid' && fail "denied syscall 3 ran inside the zone"
+printf '%s\n' "$win" | grep -q 'nx ok sched' && fail "denied syscall 10 ran inside the zone"
+printf '%s\n' "$win" | grep -q 'hh ok sched' && fail "denied syscall 11 ran inside the zone"
+printf '%s\n' "$win" | grep -q 'X' && fail "a syscall with rdi=88 printed X (nr truncated?)"
+# Las creaciones inválidas: siete `zone fail 11`, ninguna zona de más.
+f11=$(printf '%s\n' "$clean" | grep -cx 'zone fail 11')
+[ "$f11" = 7 ] || fail "want 7 'zone fail 11' (bad zone creates), got $f11"
+# Dos zonas válidas (a, b) más la zona t de 1 página creada después: 3.
+[ "$(printf '%s\n' "$clean" | grep -c '^zone created ')" = 3 ] || fail "a bad zone create was accepted"
+f6=$(printf '%s\n' "$clean" | grep -cx 'zone fail 6')
+[ "$f6" = 2 ] || fail "want 2 'zone fail 6' (1-page zone), got $f6"
+printf '%s\n' "$clean" | grep -q '^zone fail' && {
+    other=$(printf '%s\n' "$clean" | grep '^zone fail' | grep -vx 'zone fail 11' | grep -vx 'zone fail 6' || true)
+    [ -z "$other" ] || fail "unexpected zone failure: $other"
+}
+# Memoria: a antes, a después, y las seis líneas de la zona de 1 página
+# (sondas y `zone fail 6`) valen lo mismo. Nada se filtró.
+mems=$(printf '%s\n' "$clean" | sed -n 's/^zone mem \([0-9][0-9]*\)$/\1/p')
+nm=$(printf '%s\n' "$mems" | grep -c .)
+[ "$nm" = 7 ] || fail "want 7 zone mem lines, got $nm"
 m1=$(printf '%s\n' "$mems" | sed -n '1p')
 m2=$(printf '%s\n' "$mems" | sed -n '2p')
-m3=$(printf '%s\n' "$mems" | sed -n '3p')
-[ -n "$m1" ] && [ -n "$m2" ] && [ -z "$m3" ] || fail "want exactly two zone mem lines"
 [ "$m1" = "$m2" ] || fail "zone mem $m1 -> $m2, free memory did not return"
-tr -d '\r' < "$SERIAL" | awk -v a="$m1" '
+[ "$(printf '%s\n' "$mems" | sort -u | wc -l | tr -d ' ')" = 1 ] || fail "free memory changed across the 1-page zone attempts: $(printf '%s ' $mems)"
+printf '%s\n' "$clean" | awk -v a="$m1" '
 $0 == ("zone mem " a) { if (!s) { s=1; next } if (s==1) { s=2 } }
 s==1 && $0=="zone quota ok" { q=1 }
 END { exit !(s==2 && q) }
 ' || fail "zone quota ok was not between the two zone mem lines"
-z1=$(tr -d '\r' < "$SERIAL" | grep '^zone 1 ' | tail -1)
-printf '%s\n' "$z1" | grep -q 'pre=za' || fail "zone 1 lost prefix za ($z1)"
-printf '%s\n' "$z1" | grep -q 'pag=0' || fail "zone 1 pages not released ($z1)"
+# Contadores del kernel. a: 64 negadas, 5 intentos de escape, el tope se
+# alcanzó (max=12) y nunca se pasó. b no se tocó. t: una página, soltada.
+z1=$(printf '%s\n' "$clean" | grep '^zone 1 ' | tail -1)
+printf '%s\n' "$z1" | grep -q 'pre=za ' || fail "zone 1 lost prefix za ($z1)"
+printf '%s\n' "$z1" | grep -q ' pag=0 ' || fail "zone 1 pages not released ($z1)"
 printf '%s\n' "$z1" | grep -q 'proc=0/' || fail "zone 1 process leaked ($z1)"
-printf '%s\n' "$z1" | grep -q 'niega=1' || fail "denied syscall was not counted ($z1)"
-printf '%s\n' "$z1" | grep -q 'fuga=1' || fail "zone escape was not counted ($z1)"
-tr -d '\r' < "$SERIAL" | grep -q '^zone 2 b pre=zb ' || fail "zone B missing after exec"
-tr -d '\r' < "$SERIAL" | grep -qx 'zone leak' && fail "zone leak"
-tr -d '\r' < "$SERIAL" | grep -q '^zone fail' && fail "zone command failed"
+printf '%s\n' "$z1" | grep -q ' niega=64 ' || fail "denied syscalls: want niega=64 ($z1)"
+printf '%s\n' "$z1" | grep -q ' fuga=5 ' || fail "zone escapes: want fuga=5 ($z1)"
+printf '%s\n' "$z1" | grep -q ' max=12$' || fail "zone 1 quota 12 not reached exactly, or passed ($z1)"
+z2=$(printf '%s\n' "$clean" | grep '^zone 2 b pre=zb ' | tail -1)
+[ -n "$z2" ] || fail "zone B missing after exec"
+printf '%s\n' "$z2" | grep -q ' pag=0 niega=0 fuga=0 max=0$' || fail "zone B was touched by zone A ($z2)"
+z3=$(printf '%s\n' "$clean" | grep '^zone 3 t pre=zt ' | tail -1)
+[ -n "$z3" ] || fail "zone t missing"
+printf '%s\n' "$z3" | grep -q ' pag=0 ' || fail "zone t kept pages ($z3)"
+printf '%s\n' "$z3" | grep -q 'proc=0/' || fail "zone t kept a process ($z3)"
+printf '%s\n' "$z3" | grep -q ' max=1$' || fail "zone t passed its 1-page quota ($z3)"
+# Disco: los intentos fuera del prefijo no dejaron archivos. Entre los dos
+# `fs ls` solo aparece `zan`; zbx y x no existen; c sigue vacío.
+ls1=$(printf '%s\n' "$clean" | awk '/^lapageria> fs ls$/ {k++; next} k && /^fs file / {c[k]=c[k] " " $3} END {print c[k-1]}')
+ls2=$(printf '%s\n' "$clean" | awk '/^lapageria> fs ls$/ {k++; next} k && /^fs file / {c[k]=c[k] " " $3} END {print c[k]}')
+[ -n "$ls1" ] && [ -n "$ls2" ] || fail "could not read fs ls before and after the zone attack"
+want2=$(printf '%s\n' $ls1 zan | sort | tr '\n' ' ')
+got2=$(printf '%s\n' $ls2 | sort | tr '\n' ' ')
+[ "$want2" = "$got2" ] || fail "directory changed: before [$ls1 ] after [$ls2 ]"
+n_fail7=$(printf '%s\n' "$clean" | awk '/^lapageria> fs cat zbx$/ {f=1; next} f && /^lapageria> / {exit} f && $0=="fs fail 7" {c++} END {print c+0}')
+n_fail7x=$(printf '%s\n' "$clean" | awk '/^lapageria> fs cat x$/ {f=1; next} f && /^lapageria> / {exit} f && $0=="fs fail 7" {c++} END {print c+0}')
+[ "$n_fail7" = 1 ] && [ "$n_fail7x" = 1 ] || fail "zbx or x exists on disk"
+printf '%s\n' "$clean" | grep -qx 'zone leak' && fail "zone leak"
 echo "ok   zone fs, denied, syscall, quota mem $m1, escape"
+echo "ok   zone attacks: fs create denied, 64 syscalls denied, 5 escapes, quota held (max=12), 1-page zone, disk intact"
 
 require_net
 typewait "net" 120

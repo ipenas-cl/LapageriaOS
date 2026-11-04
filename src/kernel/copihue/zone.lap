@@ -13,6 +13,7 @@ packed struct ZoneStr {
 let zone_live: [i64; 8];
 let zone_cap: [i64; 8];
 let zone_pages: [i64; 8];
+let zone_hi: [i64; 8];
 let zone_mask: [i64; 8];
 let zone_nproc: [i64; 8];
 let zone_maxproc: [i64; 8];
@@ -179,6 +180,7 @@ fn zone_init() -> i64 {
     zone_mask[0] = 0 - 1;
     zone_maxproc[0] = 8;
     zone_pages[0] = 0;
+    zone_hi[0] = 0;
     zone_nproc[0] = 0;
     zone_niega[0] = 0;
     zone_fuga[0] = 0;
@@ -231,6 +233,7 @@ fn zone_room(z: i64) -> i64 {
 fn zone_account_alloc(z: i64) -> i64 {
     if (z <= 0 || z >= 8) { return 0; }
     zone_pages[z] = zone_pages[z] + 1;
+    if (zone_pages[z] > zone_hi[z]) { zone_hi[z] = zone_pages[z]; }
     return zone_pages[z];
 }
 
@@ -476,6 +479,8 @@ fn zone_show(z: i64) -> i64 {
     put_int(zone_niega[z]);
     puts(" fuga=");
     put_int(zone_fuga[z]);
+    puts(" max=");
+    put_int(zone_hi[z]);
     putc('\n');
     return 0;
 }
@@ -511,6 +516,7 @@ fn zone_create(pos: i64) -> i64 {
     zone_live[slot] = 1;
     zone_cap[slot] = pages;
     zone_pages[slot] = 0;
+    zone_hi[slot] = 0;
     zone_mask[slot] = zone_user_mask();
     zone_nproc[slot] = 0;
     zone_maxproc[slot] = 2;
