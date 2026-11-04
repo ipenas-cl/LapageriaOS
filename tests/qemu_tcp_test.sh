@@ -25,6 +25,16 @@
 #   (e)            al terminar todo: tcp stat sin sockets (used 0), y los
 #                  procesos liberan las mismas páginas en cada corrida
 #
+# RD-03 (docs/red.md, «TCP endurecido» y «RD-03: más de ...»), entre el eco
+# y tcpcli:
+#   tcp test       además: cola fuera de orden, RTT/RTO, congestión,
+#                  agotamiento de bloques y fallas inyectadas (5 líneas ok)
+#   exec2 tcpmulti tcpmulti   4 ecos simultáneos de 64 KiB distintos (2+2)
+#   tcp fault + exec tcpeco   pérdida (2 recibidos, 1 enviado) y reordenamiento
+#                  de segmentos con datos, con eco íntegro; la falla la
+#                  inyecta el TCP del invitado, no la red
+#   exec tcphog    8 de 8 bloques ocupados; el siguiente SYN recibe RST|ACK
+#
 # TCP_PCAP=ruta guarda la captura. Uso: tests/qemu_tcp_test.sh [imagen]
 # Necesita: qemu-system-x86_64, socat.
 set -u
@@ -84,7 +94,7 @@ start_qemu() {
         qemu-system-x86_64 -cpu qemu64 -drive format=raw,file="$IMAGE" \
             -drive file="$DATA",format=raw,if=ide,index=1 \
             -display none -no-reboot \
-            -nic none -netdev "user,id=n0,hostfwd=tcp:127.0.0.1:$HPORT-:7001,hostfwd=tcp:127.0.0.1:$((HPORT + 1))-:7999,guestfwd=tcp:10.0.2.100:7100-cmd:$SOCAT - TCP:127.0.0.1:$HPORT2" \
+            -nic none -netdev "user,id=n0,hostfwd=tcp:127.0.0.1:$HPORT-:7001,hostfwd=tcp:127.0.0.1:$((HPORT + 1))-:7999,hostfwd=tcp:127.0.0.1:$((HPORT + 2))-:7002,hostfwd=tcp:127.0.0.1:$((HPORT + 3))-:7003,hostfwd=tcp:127.0.0.1:$((HPORT + 4))-:7004,guestfwd=tcp:10.0.2.100:7100-cmd:$SOCAT - TCP:127.0.0.1:$HPORT2" \
             -device e1000,netdev=n0 -object filter-dump,id=f0,netdev=n0,file="$PCAP" \
             -serial file:"$SERIAL" -monitor unix:"$MON",server,nowait &
         QPID=$!
@@ -139,6 +149,15 @@ waitpre() {
 }
 has() { tr -d '\r' < "$SERIAL" | grep -qx "$1"; }
 count() { tr -d '\r' < "$SERIAL" | grep -cx "$1" || true; }
+# Espera a que la línea exacta $1 aparezca al menos $2 veces (plazo $3 décimas).
+waitcount() {
+    local want=$1 n=$2 i
+    for i in $(seq "$3"); do
+        if [ "$(count "$want")" -ge "$n" ]; then return 0; fi
+        sleep 0.1
+    done
+    fail "line '$want' x$n"
+}
 tcp_field() {
     tr -d '\r' < "$SERIAL" | grep '^tcp rx ' | tail -1 | tr ' ' '\n' | grep -A1 -x "$1" | tail -1
 }
@@ -156,6 +175,10 @@ has "net irq ok" || fail "net irq"
 typewait "tcp test" 100
 has "tcp test ok" || fail "tcp test: $(tr -d '\r' < "$SERIAL" | grep '^tcp test' | tail -1)"
 echo "ok   tcp test: handshake, datos, ACK, retransmisión con timer, FIN/TIME_WAIT, RST, ventana"
+for part in ooo rtt cc full fault; do
+    has "tcp test $part ok" || fail "tcp test $part: $(tr -d '\r' < "$SERIAL" | grep '^tcp test' | tail -3 | tr '\n' '|')"
+done
+echo "ok   tcp test (RD-03): cola fuera de orden (c), RTT/RTO RFC 6298, congestión RFC 5681 (arranque lento, evitación, timeout, retransmisión rápida), agotamiento de bloques (d), fallas inyectadas"
 
 typewait "fs format" 50
 typewait "tcp plant" 80
@@ -187,6 +210,7 @@ sleep 1
 typewait "tcp stat" 30
 est=$(tcp_field est); retx_a=$(tcp_field retx); dup_a=$(tcp_field dup); rx_a=$(tcp_field rx); tx_a=$(tcp_field tx)
 [ "$est" = 2 ] || fail "tcp stat: est=$est, esperaba 2"
+est_a=$est
 # ISN: los dos SYN|ACK del 7001 en el pcap (puerto 0x1B59, offset 6, flags 0x12).
 hex=$(od -An -v -tx1 "$PCAP" | tr -d ' \n')
 isns=$(printf '%s' "$hex" | grep -Eo '1b59[0-9a-f]{4}[0-9a-f]{8}[0-9a-f]{8}601[0-9a-f]' | grep -Eo '^1b59[0-9a-f]{4}[0-9a-f]{8}' | cut -c9-16 | sort -u)
@@ -196,6 +220,115 @@ for s in $isns; do
 done
 echo "ok   (a) contadores tras las dos conexiones: rx $rx_a tx $tx_a retx $retx_a dup $dup_a est $est"
 echo "ok   números de secuencia iniciales aleatorios: $(printf '%s' "$isns" | tr '\n' ' ')(distintos, > 65535)"
+
+# 2b. RD-03 (a): cuatro conexiones de eco simultáneas, 64 KiB distintos cada
+# una, contra dos servidores de un solo hilo que corren a la vez (exec2).
+for k in 1 2 3 4; do head -c 65536 /dev/urandom > "$TMP/m$k.in"; done
+typeline "exec2 tcpmulti tcpmulti"
+waitline "tcp multi listen 7001" 150
+waitline "tcp multi listen 7002" 150
+mpids=""
+for k in 1 2 3 4; do
+    mport=$HPORT
+    [ "$k" -gt 2 ] && mport=$((HPORT + 2))
+    "$SOCAT" -t20 - TCP:127.0.0.1:"$mport" < "$TMP/m$k.in" > "$TMP/m$k.out" 2> "$TMP/m$k.err" &
+    mpids="$mpids $!"
+done
+for p in $mpids; do wait "$p" 2>/dev/null || true; done
+for k in 1 2 3 4; do
+    cmp "$TMP/m$k.in" "$TMP/m$k.out" || fail "eco simultáneo $k: salida de $(wc -c < "$TMP/m$k.out") bytes distinta de la entrada $(cat "$TMP/m$k.err")"
+done
+waitline "tcp multi done 7001" 400
+waitline "tcp multi done 7002" 400
+waitline "exec2 ok" 100
+! has "tcp multi fail" 2>/dev/null || true
+if tr -d '\r' < "$SERIAL" | grep -q '^tcp multi fail'; then fail "tcpmulti: $(tr -d '\r' < "$SERIAL" | grep '^tcp multi fail')"; fi
+for pr in 7001:12 7002:34; do
+    p=${pr%%:*}; ks=${pr##*:}
+    want=$(for k in $(printf '%s' "$ks" | sed 's/./& /g'); do bytesum "$TMP/m$k.in"; done | sort -n | tr '\n' ' ')
+    got=$(tr -d '\r' < "$SERIAL" | grep "^tcp multi $p n=65536 sum=" | sed 's/.*sum=//' | sort -n | tr '\n' ' ')
+    [ "$want" = "$got" ] || fail "tcpmulti $p: el invitado contó [$got], el host [$want]"
+done
+sleep 1
+typewait "tcp stat" 30
+peak=$(tcp_field peak); ooo_m=$(tcp_field ooo)
+[ "${peak:-0}" -ge 6 ] || fail "tcp stat: peak=$peak, 4 conexiones y 2 escuchadores piden >= 6 bloques a la vez"
+echo "ok   (a) 4 conexiones de eco simultáneas de 64 KiB, dos servidores con exec2 (2+2): las 4 salidas son idénticas a su entrada (cmp); el invitado contó las mismas sumas de bytes; máximo de bloques ocupados a la vez: $peak"
+
+# 2c. RD-03 (b): pérdida a mitad de ráfaga. El TCP del invitado pierde los
+# segmentos con datos 6 y 7 que le llegan del host y el 9 que él mismo manda
+# (`tcp fault`); el eco de 64 KiB tiene que volver íntegro.
+typewait "tcp stat" 30
+retx_l0=$(tcp_field retx); fdrop0=$(tcp_field fdrop); ooo_l0=$(tcp_field ooo); rtos_l0=$(tcp_field rtos); fast_l0=$(tcp_field fast)
+typewait "tcp fault rxdrop 6 2" 30
+typewait "tcp fault txdrop 9 1" 30
+[ "$(count 'tcp fault ok')" = 2 ] || fail "tcp fault no quedó armado"
+n_listen=$(count 'tcp listen')
+typeline "exec tcpeco"
+waitcount "tcp listen" $((n_listen + 1)) 150
+head -c 65536 /dev/urandom > "$TMP/l.in"
+"$SOCAT" -t30 - TCP:127.0.0.1:"$HPORT" < "$TMP/l.in" > "$TMP/l.out" 2> "$TMP/l.err"
+cmp "$TMP/l.in" "$TMP/l.out" || fail "eco con pérdida: salida de $(wc -c < "$TMP/l.out") bytes distinta de la entrada $(cat "$TMP/l.err")"
+reply=$(printf 'adios' | "$SOCAT" -t5 - TCP:127.0.0.1:"$HPORT" 2>/dev/null)
+[ "$reply" = "adios" ] || fail "eco con pérdida, segunda conexión: [$reply]"
+waitcount "tcp srv done" 2 200
+lsum=$(bytesum "$TMP/l.in")
+tr -d '\r' < "$SERIAL" | grep -q "^tcp eof n=65536 sum=$lsum\$" || fail "el invitado no contó n=65536 sum=$lsum tras la pérdida"
+typewait "tcp stat" 30
+retx_l1=$(tcp_field retx); fdrop1=$(tcp_field fdrop); ooo_l1=$(tcp_field ooo); rtos_l1=$(tcp_field rtos); fast_l1=$(tcp_field fast)
+[ "$((fdrop1 - fdrop0))" = 3 ] || fail "fdrop $fdrop0 -> $fdrop1, esperaba +3 (2 al entrar, 1 al salir)"
+[ "$((retx_l1 - retx_l0))" -ge 1 ] || fail "el invitado no retransmitió ($retx_l0 -> $retx_l1) tras perder su segmento"
+echo "ok   (b) pérdida a mitad de ráfaga: 3 segmentos con datos perdidos en el TCP del invitado (2 recibidos y 1 enviado); eco de 64 KiB idéntico (cmp, suma $lsum); retransmisiones del invitado +$((retx_l1 - retx_l0)) (timeout +$((rtos_l1 - rtos_l0)), rápida +$((fast_l1 - fast_l0))); segmentos adelantados encolados +$((ooo_l1 - ooo_l0))"
+
+# 2d. RD-03 (c): reordenamiento. El segmento con datos 5 se retiene y sale
+# después del siguiente; el eco tiene que volver idéntico.
+typewait "tcp fault off" 30
+sw0=$(tcp_field fswap)
+typewait "tcp stat" 30
+sw0=$(tcp_field fswap); ooo_s0=$(tcp_field ooo)
+typewait "tcp fault swap 5" 30
+n_listen=$(count 'tcp listen')
+typeline "exec tcpeco"
+waitcount "tcp listen" $((n_listen + 1)) 150
+head -c 65536 /dev/urandom > "$TMP/s.in"
+"$SOCAT" -t30 - TCP:127.0.0.1:"$HPORT" < "$TMP/s.in" > "$TMP/s.out" 2> "$TMP/s.err"
+cmp "$TMP/s.in" "$TMP/s.out" || fail "eco con reordenamiento: salida de $(wc -c < "$TMP/s.out") bytes distinta de la entrada $(cat "$TMP/s.err")"
+reply=$(printf 'adios' | "$SOCAT" -t5 - TCP:127.0.0.1:"$HPORT" 2>/dev/null)
+[ "$reply" = "adios" ] || fail "eco con reordenamiento, segunda conexión: [$reply]"
+waitcount "tcp srv done" 3 200
+typewait "tcp stat" 30
+sw1=$(tcp_field fswap); ooo_s1=$(tcp_field ooo)
+[ "$((sw1 - sw0))" = 1 ] || fail "fswap $sw0 -> $sw1, esperaba +1"
+echo "ok   (c) reordenamiento: un segmento con datos retenido y entregado después del siguiente (fswap +1); eco de 64 KiB idéntico (cmp); segmentos adelantados encolados +$((ooo_s1 - ooo_s0))"
+
+# 2e. RD-03 (d): agotar los bloques. tcphog abre tres escuchadores y no acepta
+# nunca; cinco conexiones del host (3 al 7003, 2 al 7004) dejan hijos
+# pendientes y ocupan los 8 bloques; la sexta recibe RST|ACK sin reservar nada.
+typewait "tcp fault off" 30
+typewait "tcp stat" 30
+full0=$(tcp_field full); bk0=$(tcp_field bklog); rso_h0=$(tcp_field rstout)
+typeline "exec tcphog"
+waitline "tcp hog listen" 100
+hpids=""
+for hp in 3 3 3 4 4; do
+    ( sleep 3 | "$SOCAT" -t0 - TCP:127.0.0.1:$((HPORT + hp)) > /dev/null 2>&1 ) &
+    hpids="$hpids $!"
+    sleep 0.15
+done
+sleep 0.5
+( printf 'x' | "$SOCAT" -t1 - TCP:127.0.0.1:$((HPORT + 4)) > /dev/null 2>&1 ) || true
+waitline "tcp hog done -110" 700
+for p in $hpids; do wait "$p" 2>/dev/null || true; done
+sleep 1
+typewait "tcp stat" 30
+full1=$(tcp_field full); peak=$(tcp_field peak); rso_h1=$(tcp_field rstout); used_h=$(tcp_field used)
+[ "$peak" = 8 ] || fail "tcp stat: peak=$peak, esperaba 8 (todos los bloques)"
+[ "$((full1 - full0))" -ge 1 ] || fail "tcp stat: full $full0 -> $full1, el SYN sin bloque no se rechazó"
+[ "$((rso_h1 - rso_h0))" -ge 1 ] || fail "tcp stat: rstout $rso_h0 -> $rso_h1"
+[ "$used_h" = 0 ] || fail "tcp stat: used=$used_h tras cerrar el acaparador"
+hex=$(od -An -v -tx1 "$PCAP" | tr -d ' \n')
+printf '%s' "$hex" | grep -Eq '1b5c[0-9a-f]{4}00000000[0-9a-f]{8}5014' || fail "la captura no tiene el RST|ACK desde el puerto 7004"
+echo "ok   (d) agotamiento: peak 8 de 8 bloques; el SYN sin bloque recibió RST|ACK (full +$((full1 - full0)), visto en el pcap desde el puerto 7004); al cerrar, used 0 (bklog +$(( $(tcp_field bklog) - bk0 )))"
 
 # 3. (b) El kernel conecta al host.
 "$SOCAT" TCP-LISTEN:"$HPORT2",bind=127.0.0.1,reuseaddr SYSTEM:"head -c 3000 > $TMP/got.bin; printf respuesta" 2>"$TMP/socat2.err" &
@@ -249,26 +382,28 @@ fi
 # 5. (d) Zonas.
 typewait "zone create n zn 12" 50
 typewait "zone create m zm 12" 50
+pd0=$(count 'tcp ptr denied')
+zl0=$(count 'tcp listen')
 typewait "zone exec n tcpeco" 150
 waitline "tcp denied" 50
 has "zone exec ok" || fail "zone exec n no terminó"
 typewait "zone ls" 50
 niega=$(tr -d '\r' < "$SERIAL" | grep '^zone [0-9]* n pre=' | tail -1)
 echo "$niega" | grep -q "niega=[1-9]" || fail "zone ls: n sin niega ($niega)"
-[ "$(count 'tcp ptr denied')" = 1 ] || fail "la zona sin red llegó a las pruebas de punteros"
+[ "$(count 'tcp ptr denied')" = "$pd0" ] || fail "la zona sin red llegó a las pruebas de punteros"
 echo "ok   (d) zona sin red: tcp denied y niega>0"
 typewait "zone net m" 30
 has "zone net ok" || fail "zone net"
 typeline "zone exec m tcpeco"
-for _ in $(seq 100); do [ "$(count 'tcp listen')" -ge 2 ] && break; sleep 0.1; done
-[ "$(count 'tcp listen')" -ge 2 ] || fail "la zona m no abrió el puerto"
+for _ in $(seq 100); do [ "$(count 'tcp listen')" -ge $((zl0 + 1)) ] && break; sleep 0.1; done
+[ "$(count 'tcp listen')" -ge $((zl0 + 1)) ] || fail "la zona m no abrió el puerto"
 reply=$(printf 'en zona' | "$SOCAT" -t5 - TCP:127.0.0.1:"$HPORT" 2>/dev/null)
 [ "$reply" = "en zona" ] || fail "eco en zona (1): [$reply]"
 reply=$(printf 'otra' | "$SOCAT" -t5 - TCP:127.0.0.1:"$HPORT" 2>/dev/null)
 [ "$reply" = "otra" ] || fail "eco en zona (2): [$reply]"
 for _ in $(seq 100); do [ "$(count 'zone exec ok')" -ge 2 ] && break; sleep 0.1; done
 [ "$(count 'zone exec ok')" -ge 2 ] || fail "zone exec m no terminó"
-[ "$(count 'tcp ptr denied')" = 2 ] || fail "zona con red: punteros malos"
+[ "$(count 'tcp ptr denied')" = $((pd0 + 1)) ] || fail "zona con red: punteros malos"
 echo "ok   (d) zona con red (zone net): eco TCP, punteros malos denegados"
 
 # 6. (e) Sin fugas: sockets y páginas.
