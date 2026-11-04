@@ -68,7 +68,7 @@ fn cmd_help() -> i64 {
     puts("  user            enter ring 3 and syscall\n");
     puts("  sched           two processes, separate pages\n");
     puts("  disk            data disk checksum\n");
-    puts("  fs              archivos, directorios, snapshots, scrub\n");
+    puts("  fs              archivos, directorios, snapshots, scrub, migrate\n");
     puts("  exec <nombre>   programa del disco en anillo 3\n");
     puts("  exec2 <a> <b>   dos programas del disco a la vez\n");
     puts("  zone            zonas: create, ls, exec\n");
@@ -253,6 +253,14 @@ fn cmd_fs() -> i64 {
         if (r != 0) { return fs_fail(r); }
         puts("fs rm ok\n");
         return 0;
+    }
+    if (fs_is("migrate")) {
+        let r = fs_migrate();
+        if (r == 15) {
+            puts("fs migrate not needed\n");
+            return 0;
+        }
+        return fs_code(r);
     }
     if (fs_is("scrub")) { return fs_code(fs_scrub()); }
     if (fs_is("leak")) { return fs_code(fs_leak()); }

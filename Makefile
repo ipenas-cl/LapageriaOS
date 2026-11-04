@@ -11,6 +11,8 @@
 #   qemu-iso-test  Solo el aislamiento entre zonas (tests/qemu_iso_test.sh).
 #   qemu-fs2-test  Solo directorios, archivos grandes, scrub y raíz por zona
 #              (tests/qemu_fs2_test.sh).
+#   qemu-fs3-test  Solo fs migrate (tests/qemu_fs3_test.sh;
+#              necesita cc para scripts/mkv1.c).
 #   debug      Igual que qemu, y espera a gdb en tcp::1234 (-s -S).
 #   clean      Borra build/.
 #   help       Muestra esta lista.
@@ -134,7 +136,7 @@ COPIHUE_KERNEL_SRC = $(KERNEL_SRC)/copihue/console.lap \
                      $(KERNEL_SRC)/copihue/shell.lap \
                      $(KERNEL_SRC)/copihue/kernel.lap
 
-.PHONY: all qemu qemu-test qemu-udp-test qemu-tcp-test qemu-trace-test qemu-zswitch-test qemu-iso-test qemu-fs2-test debug clean help
+.PHONY: all qemu qemu-test qemu-udp-test qemu-tcp-test qemu-trace-test qemu-zswitch-test qemu-iso-test qemu-fs2-test qemu-fs3-test debug clean help
 
 # Imagen de arranque: LBA 0 etapa 1, LBA 1 etapa 2, LBA KERNEL_LBA el kernel.
 all: $(OS_IMAGE)
@@ -351,6 +353,7 @@ qemu-test: $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_zswitch_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_iso_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_fs2_test.sh $(OS_IMAGE)
+	$(TESTS_DIR)/qemu_fs3_test.sh $(OS_IMAGE)
 	COPIHUE=$(abspath $(COPIHUE)) $(TESTS_DIR)/stage2_big_test.sh $(BUILD_DIR)
 
 # Solo la red por IRQ y UDP. Usa una copia nueva del disco de datos.
@@ -377,6 +380,12 @@ qemu-iso-test: $(OS_IMAGE)
 # zone destroy. Usa una copia nueva del disco de datos.
 qemu-fs2-test: $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_fs2_test.sh $(OS_IMAGE)
+
+# Solo FS-03: fs migrate (discos v1 armados con scripts/mkv1.c).
+# Usa copias nuevas de la imagen y del disco de datos. Con
+# V1_KERNEL_IMG=ruta suma la sección del kernel v1 real (ver la prueba).
+qemu-fs3-test: $(OS_IMAGE)
+	$(TESTS_DIR)/qemu_fs3_test.sh $(OS_IMAGE)
 
 # La imagen es un binario plano: gdb no tiene tabla de símbolos ELF.
 debug: $(OS_IMAGE) $(DATA_IMG)
@@ -405,6 +414,7 @@ help:
 	@echo "  make qemu-zswitch-test  Solo el cambio de zona en switch_to (tests/qemu_zswitch_test.sh)."
 	@echo "  make qemu-iso-test  Solo el aislamiento entre zonas (tests/qemu_iso_test.sh)."
 	@echo "  make qemu-fs2-test  Solo directorios, archivos grandes, scrub y raíz por zona (tests/qemu_fs2_test.sh)."
+	@echo "  make qemu-fs3-test  Solo fs migrate (tests/qemu_fs3_test.sh)."
 	@echo "  make debug      Igual que qemu, esperando gdb en tcp::1234."
 	@echo "  make clean      Borra build/."
 	@echo "  make help       Esta lista."
