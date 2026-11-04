@@ -469,6 +469,7 @@ interrupt fn irq_net() {
         let icr = e_rd(0x00C0);
         if (icr != 0) {
             net_irqs = net_irqs + 1;
+            if (tr_en[12] != 0) { trace_hit(12, proc_pid[cur_i], icr, 0); }
             // RXO: el anillo se llenó y el chip dejó caer una trama.
             if ((icr & 0x40) != 0) { net_rxo = net_rxo + 1; }
             net_in_isr = 1;

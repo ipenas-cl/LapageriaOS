@@ -289,7 +289,7 @@ fn tcp_oo_clear(t: i64) -> i64 {
 
 fn tcp_drop(t: i64) -> i64 {
     tcp_oo_clear(t);
-    tc_st[t] = 0;
+    tcp_setst(t, 0);
     tc_own[t] = 0 - 1;
     tc_par[t] = 0;
     tc_dl[t] = 0;
@@ -439,6 +439,14 @@ fn tcp_seg(t: i64, fl: i64, seq: i64, doff: i64, dlen: i64) -> i64 {
     return tcp_emit();
 }
 
+// Cambio de estado del TCB t. La sonda 15 lleva el TCB en a y (viejo << 8) | nuevo en b.
+fn tcp_setst(t: i64, n: i64) -> i64 {
+    let o = tc_st[t];
+    tc_st[t] = n;
+    if (tr_en[15] != 0 && o != n) { trace_hit(15, proc_pid[cur_i], t, (o << 8) | n); }
+    return 0;
+}
+
 fn tcp_ack(t: i64) -> i64 {
     return tcp_seg(t, 16, tc_nxt[t], 0, 0);
 }
@@ -468,6 +476,7 @@ fn tcp_rst_raw(dip: i64, sport: i64, dport: i64, seq: i64, ack: i64, fl: i64) ->
     tcp_o_doff = 0;
     tcp_o_dlen = 0;
     tcp_rstout = tcp_rstout + 1;
+    if (tr_en[17] != 0) { trace_hit(17, proc_pid[cur_i], 0, dport); }
     return tcp_emit();
 }
 
@@ -654,7 +663,7 @@ fn tcp_cc_init(t: i64) -> i64 {
 // error); uno sin fd se libera.
 fn tcp_kill(t: i64, err: i64) -> i64 {
     if (tc_own[t] >= 0) {
-        tc_st[t] = 11;
+        tcp_setst(t, 11);
         tcp_oo_clear(t);
         tc_err[t] = err;
         tc_txn[t] = 0;
@@ -716,8 +725,8 @@ fn tcp_output(t: i64) -> i64 {
                 if (tcp_sub(tc_nxt[t], tc_max[t]) > 0) { tc_max[t] = tc_nxt[t]; }
                 tc_finsent[t] = 1;
                 tc_finonce[t] = 1;
-                if (tc_st[t] == 4) { tc_st[t] = 5; }
-                if (tc_st[t] == 7) { tc_st[t] = 9; }
+                if (tc_st[t] == 4) { tcp_setst(t, 5); }
+                if (tc_st[t] == 7) { tcp_setst(t, 9); }
                 if (tc_dl[t] == 0) { tcp_arm(t); }
             }
             guard = 99;
@@ -741,6 +750,7 @@ fn tcp_rxmit_first(t: i64) -> i64 {
     }
     tc_rseq[t] = 0 - 1;
     tcp_retx_n = tcp_retx_n + 1;
+    if (tr_en[16] != 0) { trace_hit(16, proc_pid[cur_i], t, tc_nre[t]); }
     if (tc_dl[t] == 0) { tcp_arm(t); }
     return 0;
 }
@@ -762,6 +772,7 @@ fn tcp_retx(t: i64) -> i64 {
     tc_rto[t] = tc_rto[t] * 2;
     if (tc_rto[t] > 400) { tc_rto[t] = 400; }
     tcp_retx_n = tcp_retx_n + 1;
+    if (tr_en[16] != 0) { trace_hit(16, proc_pid[cur_i], t, tc_nre[t]); }
     tcp_rtos = tcp_rtos + 1;
     tc_rseq[t] = 0 - 1;
     if (st == 2) {
@@ -882,7 +893,7 @@ fn tcp_passive(l: i64, sip: i64, sport: i64, dport: i64, seq: i64, win: i64) -> 
     tc_rnxt[t] = (seq + 1) & 0xFFFFFFFF;
     tc_wnd[t] = win;
     tc_mss[t] = tcp_i_mss;
-    tc_st[t] = 3;
+    tcp_setst(t, 3);
     tc_rseq[t] = tc_iss[t] + 1;
     tc_rts[t] = tcp_now();
     tcp_seg(t, 18, tc_iss[t], 0, 0);
@@ -1002,6 +1013,7 @@ fn tcp_input(t: i64) -> i64 {
         if ((fl & 4) != 0) {
             if (ackok == 1) {
                 tcp_rstin = tcp_rstin + 1;
+                if (tr_en[17] != 0) { trace_hit(17, proc_pid[cur_i], 1, tc_rport[t]); }
                 tcp_kill(t, 0 - 111);
             }
             return 0;
@@ -1012,7 +1024,7 @@ fn tcp_input(t: i64) -> i64 {
             tc_una[t] = ack;
             tc_wnd[t] = tcp_i_win;
             tc_mss[t] = tcp_i_mss;
-            tc_st[t] = 4;
+            tcp_setst(t, 4);
             tcp_hs_done(t);
             tcp_est = tcp_est + 1;
             tcp_ack(t);
@@ -1024,6 +1036,7 @@ fn tcp_input(t: i64) -> i64 {
         if ((fl & 4) != 0) {
             if (seq == tc_rnxt[t]) {
                 tcp_rstin = tcp_rstin + 1;
+                if (tr_en[17] != 0) { trace_hit(17, proc_pid[cur_i], 1, tc_rport[t]); }
                 tcp_kill(t, 0 - 104);
             }
             return 0;
@@ -1039,7 +1052,7 @@ fn tcp_input(t: i64) -> i64 {
         }
         tc_una[t] = ack;
         tc_wnd[t] = tcp_i_win;
-        tc_st[t] = 4;
+        tcp_setst(t, 4);
         st = 4;
         tcp_hs_done(t);
         tcp_est = tcp_est + 1;
@@ -1050,6 +1063,7 @@ fn tcp_input(t: i64) -> i64 {
     if ((fl & 4) != 0) {
         if (dseq == 0) {
             tcp_rstin = tcp_rstin + 1;
+            if (tr_en[17] != 0) { trace_hit(17, proc_pid[cur_i], 1, tc_rport[t]); }
             if (st == 10) {
                 tcp_closed_n = tcp_closed_n + 1;
                 tcp_drop(t);
@@ -1160,12 +1174,12 @@ fn tcp_input(t: i64) -> i64 {
         if (tc_una[t] == tc_max[t]) { tc_dl[t] = 0; } else { tcp_arm(t); }
         if (finacked != 0) {
             if (st == 5) {
-                tc_st[t] = 6;
+                tcp_setst(t, 6);
                 st = 6;
                 tc_dl2[t] = tcp_now() + 1000;
             }
             if (st == 8) {
-                tc_st[t] = 10;
+                tcp_setst(t, 10);
                 st = 10;
                 tc_dl2[t] = tcp_now() + 200;
             }
@@ -1231,10 +1245,10 @@ fn tcp_input(t: i64) -> i64 {
         tc_rnxt[t] = (tc_rnxt[t] + 1) & 0xFFFFFFFF;
         tc_fin[t] = 1;
         tcp_oo_clear(t);
-        if (st == 4) { tc_st[t] = 7; }
-        if (st == 5) { tc_st[t] = 8; }
+        if (st == 4) { tcp_setst(t, 7); }
+        if (st == 5) { tcp_setst(t, 8); }
         if (st == 6) {
-            tc_st[t] = 10;
+            tcp_setst(t, 10);
             tc_dl2[t] = tcp_now() + 200;
         }
     }
@@ -1401,7 +1415,7 @@ fn tcp_do_listen(me: i64, port: i64) -> i64 {
     let t = tcp_free_tcb();
     if (t < 0) { return 0 - 24; }
     tcp_init(t, port, 0, 0);
-    tc_st[t] = 1;
+    tcp_setst(t, 1);
     tc_own[t] = me;
     tcp_fdmap[me * 4 + fd] = t + 1;
     return fd;
@@ -1475,7 +1489,7 @@ fn tcp_do_connect(me: i64, dst: i64, tmo: i64) -> i64 {
         if (lp == 0) { return 0 - 24; }
         tcp_init(t, lp, dport, dip);
         tc_own[t] = me;
-        tc_st[t] = 2;
+        tcp_setst(t, 2);
         tcp_fdmap[me * 4 + fd] = t + 1;
         if (me < 2) {
             tcp_cpend[me] = t + 1;

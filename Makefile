@@ -6,6 +6,7 @@
 #   qemu-test  Arranque sin pantalla: sendkey y comprobaciones por COM1.
 #   qemu-udp-test  Solo la prueba de red por IRQ y UDP (tests/qemu_udp_test.sh).
 #   qemu-tcp-test  Solo la prueba de TCP (tests/qemu_tcp_test.sh).
+#   qemu-trace-test  Solo la prueba de trazas (tests/qemu_trace_test.sh).
 #   debug      Igual que qemu, y espera a gdb en tcp::1234 (-s -S).
 #   clean      Borra build/.
 #   help       Muestra esta lista.
@@ -89,7 +90,7 @@ QEMU_CPU = -cpu qemu64
 # existir antes de esas reglas: si no, la etapa 1 y la etapa 2 no esperan
 # al compilador (el CI de la etapa 2 falló así la primera vez).
 COPIHUE_REPO   ?= https://github.com/ipenas-cl/copihue.git
-COPIHUE_COMMIT ?= v0.34.1
+COPIHUE_COMMIT ?= v0.42.4
 COPIHUE_DIR     = $(BUILD_DIR)/copihue
 COPIHUE       ?= $(COPIHUE_DIR)/copihue
 
@@ -121,13 +122,14 @@ COPIHUE_KERNEL_SRC = $(KERNEL_SRC)/copihue/console.lap \
                      $(KERNEL_SRC)/copihue/tcpcli_img.lap \
                      $(KERNEL_SRC)/copihue/tcpmulti_img.lap \
                      $(KERNEL_SRC)/copihue/tcphog_img.lap \
+                     $(KERNEL_SRC)/copihue/traza_img.lap \
                      $(KERNEL_SRC)/copihue/udp.lap \
                      $(KERNEL_SRC)/copihue/tcp.lap \
                      $(KERNEL_SRC)/copihue/trace.lap \
                      $(KERNEL_SRC)/copihue/shell.lap \
                      $(KERNEL_SRC)/copihue/kernel.lap
 
-.PHONY: all qemu qemu-test qemu-udp-test qemu-tcp-test debug clean help
+.PHONY: all qemu qemu-test qemu-udp-test qemu-tcp-test qemu-trace-test debug clean help
 
 # Imagen de arranque: LBA 0 etapa 1, LBA 1 etapa 2, LBA KERNEL_LBA el kernel.
 all: $(OS_IMAGE)
@@ -307,6 +309,16 @@ $(TCPHOG_IMG): src/user/tcphog.lap scripts/mkaxe.sh $(COPIHUE) | $(BUILD_DIR)
 	$(abspath $(COPIHUE)) --flat 0x400000 -o $(TCPHOG_BIN) src/user/tcphog.lap
 	scripts/mkaxe.sh $(TCPHOG_BIN) $(TCPHOG_AXE) $@ tcphog_fill
 
+# Programa de trazas de anillo 3 (OB-01). `trace plant` lo escribe como
+# traza y `traza ...` lo corre. Ver docs/trace.md.
+TRAZA_BIN = $(BUILD_DIR)/traza.bin
+TRAZA_AXE = $(BUILD_DIR)/traza.axe
+TRAZA_IMG = $(KERNEL_SRC)/copihue/traza_img.lap
+
+$(TRAZA_IMG): src/user/traza.lap scripts/mkaxe.sh $(COPIHUE) | $(BUILD_DIR)
+	$(abspath $(COPIHUE)) --flat 0x400000 -o $(TRAZA_BIN) src/user/traza.lap
+	scripts/mkaxe.sh $(TRAZA_BIN) $(TRAZA_AXE) $@ traza_fill
+
 # Consola curses: QEMU entrega el teclado al controlador PS/2 que lee el shell.
 qemu: $(OS_IMAGE) $(DATA_IMG)
 	qemu-system-$(ARCH) $(QEMU_CPU) $(QEMU_DRIVES) -display curses
@@ -319,6 +331,7 @@ qemu-test: $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_shell_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_udp_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_tcp_test.sh $(OS_IMAGE)
+	$(TESTS_DIR)/qemu_trace_test.sh $(OS_IMAGE)
 	COPIHUE=$(abspath $(COPIHUE)) $(TESTS_DIR)/stage2_big_test.sh $(BUILD_DIR)
 
 # Solo la red por IRQ y UDP. Usa una copia nueva del disco de datos.
@@ -329,13 +342,17 @@ qemu-udp-test: $(OS_IMAGE)
 qemu-tcp-test: $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_tcp_test.sh $(OS_IMAGE)
 
+# Solo trazas (OB-01). Usa una copia nueva del disco de datos.
+qemu-trace-test: $(OS_IMAGE)
+	$(TESTS_DIR)/qemu_trace_test.sh $(OS_IMAGE)
+
 # La imagen es un binario plano: gdb no tiene tabla de símbolos ELF.
 debug: $(OS_IMAGE) $(DATA_IMG)
 	qemu-system-$(ARCH) $(QEMU_CPU) $(QEMU_DRIVES) -display curses -s -S
 
 clean:
 	rm -rf $(BUILD_DIR)
-	rm -f $(KERNEL_SRC)/copihue/exec_img.lap $(KERNEL_SRC)/copihue/zone_img.lap $(KERNEL_SRC)/copihue/atk_img.lap $(KERNEL_SRC)/copihue/udpeco_img.lap $(KERNEL_SRC)/copihue/udpdos_img.lap $(KERNEL_SRC)/copihue/udpwait_img.lap $(KERNEL_SRC)/copihue/tcpeco_img.lap $(KERNEL_SRC)/copihue/tcpcli_img.lap $(KERNEL_SRC)/copihue/tcpmulti_img.lap $(KERNEL_SRC)/copihue/tcphog_img.lap
+	rm -f $(KERNEL_SRC)/copihue/exec_img.lap $(KERNEL_SRC)/copihue/zone_img.lap $(KERNEL_SRC)/copihue/atk_img.lap $(KERNEL_SRC)/copihue/udpeco_img.lap $(KERNEL_SRC)/copihue/udpdos_img.lap $(KERNEL_SRC)/copihue/udpwait_img.lap $(KERNEL_SRC)/copihue/tcpeco_img.lap $(KERNEL_SRC)/copihue/tcpcli_img.lap $(KERNEL_SRC)/copihue/tcpmulti_img.lap $(KERNEL_SRC)/copihue/tcphog_img.lap $(KERNEL_SRC)/copihue/traza_img.lap
 
 help:
 	@echo "LapageriaOS $(VERSION) — kernel y arranque en Copihue $(COPIHUE_COMMIT)"
@@ -352,6 +369,7 @@ help:
 	@echo "                  recv bloqueante, dos procesos, ráfaga, ICMP unreachable)."
 	@echo "  make qemu-udp-test  Solo esa prueba de red (tests/qemu_udp_test.sh)."
 	@echo "  make qemu-tcp-test  Solo la prueba de TCP (tests/qemu_tcp_test.sh)."
+	@echo "  make qemu-trace-test  Solo la prueba de trazas (tests/qemu_trace_test.sh)."
 	@echo "  make debug      Igual que qemu, esperando gdb en tcp::1234."
 	@echo "  make clean      Borra build/."
 	@echo "  make help       Esta lista."

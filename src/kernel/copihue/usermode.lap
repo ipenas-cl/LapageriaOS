@@ -79,6 +79,17 @@ syscall fn sys_user(nr: i64, ch: i64, a2: i64, a3: i64, a4: i64, a5: i64) -> i64
         if (tr_en[1] != 0) { trace_hit(1, proc_pid[cur_i], nr, r); }
         return r;
     }
+    // 23 trace_ctl, 24 trace_read (trace.lap). Una zona los niega por la máscara.
+    if (nr == 23) {
+        let r = trace_sys_ctl(ch, a2, a3);
+        if (tr_en[1] != 0) { trace_hit(1, proc_pid[cur_i], nr, r); }
+        return r;
+    }
+    if (nr == 24) {
+        let r = trace_sys_read(ch, a2, a3);
+        if (tr_en[1] != 0) { trace_hit(1, proc_pid[cur_i], nr, r); }
+        return r;
+    }
     if (tr_en[1] != 0) { trace_hit(1, proc_pid[cur_i], nr, 0); }
     return 0;
 }

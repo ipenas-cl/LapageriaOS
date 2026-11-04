@@ -5,7 +5,7 @@
 # aleatorios hasta 2048 sectores, con la etapa 2 recompilada para pedir
 # 2048. El kernel arranca igual (lo que está después de su .bss no lo
 # toca). Con el monitor de QEMU se vuelca la memoria física
-# 0x480000..0x500000 (la parte alta del archivo, 16 trozos de 64 KiB
+# 0x490000..0x500000 (la parte alta del archivo, 7 trozos de 64 KiB
 # después de la copia por INT 15h AH=87h) y se compara con los bytes del
 # archivo. Si un trozo no se copió, o cayó en otra dirección, difiere.
 # Uso: tests/stage2_big_test.sh [dir_build]
@@ -14,7 +14,7 @@ set -u
 B=${1:-build}
 COP=${COPIHUE:-$B/copihue/copihue}
 SECT=2048
-OFF=$((0x80000))
+OFF=$((0x90000))
 LEN=$((SECT * 512 - OFF))
 TMP=$(mktemp -d)
 QPID=""
@@ -34,9 +34,9 @@ for f in "$B/kernel.bin" "$B/boot.bin" "$B/stage2.lap" "$COP"; do
     [ -e "$f" ] || fail "falta $f"
 done
 ksize=$(wc -c < "$B/kernel.bin" | tr -d ' ')
-# La .bss (unos 22 KiB) sigue al archivo y el kernel la limpia: lo que se
+# La .bss (unos 160 KiB) sigue al archivo y el kernel la limpia: lo que se
 # compara empieza más allá.
-[ $((ksize + 65536)) -lt "$OFF" ] || fail "kernel.bin ($ksize bytes) llega a la zona que se compara"
+[ $((ksize + 196608)) -lt "$OFF" ] || fail "kernel.bin ($ksize bytes) llega a la zona que se compara"
 total=$((SECT * 512))
 dd if=/dev/urandom of="$TMP/pad.bin" bs=512 count=$SECT status=none
 cat "$B/kernel.bin" "$TMP/pad.bin" > "$TMP/big0.bin"

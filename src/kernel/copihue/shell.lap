@@ -75,7 +75,8 @@ fn cmd_help() -> i64 {
     puts("  net             ARP, ping, IRQ y descarte; up, down, stat\n");
     puts("  udp             sockets UDP: test, plant, stat\n");
     puts("  tcp             sockets TCP: test, plant, stat\n");
-    puts("  trace           sondas: ls on off dump count clear\n");
+    puts("  trace           sondas: ls on off dump count clear plant\n");
+    puts("  traza           trazas desde anillo 3: ls on off dump count\n");
     puts("  ud2             raise #UD and halt\n");
     puts("  reboot          reset the machine\n");
     return 0;
@@ -246,7 +247,7 @@ fn run_command() -> i64 {
     }
     if (cmd_is("clear")) { con_clear(); return 0; }
     if (cmd_is("version")) {
-        puts("LapageriaOS 0.8 - kernel written in Copihue v0.34.1\n");
+        puts("LapageriaOS 0.8 - kernel written in Copihue v0.42.4\n");
         return 0;
     }
     if (cmd_is("ticks")) {
@@ -300,6 +301,7 @@ fn run_command() -> i64 {
     if (cmd_is("udp")) { cmd_udp(); return 0; }
     if (cmd_is("tcp")) { cmd_tcp(); return 0; }
     if (cmd_is("trace")) { cmd_trace(); return 0; }
+    if (cmd_is("traza")) { cmd_traza(); return 0; }
     if (cmd_is("ud2")) {
         puts("raising #UD\n");
         ud2();

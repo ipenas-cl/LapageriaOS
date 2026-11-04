@@ -8,6 +8,25 @@ para ese commit es `legacy-tempo`.
 
 ## 0.8
 
+Copihue sube de v0.34.1 a v0.42.4 (commit
+`795252ce322f12d1b14274f5b9bec7cb3a6ac2c9`). Sin cambios de código salvo
+`src/user/ataque.lap`: los ataques 3 y 4 ya no necesitan la dirección en un
+`*u8` local, porque v0.42.4 emite bien la dirección absoluta de 64 bits.
+Los errores nuevos del compilador no se dispararon en ningún archivo.
+
+OB-01: observabilidad (`trace.lap`, `docs/trace.md`). **Sondas:** de 11 a 20
+(se suman `irq-kbd`, `irq-net`, `udp-rx`, `udp-tx`, `tcp-state`, `tcp-retx`,
+`tcp-rst`, `zone-switch`, `zone-deny`), cada una prendida o apagada por
+separado. **Anillo:** 64 registros (eran 32) de 48 bytes, con zona;
+`trace dump` agrega ` z <zona>` al final de cada línea. **Syscalls:** 23
+`trace_ctl` (prender, apagar, leer contador, vaciar, nombre) y 24
+`trace_read` (hasta 32 registros con filtro de sonda, zona y pid), con los
+punteros validados como UDP y TCP; las zonas las niegan. **Programa:**
+`traza` (`trace plant`, luego `traza ls|count|on|off|dump|clear|ptr|zone`).
+**Prueba:** `tests/qemu_trace_test.sh`, también en `make qemu-test` y como
+`make qemu-trace-test`. El kernel pasa de 649 a 714 sectores; la prueba de la
+etapa 2 grande compara desde `0x490000` (la `.bss` llega a `0x480283`).
+
 RD-03: TCP endurecido (`tcp.lap`). **Bloques:** 8 TCB (eran 6, 64 KiB de
 `.bss`); sin bloque libre se recicla el TIME_WAIT más viejo y, si no hay, el
 SYN recibe RST\|ACK sin reservar nada (`full`); `listen`/`connect` dan `-24`

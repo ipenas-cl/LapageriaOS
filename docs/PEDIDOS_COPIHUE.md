@@ -2,9 +2,9 @@
 
 Lapageria rosea es el nombre científico del copihue; antes AtomicOS.
 
-Compilador fijado en el Makefile: v0.34.1, commit
-`330ec195b27c8cd66aa1cf5ee5113c767a1ea5ca`. `git ls-remote` devuelve
-ese commit para `refs/tags/v0.34.1`, y `git -C build/copihue rev-parse
+Compilador fijado en el Makefile: v0.42.4, commit
+`795252ce322f12d1b14274f5b9bec7cb3a6ac2c9`. `git ls-remote` devuelve
+ese commit para `refs/tags/v0.42.4`, y `git -C build/copihue rev-parse
 HEAD` después del `make` también. No se comprobó `HEAD` ni
 `refs/heads/main` del remoto, ni la salida de `copihue --version`.
 Sin pedidos nuevos al subir desde v0.31.0: el kernel compila sin
@@ -535,6 +535,15 @@ sí funciona porque es disp32 con signo. Pedido: error de compilación, o
 la dirección va en un `*u8` local. Lo detectó la prueba: el ataque 3 leyó
 `0x1000` en vez de la mitad alta.
 
+**Resuelto en v0.42.4.** El contorno se quitó: los ataques 3 y 4 vuelven a
+usar `*(0xFFFF800000001000 as *u8)` y `make qemu-test` pasa (los 14
+ataques mueren solo al proceso). Al subir de v0.34.1 a v0.42.4 no salió
+ninguno de los errores nuevos (dirección constante fuera de rango en bits
+16/32, reg+disp fuera de 32 bits con signo, constantes de más de 32 bits
+en bits 16/32, constante que no cabe en un registro nombrado) en el
+kernel, la etapa 1, la etapa 2 ni los programas de usuario: no hubo nada
+que corregir.
+
 ## División por cero y registros de 16 bits (SG-02)
 
 1. `x / 0` y `x % 0` compilan a `test rbx, rbx` / `xor rax, rax`
@@ -565,3 +574,25 @@ de Copihue lista `pushfd`/`popfd`; no los probé en este kernel). En `net.lap` s
 (`net_*_locked` para el hilo; las otras sin cli/sti) y con que `net_tx`
 no duerma nunca. Pedido: `read_rflags()` o un par `irq_save()` /
 `irq_restore(flags)` en `--flat` de 64 bits.
+
+## OB-01 (trazas), con Copihue v0.42.4
+
+Sin `asm()` nuevo y sin contornos nuevos: nada del lenguaje bloqueó el
+trabajo. Dos notas, ninguna con contorno:
+
+1. `tr_req[1] = id;` con `tr_req: [u8; 8]` e `id: i64` da `expected u8,
+   found i64`; hay que escribir `id as u8`. Es coherente con el resto del
+   lenguaje; se anota porque el mensaje no sugiere el cast. Mínimo:
+
+       let b: [u8; 4];
+       fn f(x: i64) { b[0] = x; }
+
+2. Los programas de anillo 3 de este repositorio (`src/user/*.lap`) siguen
+   sin cadenas: cada palabra va como constante de 8 bytes (`say8`), por
+   convención del repositorio. **No probé** si v0.42.4 con `--flat 0x400000`
+   acepta literales de cadena en esos programas (el kernel sí las usa).
+   `traza.lap` sigue la convención y ocupa 3981 de 4080 bytes. Mínimo para
+   probar:
+
+       fn emit(c: i64) { syscall(1, c); }
+       fn _start() { let s: *u8 = "ok\n"; emit(s[0]); syscall(5); }
