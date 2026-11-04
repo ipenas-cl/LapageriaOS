@@ -8,6 +8,34 @@ para ese commit es `legacy-tempo`.
 
 ## 0.8
 
+RD-02: TCP mínimo (`tcp.lap`). **Protocolo:** handshake de 3 vías activo y
+pasivo, ISN aleatorio (xorshift mezclado con el PIT, el CMOS y la MAC; no
+criptográfico), ventana de recepción de 4096 anunciada en cada segmento,
+ACK por segmento, solo en orden (lo demás se descarta con ACK), retransmisión
+con timer desde el PIT (RTO 50 ticks duplicado hasta 400, go-back-N, 8
+intentos), cierre FIN en ambos sentidos con TIME_WAIT de 200 ticks, y RST
+para puertos sin socket y al cerrar con datos sin leer. Seis TCB con 4 KiB
+de envío y 4 KiB de recepción. Sin congestión, RTT, SACK ni cola fuera de
+orden. **Syscalls 17..22** `listen/accept/connect/send/recv/close` con plazo
+en ticks (duermen como el `recv` de UDP), la misma validación de punteros
+(`uptr_range_ok`, ahora compartida con UDP) y la misma negación por zona;
+`zone net` agrega 12..22. **Programas:** `tcpeco` (eco en el 7001) y
+`tcpcli` (conecta al host), sin globales (la página de código es de solo
+lectura). **Pruebas** (`tests/qemu_tcp_test.sh`, dentro de `make qemu-test`;
+`make qemu-tcp-test` solo ella): `tcp test` sin dispositivo; eco de 64 KiB
+aleatorios con socat por `hostfwd` (`cmp` idéntico y suma de bytes igual en
+host e invitado); segunda conexión que cierra primero el invitado; ISN
+distintos en el pcap; el kernel conecta a un socat del host por `guestfwd`
+con el enlace cortado (`set_link`) para forzar retransmisiones; `connect` a
+un puerto cerrado da `-111`; RST a puerto cerrado visto en el pcap; zona sin
+red negada y con `zone net` el eco; al final 0 TCB ocupados y las mismas
+páginas liberadas por proceso. **Tamaño:** `scripts/mkaxe.sh` ahora escribe
+las imágenes de usuario de a 4 bytes en vez de un byte por asignación
+(el compilador generaba ≈ 20 bytes de kernel por byte de imagen): el kernel baja de
+351 250 a 278 189 bytes aun con TCP, y `stage2_big_test` sigue verde. No hizo
+falta subir las ranuras de proceso (siguen siendo dos). Detalle y límites
+en `docs/red.md`.
+
 RD-01 (parte 2): UDP completo. **recv bloqueante:** `recv(fd, buf, max,
 src, plazo)` duerme al proceso (estado 4) hasta que llega un datagrama a
 su socket (`udp_rx` lo pasa a listo) o vence el plazo (`udp_tick` en el

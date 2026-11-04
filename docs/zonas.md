@@ -207,9 +207,10 @@ esa prueba no distingue el vector y se descartó.
 
 ## Red (RD-01)
 
-Las syscalls 12..16 (UDP, ver `red.md`) no están en la máscara de una
+Las syscalls 12..16 (UDP) y 17..22 (TCP), ver `red.md`, no están en la máscara de una
 zona nueva: devuelven -1 y suman `niega`, como cualquier otra fuera de
-la máscara. `zone net nombre` (solo desde la zona 0) agrega esos cinco
+la máscara. `zone net nombre` (solo desde la zona 0) agrega esos once
 bits. Probado en `tests/qemu_udp_test.sh`: la zona sin red imprime
 `udp denied` (el `bind` dio -1) y su `niega` queda en 1 o más; la zona con
-`zone net` hace el eco UDP.
+`zone net` hace el eco UDP. Lo mismo para TCP en `tests/qemu_tcp_test.sh`
+(`tcp denied`, y con `zone net` el eco TCP).
