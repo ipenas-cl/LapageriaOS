@@ -1,9 +1,10 @@
-// Kernel en la mitad alta. La etapa 2 salta a 0xFFFFFFFF80010000 con
-// RSP en 0xFFFFFFFF80090000 y deja las dos tablas: la identidad baja y
-// una PD aparte en 0x5000. nx_init parte las dos en 4KB y hh_retire
-// borra de la tabla baja las páginas de la imagen. Este comando
-// comprueba RIP/RSP, el #PF de esa dirección baja, y que un proceso
-// de anillo 3 no puede leer ni escribir el kernel arriba.
+// Kernel en la mitad alta. La etapa 2 copia la imagen a 0x400000 y salta
+// a 0xFFFFFFFF80400000 con RSP en 0xFFFFFFFF80090000. Deja dos tablas: la
+// identidad baja y una PD aparte en 0x5000 (la RAM baja en [0], la
+// imagen en [2]). nx_init las parte en 4KB y hh_retire borra de la tabla
+// baja el rebote de la etapa 2 (0x10000). Este comando comprueba RIP/RSP,
+// el #PF de esa dirección baja, y que un proceso de anillo 3 no puede
+// leer ni escribir el kernel arriba.
 
 let hh_probe: i64 = 0;
 let hh_user: i64 = 0;
@@ -77,7 +78,7 @@ fn hh_probe_low() -> i64 {
         puts("hh fail low\n");
         return 0;
     }
-    let hi = nx_leaf(cr3_root(), hh_base() + 0x10000);
+    let hi = nx_leaf(cr3_root(), kimg_va());
     if ((hi & 1) == 0 || (hi & 2) != 0 || (hi & 4) != 0 || (hi >> 63) != 0) {
         puts("hh fail low\n");
         return 0;
@@ -112,7 +113,7 @@ fn hh_probe_low() -> i64 {
 // La dirección absoluta viaja con los bytes copiados a 0x400000.
 // No es relativa a RIP: en anillo 3 sigue siendo el kernel.
 naked fn hh_prog_read() {
-    al = *(0xFFFFFFFF80010000 as *u8);
+    al = *(0xFFFFFFFF80400000 as *u8);
     rax = 2;
     syscall();
 }
@@ -124,7 +125,7 @@ naked fn hh_prog_read_end() {
 naked fn hh_prog_write() {
     rax = 11;
     syscall();
-    *(0xFFFFFFFF80010000 as *u8) = 0x90;
+    *(0xFFFFFFFF80400000 as *u8) = 0x90;
     rax = 2;
     syscall();
 }
@@ -203,11 +204,11 @@ fn hh_user_test() -> i64 {
         puts("hh fail user\n");
         return 0;
     }
-    if (hh_err_read(hh_uerr0) == 0 || hh_ucr20 != hh_base() + 0x10000) {
+    if (hh_err_read(hh_uerr0) == 0 || hh_ucr20 != kimg_va()) {
         puts("hh fail user\n");
         return 0;
     }
-    if (hh_err_write(hh_uerr1) == 0 || hh_ucr21 != hh_base() + 0x10000) {
+    if (hh_err_write(hh_uerr1) == 0 || hh_ucr21 != kimg_va()) {
         puts("hh fail user\n");
         return 0;
     }

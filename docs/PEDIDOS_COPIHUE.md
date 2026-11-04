@@ -488,3 +488,23 @@ sí funciona porque es disp32 con signo. Pedido: error de compilación, o
 `mov r64, imm64` y acceso por registro. Contorno en `src/user/ataque.lap`:
 la dirección va en un `*u8` local. Lo detectó la prueba: el ataque 3 leyó
 `0x1000` en vez de la mitad alta.
+
+## División por cero y registros de 16 bits (SG-02)
+
+1. `x / 0` y `x % 0` compilan a `test rbx, rbx` / `xor rax, rax`
+   (salida 0) antes del `idiv` (y `push edx` / `test ebx, ebx` en 16 y
+   32 bits). El lenguaje no puede provocar un `#DE` por divisor cero, y
+   sin `asm()` no hay otra forma de probar el `#DE` de anillo 3. La
+   prueba usa `INT64_MIN / -1`, que sí desborda el cociente en el
+   `idiv` (el divisor `-1` no es 0). Pedido: un intrínseco de división
+   sin guarda (`div_raw(a, b)`), o una opción de compilación que quite la
+   guarda, para poder probar el camino del divisor cero.
+2. `cx = n * 256;` en `bits 16` da `assignment to undeclared variable
+   'cx'`; `ecx = ...` sí compila (así lo hace `get_e820` con `ecx = 24`).
+   Contorno en `stage2.lap`: `ecx` (CX es lo que lee INT 15h AH=87h).
+   Pedido: aceptar `cx` como destino en `bits 16`.
+3. `let d: i64 = 0 - *(p as *u8);` recorta el resultado a 8 bits
+   (`movzx rax, al` después del `sub`): el tipo de la expresión es el
+   del `*u8`. `let one: i64 = *(p as *u8); let d: i64 = 0 - one;` sí
+   da -1. Contorno en `src/user/ataque.lap`. Pedido: promover a `i64`
+   el resultado de una resta cuyo destino es `i64`, o avisar del recorte.

@@ -1,35 +1,35 @@
 // LapageriaOS stage 2. Stage 1 loads this image at 0x8200 and jumps to it
 // in real mode. `copihue --flat 0x8200` (Makefile STAGE2_ORG). The kernel
-// is read from LBA 9 (`dq 9` = 1 + STAGE2_SECTORS) to 0x10000.
+// is read from LBA 9 (`dq 9` = 1 + STAGE2_SECTORS).
 // `dw 0; // KERNEL_SECTORS` is a marker, not the count that boots.
 // The Makefile copies this file to build/stage2.lap and writes
 // ceil(kernel.bin / 512) there. That word is the total.
 //
-// One INT 13h packet, offset 0, holds 128 sectors (64 KiB). The 16-bit
-// offset wraps after that, so load_kernel repeats the read: segment
-// 0x1000, then 0x2000, and so on, and the LBA low word advances. The
-// high bytes of the `dq` stay 0. `>` compiles to setg (signed); the
-// total has to stay <= 32767 for the 128-sector cap to apply. make's
-// cap is 512, and 9 + 512 still fits in that low word.
-//
-// The file may pass 0x20000. .bss is not in kernel.bin; the kernel
-// zeros it after the file. The first fixed stack is proc_rsp0 of
-// process 0 at 0x60000 and it grows down. Stack tops are 32 KiB apart,
-// so the image and .bss must end before 0x58000. make reserves 32 KiB
-// for .bss and rejects a kernel.bin past 512 sectors (ends at 0x50000).
-// The floppy still has 2871 sectors after LBA 9; that is not the cap,
-// because it would run through those stacks and past 1MB.
+// SG-02: the kernel no longer lives under 1 MB. INT 13h reads at most
+// 128 sectors (64 KiB, offset 0) into the bounce buffer at 0x1000:0
+// (physical 0x10000), and INT 15h AH=87h copies that chunk to physical
+// 0x400000 + 64 KiB * k (the Makefile's KERNEL_PHYS). The total (up to
+// 2048 sectors = 1 MiB, Makefile KERNEL_MAX_SECTORS) is the marker
+// KERNEL_SECTORS. Conventional memory is not the limit any more: the
+// old 0x58000 ceiling came from the fixed stacks at 0x60000..0x90000.
+// The destination base is a 32-bit field of the INT 15h descriptor, so
+// the copy needs no unreal mode and no extra code in bits 32. `>`
+// compiles to setg (signed); the total has to stay <= 32767 for the
+// 128-sector cap to apply. 9 + 2048 still fits the 16-bit LBA word.
 //
 // What the kernel still requires from this file (qemu-test checks it):
 //   CR3 = 0x1000, PML4[0] = 0x2003, PDPT[0] = 0x3003, PD[0] = 0x83
 //   E820 count word at 0x8000, entries of 24 bytes at 0x8004
 //   GDT selectors 0x08/0x10 32-bit, 0x18/0x20 64-bit
-//   PML4[511] = 0x4003, PDPT[510] = 0x5003, HH PD[0] = 0x83
-//   stack 0xFFFFFFFF80090000, indirect jump to 0xFFFFFFFF80010000
-// The file is still loaded at physical 0x10000. The kernel is linked
-// at 0xFFFFFFFF80010000 (`--flat`), which is that frame plus the
-// higher-half base. A direct jmp does not reach: the displacement
-// does not fit in rel32. `jmp rax` does.
+//   PML4[511] = 0x4003, PDPT[510] = 0x5003, HH PD[0] = 0x83 (RAM 0..2MB)
+//   HH PD[2] = 0x400083 (the kernel image: 2 MB at 0x400000, VA
+//   0xFFFFFFFF80400000)
+//   stack 0xFFFFFFFF80090000, indirect jump to 0xFFFFFFFF80400000
+// The kernel is linked at 0xFFFFFFFF80400000 (`--flat`), which is the
+// frame it was copied to plus the higher-half base. A direct jmp does
+// not reach: the displacement does not fit in rel32. `jmp rax` does.
+// The 2 MB page of HH PD[2] is the only mapping of the image; there is
+// no low identity of it. The kernel splits it into 4 KB pages for W^X.
 // Do not add a `let` global here. --flat puts .bss before the address
 // calculation of an empty image only when it is empty; a global would
 // move _start off the first byte. Constants live in `data`.
@@ -55,6 +55,24 @@ data kern_packet {
     dw 0; // KERNEL_SECTORS
     dw 0, 0x1000;
     dq 9;
+}
+
+// Tabla de INT 15h AH=87h (6 descriptores de 8 bytes). Los de la GDT
+// propia y los de CS/SS del BIOS los llena el BIOS. Origen: límite 0xFFFF,
+// base 0x010000 (el rebote), acceso 0x93. Destino: la base 0..15 en +26,
+// la 16..23 en +28 (load_kernel la sube 0x01 por cada 64 KiB), acceso 0x93.
+data copy_gdt {
+    dq 0;
+    dq 0;
+    dw 0xFFFF;
+    db 0, 0, 1;
+    db 0x93, 0, 0;
+    dw 0xFFFF;
+    dw 0;
+    db 0x40;
+    db 0x93, 0, 0;
+    dq 0;
+    dq 0;
 }
 
 data boot_msg {
@@ -148,13 +166,13 @@ bits 16 naked fn enable_a20() {
 bits 16 naked fn load_kernel() {
     let total: u16 = *((kern_packet + 2) as *u16);
     let lba: u16 = 9;
-    let seg: u16 = 0x1000;
+    let dst: u8 = 0x40;
     while (total != 0) {
         let n: u16 = total;
         if (n > 128) { n = 128; }
         *((kern_packet + 2) as *u16) = n;
         *((kern_packet + 4) as *u16) = 0;
-        *((kern_packet + 6) as *u16) = seg;
+        *((kern_packet + 6) as *u16) = 0x1000;
         *((kern_packet + 8) as *u16) = lba;
         si = kern_packet;
         dl = *(0x0500 as *u8);
@@ -163,9 +181,19 @@ bits 16 naked fn load_kernel() {
         if (int_carry() != 0) {
             jmp disk_error;
         }
+        // 64 KiB (o menos, el último) del rebote al destino. cx cuenta
+        // palabras: n * 256. INT 15h AH=87h deja CF=1 si falla.
+        *((copy_gdt + 28) as *u8) = dst;
+        si = copy_gdt;
+        ecx = n * 256;
+        ah = 0x87;
+        int(0x15);
+        if (int_carry() != 0) {
+            jmp disk_error;
+        }
         total = total - n;
         lba = lba + n;
-        seg = seg + 0x1000;
+        dst = dst + 1;
     }
 }
 
@@ -244,6 +272,8 @@ bits 16 naked fn setup_page_tables() {
     *(0x1FF8 as *u32) = 0x4003;
     *(0x4FF0 as *u32) = 0x5003;
     *(0x5000 as *u32) = 0x83;
+    // Imagen del kernel: 2 MB desde 0x400000, VA 0xFFFFFFFF80400000.
+    *(0x5010 as *u32) = 0x400083;
 }
 
 bits 16 naked fn disk_error() {
@@ -282,7 +312,7 @@ bits 64 naked fn long_mode() {
     // La pila física sigue en 0x90000. El kernel ya está enlazado
     // arriba, así que RSP tiene que ser esa misma página vista desde
     // 0xFFFFFFFF80000000. El desplazamiento cabe en rax, no en un jmp
-    // relativo: desde aquí hasta 0xFFFFFFFF80010000 pasa de 2GB.
+    // relativo: desde aquí hasta 0xFFFFFFFF80400000 pasa de 2GB.
     rsp = 0x90000;
     rax = 0xFFFFFFFF;
     rax = rax << 32;
@@ -290,6 +320,6 @@ bits 64 naked fn long_mode() {
     rsp = rax;
     rax = 0xFFFFFFFF;
     rax = rax << 32;
-    rax = rax | 0x80010000;
+    rax = rax | 0x80400000;
     jmp rax;
 }

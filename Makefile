@@ -15,8 +15,10 @@
 # Disco (imagen cruda de FLOPPY_SECTORS sectores de 512 bytes):
 #   LBA 0                         etapa 1 (boot.lap, copihue --boot, 512 bytes)
 #   LBA 1 .. STAGE2_SECTORS       etapa 2 en STAGE2_ORG
-#   LBA KERNEL_LBA ..             kernel cargado en físico 0x10000,
-#                                 enlazado en 0xFFFFFFFF80010000
+#   LBA KERNEL_LBA ..             kernel (hasta KERNEL_MAX_SECTORS sectores),
+#                                 copiado a físico KERNEL_PHYS (0x400000),
+#                                 enlazado en 0xFFFFFFFF80400000
+#   LBA KERNEL_LBA+KERNEL_MAX_SECTORS .. FLOPPY_SECTORS-1   libre
 # KERNEL_LBA es 1 + STAGE2_SECTORS. boot.lap tiene que contener los mismos
 # STAGE2_SECTORS y STAGE2_ORG, y el salto a STAGE2_ORG. stage2.lap contiene
 # `dq KERNEL_LBA` y el marcador `dw 0; // KERNEL_SECTORS`. La regla de la
@@ -24,19 +26,19 @@
 # ceil(kernel.bin / 512).
 #
 # Un paquete INT 13h, con offset 0, admite 128 sectores (64 KiB): el
-# offset es de 16 bits. stage2.lap repite la lectura y sube el segmento
-# 0x1000 cada vez. El conteo total sigue siendo el marcador
+# offset es de 16 bits. stage2.lap lee de a 128 sectores a un rebote en
+# 0x10000 (segmento 0x1000) y copia cada trozo con INT 15h AH=87h a
+# KERNEL_PHYS + 64 KiB * k. El conteo total sigue siendo el marcador
 # KERNEL_SECTORS, escrito por make.
 #
-# El tope no es el disquete (FLOPPY_SECTORS - KERNEL_LBA da 2871 y eso
-# pasaría de 1 MB). El archivo del kernel entra en físico 0x10000
-# (el enlace es 0xFFFFFFFF80010000). La .bss no va en
-# kernel.bin: _start la limpia justo después del archivo. La primera
-# pila fija es proc_rsp0 del proceso 0, en 0x60000, y crece hacia abajo.
-# Entre topes de pila hay 32 KiB, así que imagen + .bss tienen que
-# terminar antes de 0x58000. KERNEL_BSS_RESERVE (32 KiB) queda para la
-# .bss; el archivo no puede pasar de ahí. make también suma los resb y
-# resq de la .bss y falla si 0x10000 + kernel.bin + .bss pasa de 0x58000.
+# SG-02: el tope ya no es la memoria convencional (antes 0x58000, por las
+# pilas fijas de 0x60000..0x90000). La imagen vive en una página de 2 MiB
+# de la ventana alta (PD alta [2], físico 0x400000..0x5FFFFF, VA
+# 0xFFFFFFFF80400000..): archivo + .bss tienen que caber ahí. Tope del
+# archivo: KERNEL_MAX_SECTORS = 2048 (1 MiB); el otro MiB queda para la
+# .bss. make suma los resb y resq de la .bss y falla si
+# KERNEL_PHYS + kernel.bin + .bss pasa de KERNEL_IMAGE_END. Ver
+# docs/higher-half.md.
 
 PROJECT_NAME = LapageriaOS
 VERSION = 0.8
@@ -58,12 +60,13 @@ STAGE2_ORG = 0x8200
 STAGE2_SECTORS = 8
 KERNEL_LBA = 9
 FLOPPY_SECTORS = 2880
-# 0x58000 - 0x10000 - 32 KiB = 256 KiB = 512 sectores.
-KERNEL_LOAD_ADDR := $(shell echo $$((0x10000)))
-KERNEL_IMAGE_END := $(shell echo $$((0x58000)))
-KERNEL_BSS_RESERVE := $(shell echo $$((0x8000)))
-KERNEL_IMAGE_SECTORS := $(shell echo $$(( ($(KERNEL_IMAGE_END) - $(KERNEL_LOAD_ADDR) - $(KERNEL_BSS_RESERVE)) / 512 )))
-KERNEL_MAX_SECTORS := $(shell a=$$(($(FLOPPY_SECTORS)-$(KERNEL_LBA))); b=$(KERNEL_IMAGE_SECTORS); if [ $$a -lt $$b ]; then echo $$a; else echo $$b; fi)
+# Imagen en la página de 2 MiB 0x400000..0x5FFFFF (PD alta [2]).
+# KERNEL_MAX_SECTORS = 2048 sectores (1 MiB) de archivo; la .bss va después.
+KERNEL_LOAD_ADDR := $(shell echo $$((0x400000)))
+KERNEL_IMAGE_END := $(shell echo $$((0x600000)))
+KERNEL_LINK = 0xFFFFFFFF80400000
+KERNEL_SECTOR_CAP = 2048
+KERNEL_MAX_SECTORS := $(shell a=$$(($(FLOPPY_SECTORS)-$(KERNEL_LBA))); b=$(KERNEL_SECTOR_CAP); if [ $$a -lt $$b ]; then echo $$a; else echo $$b; fi)
 KERNEL_MAX_BYTES := $(shell echo $$(( $(KERNEL_MAX_SECTORS) * 512 )))
 
 # Disco de datos, aparte de la imagen de arranque. 2048 sectores de
@@ -160,7 +163,7 @@ $(STAGE2): $(BOOT_SRC)/stage2.lap $(KERNEL) $(COPIHUE) | $(BUILD_DIR)
 	  lo=$$(printf '%02x' $$((sectors & 255))); \
 	  hi=$$(printf '%02x' $$((sectors >> 8))); \
 	  hex=$$(od -An -tx1 -v $@ | tr -d ' \n'); \
-	  printf '%s\n' "$$hex" | grep -q "1000$${lo}$${hi}000000100900000000000000" || { echo "stage2 DAP does not load $$sectors sectors from LBA $(KERNEL_LBA) to 0x10000"; rm -f $@; exit 1; }
+	  printf '%s\n' "$$hex" | grep -q "1000$${lo}$${hi}000000100900000000000000" || { echo "stage2 DAP does not load $$sectors sectors from LBA $(KERNEL_LBA) to the 0x10000 bounce buffer"; rm -f $@; exit 1; }
 
 # Un solo archivo raíz. Los import de kernel.lap tienen que seguir el orden
 # de COPIHUE_KERNEL_SRC (sin contar el propio kernel.lap).
@@ -177,7 +180,7 @@ $(KERNEL): $(COPIHUE_KERNEL_SRC) $(COPIHUE) | $(BUILD_DIR)
 	    test "$$line" -gt "$$prev" || { echo "import $$base is out of order in $$root"; exit 1; }; \
 	    prev=$$line; \
 	  done
-	$(abspath $(COPIHUE)) --flat 0xFFFFFFFF80010000 -S -o $(BUILD_DIR)/kernel.asm $(KERNEL_SRC)/copihue/kernel.lap
+	$(abspath $(COPIHUE)) --flat $(KERNEL_LINK) -S -o $(BUILD_DIR)/kernel.asm $(KERNEL_SRC)/copihue/kernel.lap
 	nasm -f bin -o $@ $(BUILD_DIR)/kernel.asm
 	@set -eu; \
 	  size=$$(wc -c < $@ | tr -d ' '); \
@@ -185,7 +188,7 @@ $(KERNEL): $(COPIHUE_KERNEL_SRC) $(COPIHUE) | $(BUILD_DIR)
 	  end=$$(( $(KERNEL_LOAD_ADDR) + size + bss )); \
 	  printf 'kernel.bin: %s bytes, bss %s, image end 0x%x (max 0x%x)\n' "$$size" "$$bss" "$$end" "$(KERNEL_IMAGE_END)"; \
 	  test "$$size" -le $(KERNEL_MAX_BYTES) || { echo "kernel too large for stage 2"; rm -f $@; exit 1; }; \
-	  test "$$end" -le $(KERNEL_IMAGE_END) || { echo "kernel image and bss reach 0x$$(printf '%x' $$end), past 0x58000"; rm -f $@; exit 1; }
+	  test "$$end" -le $(KERNEL_IMAGE_END) || { echo "kernel image and bss reach 0x$$(printf '%x' $$end), past 0x$$(printf '%x' $(KERNEL_IMAGE_END))"; rm -f $@; exit 1; }
 
 $(OS_IMAGE): $(BOOTLOADER) $(STAGE2) $(KERNEL) | $(BUILD_DIR)
 	@echo "Creating OS image..."
@@ -239,6 +242,7 @@ qemu: $(OS_IMAGE) $(DATA_IMG)
 qemu-test: $(OS_IMAGE)
 	dd if=/dev/zero of=$(DATA_IMG) bs=512 count=$(DATA_SECTORS) status=none
 	$(TESTS_DIR)/qemu_shell_test.sh $(OS_IMAGE)
+	COPIHUE=$(abspath $(COPIHUE)) $(TESTS_DIR)/stage2_big_test.sh $(BUILD_DIR)
 
 # La imagen es un binario plano: gdb no tiene tabla de símbolos ELF.
 debug: $(OS_IMAGE) $(DATA_IMG)

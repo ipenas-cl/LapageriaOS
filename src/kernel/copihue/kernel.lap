@@ -1,6 +1,7 @@
 // LapageriaOS kernel entry. stage2.lap loads this flat image at physical
-// 0x10000 and jumps to its first byte in long mode. The link address is
-// 0xFFFFFFFF80010000 (`copihue --flat`), and the stack is the same
+// 0x400000 (copied there from the INT 13h bounce buffer) and jumps to its
+// first byte in long mode. The link address is
+// 0xFFFFFFFF80400000 (`copihue --flat`), and the stack is the same
 // physical page seen at 0xFFFFFFFF80090000. _start is still the first byte.
 //
 // The imports are the rest of the kernel, in the order `cat` used to

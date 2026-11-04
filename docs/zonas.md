@@ -128,7 +128,7 @@ queda con `pag=0` y `proc=0/`.
 
 | Modo | Ataque desde anillo 3 | Resultado |
 |---|---|---|
-| 1 / 2 | leer / escribir `0xFFFFFFFF80010000` (texto del kernel) | #PF `err=0x5` / `0x7` |
+| 1 / 2 | leer / escribir `0xFFFFFFFF80400000` (texto del kernel) | #PF `err=0x5` / `0x7` |
 | 3 / 4 | leer / escribir `0xFFFF800000001000` (alias alto de las tablas) | #PF `0x5` / `0x7` |
 | 5 | leer `0x1000` (identidad baja, tablas) | #PF `0x5` |
 | 6 | ejecutar la pila (`0x401800`, NX) | #PF `0x15` |
@@ -137,6 +137,9 @@ queda con `pag=0` y `proc=0/`.
 | 9 | ejecutar el texto del kernel | #PF `0x15` |
 | a | leer una dirección no canónica | #GP (vec 13) |
 | b | leer una página de usuario inexistente (`0x500000`) | #PF `0x4` |
+| u | `ud2` | #UD, vec 6, sin código de error, addr = RIP de `ud2` |
+| z | `INT64_MIN / -1` (Copihue define `x / 0` como 0) | #DE, vec 0, addr = RIP del `idiv` |
+| i | `int 3` | #GP vec 13 `err=0x1a` (3·8+2): la puerta 3 es DPL 0, no #BP |
 
 **Bug encontrado y arreglado.** Antes de este cambio, el modo 1 (y todos
 los demás) paraba la máquina: un proceso de `exec` o de zona no tiene
@@ -155,13 +158,13 @@ del propio proceso, y `rdi` es un largo o un carácter. No hay superficie
 de «puntero de usuario hacia el kernel» que probar tal cual. Lo que sí se
 probó (modo `d` y `exec kentry`):
 
-- largos que son punteros del kernel (`0xFFFFFFFF80010000`,
+- largos que son punteros del kernel (`0xFFFFFFFF80400000`,
   `0xFFFF800000001000`, `2^63-1` en la syscall 6; los dos primeros y
   `1<<63` en la 7): `-9`. La lectura con un largo positivo enorme se
   recorta a 64 y devuelve 1 (el archivo mide 1 byte), sin copiar de más;
 - punteros del kernel en `rsi` y `rdx`: el kernel no los usa, la lectura
   sigue dando el mismo byte;
-- un AXE1 cuya cabecera pone la entrada en `0xFFFFFFFF80010000`
+- un AXE1 cuya cabecera pone la entrada en `0xFFFFFFFF80400000`
   (`kentry`, el único valor que llega del disco): `exec bad entry`, tanto
   con `exec` como con `zone exec`, sin `run begin`.
 
@@ -176,3 +179,28 @@ La dirección absoluta de 64 bits se trunca en el compilador; ver
 
 **Estado:** `make qemu-test` termina en 0 en QEMU con estas pruebas y las
 de la parte 1 (ver CHANGELOG).
+
+## Excepciones de CPU de anillo 3 (SG-02)
+
+Todo vector que no sea #PF pasa por `user_exc` (`idt.lap`). Con `CS & 3 == 3`
+y el planificador prendido llama a `user_kill`, el mismo camino de #PF y
+#GP: imprime `user killed pid= vec= err= addr=` (addr = RIP), da de baja
+al proceso como `exit` (páginas y cupo de zona) y sigue el otro proceso o
+el shell. Sin planificador (comando `user`) informa y vuelve al shell
+(`user blocked`; esa rama no se probó para los vectores que no son #PF). Con `CS & 3 == 0` sigue siendo `cpu_fault`: imprime
+`exception: vector …` y detiene el kernel. Siguen fatales aunque vengan de
+anillo 3: NMI (2, externa), #DF (8) y #MC (18), abortos que no se pueden
+atribuir al proceso ni reanudar.
+
+Probados en QEMU (modos u, z, i arriba; `make qemu-test` exige vector y
+error exactos, el RIP dentro del programa y que los bytes de
+`build/ataque.bin` en ese RIP sean la instrucción esperada): #UD, #DE y
+#GP (por `int 3`). Cubiertos por el mismo `user_exc` pero **sin prueba**:
+#DB, #BP, #OF, #BR, #NM, #TS, #NP, #SS, #MF, #AC, #XM/#VE/#CP/#HV/#VC/#SX
+y los reservados. Motivos: `into` y `bound` no existen en 64 bits (darían #UD
+y ese vector ya está probado con `ud2`); `int 3` (CD 03) de anillo 3 da #GP por la puerta DPL 0, y el opcode CC no se probó;
+#NM y #MF necesitan CR0.TS/EM/NE que el kernel no prende; #AC necesita
+CR0.AM; #XM necesita CR4.OSXMMEXCPT; #SS por RSP no canónico: QEMU 11.1.3
+entrega #GP (`vec=13 err=0x00000000`, RIP en el `push`), no #SS, así que
+esa prueba no distingue el vector y se descartó.
+

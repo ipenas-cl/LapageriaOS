@@ -8,6 +8,45 @@ para ese commit es `legacy-tempo`.
 
 ## 0.8
 
+SG-02: robustez del kernel antes de la red. **(1) Excepciones de anillo 3.**
+Todo vector de CPU salvo `#PF` pasa por `user_exc` (`idt.lap`): de anillo 3
+(`CS & 3 == 3`) mata solo al proceso por `user_kill`, igual que `#GP` y
+`#PF` (`user killed pid= vec= err= addr=`, página y cupo de zona devueltos,
+sigue el otro proceso o el shell); sin planificador (`user`, rama no probada) informa y
+vuelve al shell; de anillo 0 sigue siendo `cpu_fault` (diagnóstico y
+`hlt`). NMI, `#DF` y `#MC` siguen fatales. Antes cualquier `#UD`, `#DE`,
+`#SS`... de un programa de usuario detenía toda la máquina (por lectura del código de entonces, no se midió). Pruebas
+nuevas en `tests/qemu_shell_test.sh` con `ataque.lap` (modos `u`, `z`,
+`i`): `ud2` da `vec=6 err=0`, `INT64_MIN / -1` da `vec=0 err=0` (Copihue
+define `x / 0` como 0, así que no hay otro `#DE` posible: anotado en
+`docs/PEDIDOS_COPIHUE.md`) e `int 3` da `#GP err=0x1a` (la puerta 3 es
+DPL 0, no llega a `#BP`). La prueba exige vector y error exactos y que los
+bytes de `build/ataque.bin` en el RIP sean la instrucción esperada; cada
+caso termina con `zone exec ok`, sin `zone leak`, la zona con `pag=0`
+`proc=0/` y el shell vivo. El `#UD` de anillo 0 (`ud2` del shell) sigue
+imprimiendo su línea y deteniendo. **Sin probar:** `#DB`, `#BP` (opcode
+CC), `#OF`, `#BR`, `#NM`, `#TS`, `#NP`, `#SS`, `#MF`, `#AC`, `#XM`,
+`#VE`, `#CP`, `#HV`, `#VC`, `#SX` y los reservados: usan el mismo
+`user_exc`, pero no hay forma probada de provocarlos (QEMU 11.1.3 da `#GP`
+en vez de `#SS` con RSP no canónico). Detalle en `docs/zonas.md`.
+**(2) Espacio del kernel.** `kernel.bin` ya no se carga bajo 1 MB: la
+etapa 2 lee de a 128 sectores a un rebote en `0x10000` y copia cada trozo
+con INT 15h AH=87h a `0x400000`; el kernel se enlaza en
+`0xFFFFFFFF80400000` (PD alta [2], una página de 2 MiB que el PMM reserva
+entera). El tope pasa de 512 a 2048 sectores (1 MiB de archivo, otro MiB
+para la `.bss`): `kernel.bin` 239796 bytes = 469 sectores, 1579 libres en
+la región LBA 9..2056 y 823 libres después (2057..2879). El disco de
+datos y el FS no cambian. `nx_split` arma la tabla de la imagen (`.text`
+sin escritura, resto NX), `hh_retire` retira el rebote `0x10000` en vez
+de la imagen y `pmm free` baja de 32480 a 31968. Nueva
+`tests/stage2_big_test.sh` (la corre `make qemu-test`): imagen con 2048
+sectores, el kernel arranca y 512 KiB de la parte alta del archivo,
+volcados con `pmemsave`, coinciden byte a byte. Layout en
+`docs/higher-half.md`. Probado solo en QEMU 11.1.3 (TCG, macOS); INT 15h
+AH=87h en otro BIOS u hardware no. Copihue: `x / 0` = 0, `cx` no asignable
+en `bits 16` y recorte a 8 bits de `0 - *u8` anotados en
+`docs/PEDIDOS_COPIHUE.md`; no hay `asm()` nuevo ni Python.
+
 SG-01 (parte 2): (d) anillo 3 contra la memoria del kernel y las páginas
 NX, y (e) punteros del kernel como argumento de syscalls. **Bug real
 encontrado y arreglado:** un proceso de `exec` o de zona que fallaba en

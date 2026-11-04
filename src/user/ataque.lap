@@ -3,7 +3,7 @@
 // El modo sale del archivo `q` de la zona (0x401800 nombre, 0x401C00 datos):
 // el shell lo escribe con `fs write zkq N` antes de cada `zone exec`.
 //
-//   '1' leer el texto del kernel (0xFFFFFFFF80010000)
+//   '1' leer el texto del kernel (0xFFFFFFFF80400000)
 //   '2' escribir ahí
 //   '3' leer la mitad alta 0xFFFF800000001000 (alias de las tablas)
 //   '4' escribir ahí
@@ -15,6 +15,9 @@
 //   'a' leer una dirección no canónica (#GP)
 //   'b' leer una página de usuario que no existe
 //   'd' punteros del kernel como argumento de las syscalls 6 y 7
+//   'u' ud2 (#UD)
+//   'z' INT64_MIN / -1 (#DE; Copihue define x / 0 como 0)
+//   'i' int 3 (la puerta de la IDT es DPL 0: da #GP, no #BP)
 //
 // Cada ataque tiene que matar al proceso con un fallo, así que el mensaje
 // `atk survived` solo sale si el kernel NO lo negó. Los mensajes comparten
@@ -86,7 +89,7 @@ fn say_ptr() {
 naked fn read_ptrs() {
     rax = 7;
     rdi = 8;
-    rsi = 0xFFFFFFFF80010000;
+    rsi = 0xFFFFFFFF80400000;
     rdx = 0xFFFF800000001000;
     syscall();
 }
@@ -96,10 +99,10 @@ naked fn read_ptrs() {
 // y no copia nada de más.
 fn ptr_attack() {
     let ok: i64 = 1;
-    if (syscall(6, 0xFFFFFFFF80010000) != 0 - 9) { ok = 0; }
+    if (syscall(6, 0xFFFFFFFF80400000) != 0 - 9) { ok = 0; }
     if (syscall(6, 0xFFFF800000001000) != 0 - 9) { ok = 0; }
     if (syscall(6, 0x7FFFFFFFFFFFFFFF) != 0 - 9) { ok = 0; }
-    if (syscall(7, 0xFFFFFFFF80010000) != 0 - 9) { ok = 0; }
+    if (syscall(7, 0xFFFFFFFF80400000) != 0 - 9) { ok = 0; }
     if (syscall(7, 0xFFFF800000001000) != 0 - 9) { ok = 0; }
     if (syscall(7, 1 << 63) != 0 - 9) { ok = 0; }
     if (syscall(7, 0x7FFFFFFFFFFFFFFF) != 1) { ok = 0; }
@@ -113,8 +116,8 @@ fn ptr_attack() {
 
 fn attack(m: i64) {
     let x: i64 = 0;
-    if (m == 49) { x = *(0xFFFFFFFF80010000 as *u8); }
-    if (m == 50) { *(0xFFFFFFFF80010000 as *u8) = 0x90; }
+    if (m == 49) { x = *(0xFFFFFFFF80400000 as *u8); }
+    if (m == 50) { *(0xFFFFFFFF80400000 as *u8) = 0x90; }
     // Dirección en un puntero: como operando absoluto Copihue la recorta a
     // 32 bits (ver docs/PEDIDOS_COPIHUE.md) y leería 0x1000.
     if (m == 51) {
@@ -131,9 +134,22 @@ fn attack(m: i64) {
         if (syscall(8) == 0) { jump_to(0x402000); }
     }
     if (m == 56) { *(0x400000 as *u8) = 0; }
-    if (m == 57) { jump_to(0xFFFFFFFF80010000); }
+    if (m == 57) { jump_to(0xFFFFFFFF80400000); }
     if (m == 97) { x = *((1 << 63) as *u8); }
     if (m == 98) { x = *(0x500000 as *u8); }
+    // SG-02: excepciones de CPU que no son #PF ni #GP de memoria.
+    if (m == 117) { ud2(); }
+    if (m == 122) {
+        // Copihue define x / 0 como 0 (test rbx,rbx antes del idiv): no hay
+        // #DE por divisor cero. INT64_MIN / -1 sí desborda el cociente y
+        // el idiv da #DE. Los operandos salen de memoria, no del compilador.
+        *(0x401C20 as *u8) = 1;
+        let one: i64 = *(0x401C20 as *u8);
+        let d: i64 = 0 - one;
+        let n: i64 = one << 63;
+        x = n / d;
+    }
+    if (m == 105) { int(3); }
     if (x == 123456) { emit(88); }
     say_survived();
 }

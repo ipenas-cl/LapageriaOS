@@ -8,6 +8,10 @@
 // 8, 10, 11, 12, 13, 14, 17, 21, 29 and 30; the rest do not. IRQ0 (vector
 // 32) is the PIT. IRQ1 (vector 33) is the keyboard handler in keyboard.lap.
 //
+// SG-02: every exception except #PF goes through user_exc. From ring 3
+// it kills only that process (user_kill, sched.lap); from ring 0 it is
+// cpu_fault, which prints and halts. NMI, #DF and #MC stay fatal.
+//
 // #PF prints read_cr2() as well as the error code. A not-present fault
 // from ring 0 allocates a frame and maps it. A fault from ring 3 does not:
 // the kernel's 2MB identity page has no user bit, and resume_shell returns
@@ -76,10 +80,7 @@ fn exc_name(vec: i64) -> *u8 {
     return "reserved";
 }
 
-fn cpu_fault(vec: i64, err: i64, has_err: i64) -> i64 {
-    let fault_addr = 0;
-    if (vec == 14) { fault_addr = read_cr2(); }
-    cli();
+fn exc_report(vec: i64, err: i64, has_err: i64, fault_addr: i64) -> i64 {
     puts("exception: vector ");
     put_int(vec);
     putc(' ');
@@ -93,6 +94,14 @@ fn cpu_fault(vec: i64, err: i64, has_err: i64) -> i64 {
         put_hex(fault_addr);
     }
     puts("\n");
+    return 0;
+}
+
+fn cpu_fault(vec: i64, err: i64, has_err: i64) -> i64 {
+    let fault_addr = 0;
+    if (vec == 14) { fault_addr = read_cr2(); }
+    cli();
+    exc_report(vec, err, has_err, fault_addr);
     if (vec == 14 && (err & 4) != 0) {
         puts("user blocked\n");
         resume_shell();
@@ -103,28 +112,46 @@ fn cpu_fault(vec: i64, err: i64, has_err: i64) -> i64 {
     return 0;
 }
 
-interrupt fn exc0() { cpu_fault(0, 0, 0); }
-interrupt fn exc1() { cpu_fault(1, 0, 0); }
-interrupt fn exc2() { cpu_fault(2, 0, 0); }
-interrupt fn exc3() { cpu_fault(3, 0, 0); }
-interrupt fn exc4() { cpu_fault(4, 0, 0); }
-interrupt fn exc5() { cpu_fault(5, 0, 0); }
-interrupt fn exc6() { cpu_fault(6, 0, 0); }
-interrupt fn exc7() { cpu_fault(7, 0, 0); }
-interrupt fn exc8(err: i64) { cpu_fault(8, err, 1); }
-interrupt fn exc9() { cpu_fault(9, 0, 0); }
-interrupt fn exc10(err: i64) { cpu_fault(10, err, 1); }
-interrupt fn exc11(err: i64) { cpu_fault(11, err, 1); }
-interrupt fn exc12(err: i64) { cpu_fault(12, err, 1); }
+// Toda excepción de CPU salvo #PF (exc14, que tiene sus propios casos).
+// Venida de anillo 3 (CS & 3 == 3) mata solo a ese proceso por el mismo
+// camino que #GP y #PF: user_kill (sched.lap) lo da de baja como exit y
+// sigue el otro proceso o el shell. Sin planificador (comando `user`),
+// igual que "user blocked" del #PF: informa y resume_shell. De anillo 0
+// sigue deteniendo el kernel con diagnóstico (cpu_fault). Quedan fatales
+// también de anillo 3: NMI (2, es externa), #DF (8) y #MC (18), abortos
+// que no se pueden atribuir al proceso ni reanudar.
+fn user_exc(vec: i64, err: i64, has_err: i64, rip: i64, cs: i64) -> i64 {
+    if ((cs & 3) != 3 || vec == 2 || vec == 8 || vec == 18) {
+        return cpu_fault(vec, err, has_err);
+    }
+    if (sched_on != 0) {
+        user_kill(vec, err, rip);
+        return 0;
+    }
+    cli();
+    exc_report(vec, err, has_err, 0);
+    puts("user blocked\n");
+    resume_shell();
+    while (1) { hlt(); }
+    return 0;
+}
+
+interrupt fn exc0(frame: *InterruptFrame) { user_exc(0, 0, 0, frame.rip, frame.cs); }
+interrupt fn exc1(frame: *InterruptFrame) { user_exc(1, 0, 0, frame.rip, frame.cs); }
+interrupt fn exc2(frame: *InterruptFrame) { user_exc(2, 0, 0, frame.rip, frame.cs); }
+interrupt fn exc3(frame: *InterruptFrame) { user_exc(3, 0, 0, frame.rip, frame.cs); }
+interrupt fn exc4(frame: *InterruptFrame) { user_exc(4, 0, 0, frame.rip, frame.cs); }
+interrupt fn exc5(frame: *InterruptFrame) { user_exc(5, 0, 0, frame.rip, frame.cs); }
+interrupt fn exc6(frame: *InterruptFrame) { user_exc(6, 0, 0, frame.rip, frame.cs); }
+interrupt fn exc7(frame: *InterruptFrame) { user_exc(7, 0, 0, frame.rip, frame.cs); }
+interrupt fn exc8(frame: *PfFrame) { user_exc(8, frame.error_code, 1, frame.rip, frame.cs); }
+interrupt fn exc9(frame: *InterruptFrame) { user_exc(9, 0, 0, frame.rip, frame.cs); }
+interrupt fn exc10(frame: *PfFrame) { user_exc(10, frame.error_code, 1, frame.rip, frame.cs); }
+interrupt fn exc11(frame: *PfFrame) { user_exc(11, frame.error_code, 1, frame.rip, frame.cs); }
+interrupt fn exc12(frame: *PfFrame) { user_exc(12, frame.error_code, 1, frame.rip, frame.cs); }
 // #GP de anillo 3 (por ejemplo, una dirección no canónica): muere el
 // proceso y nadie más. En anillo 0 sigue siendo fatal.
-interrupt fn exc13(frame: *PfFrame) {
-    if (sched_on != 0 && (frame.cs & 3) == 3) {
-        user_kill(13, frame.error_code, frame.rip);
-        return;
-    }
-    cpu_fault(13, frame.error_code, 1);
-}
+interrupt fn exc13(frame: *PfFrame) { user_exc(13, frame.error_code, 1, frame.rip, frame.cs); }
 interrupt fn exc14(frame: *PfFrame) {
     // Fallo de anillo 3 con el planificador prendido: se reescribe rip
     // y el epílogo hace iretq. El de `user` (sin sched) vuelve al shell.
@@ -166,23 +193,23 @@ interrupt fn exc14(frame: *PfFrame) {
     }
     cpu_fault(14, frame.error_code, 1);
 }
-interrupt fn exc15() { cpu_fault(15, 0, 0); }
-interrupt fn exc16() { cpu_fault(16, 0, 0); }
-interrupt fn exc17(err: i64) { cpu_fault(17, err, 1); }
-interrupt fn exc18() { cpu_fault(18, 0, 0); }
-interrupt fn exc19() { cpu_fault(19, 0, 0); }
-interrupt fn exc20() { cpu_fault(20, 0, 0); }
-interrupt fn exc21(err: i64) { cpu_fault(21, err, 1); }
-interrupt fn exc22() { cpu_fault(22, 0, 0); }
-interrupt fn exc23() { cpu_fault(23, 0, 0); }
-interrupt fn exc24() { cpu_fault(24, 0, 0); }
-interrupt fn exc25() { cpu_fault(25, 0, 0); }
-interrupt fn exc26() { cpu_fault(26, 0, 0); }
-interrupt fn exc27() { cpu_fault(27, 0, 0); }
-interrupt fn exc28() { cpu_fault(28, 0, 0); }
-interrupt fn exc29(err: i64) { cpu_fault(29, err, 1); }
-interrupt fn exc30(err: i64) { cpu_fault(30, err, 1); }
-interrupt fn exc31() { cpu_fault(31, 0, 0); }
+interrupt fn exc15(frame: *InterruptFrame) { user_exc(15, 0, 0, frame.rip, frame.cs); }
+interrupt fn exc16(frame: *InterruptFrame) { user_exc(16, 0, 0, frame.rip, frame.cs); }
+interrupt fn exc17(frame: *PfFrame) { user_exc(17, frame.error_code, 1, frame.rip, frame.cs); }
+interrupt fn exc18(frame: *InterruptFrame) { user_exc(18, 0, 0, frame.rip, frame.cs); }
+interrupt fn exc19(frame: *InterruptFrame) { user_exc(19, 0, 0, frame.rip, frame.cs); }
+interrupt fn exc20(frame: *InterruptFrame) { user_exc(20, 0, 0, frame.rip, frame.cs); }
+interrupt fn exc21(frame: *PfFrame) { user_exc(21, frame.error_code, 1, frame.rip, frame.cs); }
+interrupt fn exc22(frame: *InterruptFrame) { user_exc(22, 0, 0, frame.rip, frame.cs); }
+interrupt fn exc23(frame: *InterruptFrame) { user_exc(23, 0, 0, frame.rip, frame.cs); }
+interrupt fn exc24(frame: *InterruptFrame) { user_exc(24, 0, 0, frame.rip, frame.cs); }
+interrupt fn exc25(frame: *InterruptFrame) { user_exc(25, 0, 0, frame.rip, frame.cs); }
+interrupt fn exc26(frame: *InterruptFrame) { user_exc(26, 0, 0, frame.rip, frame.cs); }
+interrupt fn exc27(frame: *InterruptFrame) { user_exc(27, 0, 0, frame.rip, frame.cs); }
+interrupt fn exc28(frame: *InterruptFrame) { user_exc(28, 0, 0, frame.rip, frame.cs); }
+interrupt fn exc29(frame: *PfFrame) { user_exc(29, frame.error_code, 1, frame.rip, frame.cs); }
+interrupt fn exc30(frame: *PfFrame) { user_exc(30, frame.error_code, 1, frame.rip, frame.cs); }
+interrupt fn exc31(frame: *InterruptFrame) { user_exc(31, 0, 0, frame.rip, frame.cs); }
 
 interrupt fn irq_timer(frame: *InterruptFrame) {
     ticks = ticks + 1;

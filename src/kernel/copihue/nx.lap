@@ -66,7 +66,8 @@ fn nx_ranges() -> i64 {
     nx_bss_lo = section_start(".bss");
     nx_bss_hi = section_end(".bss");
     // El enlace es la mitad alta. El físico es esa dirección menos
-    // 0xFFFFFFFF80000000, y tiene que seguir cabiendo en los 2MB.
+    // 0xFFFFFFFF80000000, y tiene que caber en la página de 2 MiB de la
+    // imagen (kimg_phys()).
     if (hh_window(nx_text_lo) == 0) { return 0; }
     if (hh_window(nx_bss_hi - 1) == 0) { return 0; }
     let tlo = hh_phys(nx_text_lo);
@@ -81,8 +82,8 @@ fn nx_ranges() -> i64 {
     if (thi > dlo) { return 0; }
     if (dhi > blo) { return 0; }
     if (bhi <= blo) { return 0; }
-    if (tlo != 0x10000) { return 0; }
-    if (bhi > 0x200000) { return 0; }
+    if (tlo != kimg_phys()) { return 0; }
+    if (bhi > kimg_phys() + 0x200000) { return 0; }
     return 1;
 }
 
@@ -94,46 +95,57 @@ fn nx_split() -> i64 {
     if (nx_ranges() == 0) { return 0; }
     let pt = alloc_low_page();
     let hpt = alloc_low_page();
-    if (pt == 0 || hpt == 0) { return 0; }
+    let ipt = alloc_low_page();
+    if (pt == 0 || hpt == 0 || ipt == 0) { return 0; }
     zero_va(pt);
     zero_va(hpt);
+    zero_va(ipt);
     let nx = pte_nx_bit();
     let p: *u64 = pt as *u64;
     let h: *u64 = hpt as *u64;
+    let m: *u64 = ipt as *u64;
     let tlo = hh_phys(nx_text_lo);
     let thi = hh_phys(nx_text_hi);
+    let ibase = kimg_phys();
     let i = 0;
     while (i < 512) {
+        // Los 2 MiB bajos (y su vista alta) ya no tienen código: todo
+        // lleva NX. El código está solo en la página de la imagen.
         let a = i << 12;
+        p[i] = a | 3 | nx;
+        h[i] = a | 3 | nx;
+        let ia = ibase + a;
         let flags = 3 | nx;
-        if (a >= tlo && a + 4096 <= thi) { flags = 1; }
-        p[i] = a | flags;
-        h[i] = a | flags;
+        if (ia >= tlo && ia + 4096 <= thi) { flags = 1; }
+        m[i] = ia | flags;
         i = i + 1;
     }
     kern_low_pt = pt;
     kern_hh_pt = hpt;
     let pd: *u64 = 0x3000;
     pd[0] = pt | 3;
-    // PD de la mitad alta, armado por la etapa 2 en 0x5000.
+    // PD de la mitad alta, armada por la etapa 2 en 0x5000: [0] es la RAM
+    // baja y [2] la imagen (kimg_phys() = 0x400000).
     let hpd: *u64 = 0x5000;
     hpd[0] = hpt | 3;
+    hpd[2] = ipt | 3;
     write_cr3(read_cr3());
     return 1;
 }
 
-// Quita de la tabla baja las páginas de la imagen (.text, .data, .bss).
-// La tabla alta las conserva. VGA, tablas, E820 y las pilas de 0x60000
-// para arriba siguen en la identidad: no son esa imagen.
+// Quita de la tabla baja el rebote de la etapa 2 (físico 0x10000..0x1FFFF,
+// donde INT 13h deja cada trozo de 64 KiB antes de copiarlo a 0x400000).
+// La imagen ya no tiene identidad baja que retirar: solo está en la
+// ventana alta. La tabla alta conserva esas páginas. VGA, tablas, E820 y
+// las pilas de 0x60000 para arriba siguen en la identidad.
 fn hh_retire() -> i64 {
     if (kern_low_pt == 0 || kern_hh_pt == 0) { return 0; }
     let lo = hh_phys(nx_text_lo);
     let hi = hh_phys(nx_bss_hi);
-    if (lo != 0x10000 || hi <= lo || hi > 0x200000) { return 0; }
-    hi = ((hi + 4095) >> 12) << 12;
+    if (lo != kimg_phys() || hi <= lo || hi > kimg_phys() + 0x200000) { return 0; }
     let p: *u64 = kern_low_pt as *u64;
-    let a = lo;
-    while (a < hi) {
+    let a = 0x10000;
+    while (a < 0x20000) {
         p[(a >> 12) & 511] = 0;
         invlpg(a);
         a = a + 4096;
