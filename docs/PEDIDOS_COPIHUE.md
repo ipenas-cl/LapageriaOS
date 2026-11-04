@@ -508,3 +508,14 @@ la dirección va en un `*u8` local. Lo detectó la prueba: el ataque 3 leyó
    del `*u8`. `let one: i64 = *(p as *u8); let d: i64 = 0 - one;` sí
    da -1. Contorno en `src/user/ataque.lap`. Pedido: promover a `i64`
    el resultado de una resta cuyo destino es `i64`, o avisar del recorte.
+
+## Leer RFLAGS.IF (RD-01)
+
+Código que corre tanto en el hilo del shell (IF en 1) como dentro de una
+interrupción o una syscall (IF en 0) no puede hacer `cli(); ...; sti();`
+sin saber en cuál está: el `sti()` encendería interrupciones donde no
+debe. No encontré un intrínseco para leer RFLAGS en 64 bits (el README
+de Copihue lista `pushfd`/`popfd`; no los probé en este kernel). En `net.lap` se contorneó con funciones aparte
+(`net_*_locked` para el hilo; las otras sin cli/sti) y con que `net_tx`
+no duerma nunca. Pedido: `read_rflags()` o un par `irq_save()` /
+`irq_restore(flags)` en `--flat` de 64 bits.

@@ -1,0 +1,478 @@
+// UDP sobre el e1000 de net.lap (RD-01). Una tabla de 4 puertos, una cola
+// de 4 datagramas por puerto y cinco syscalls para anillo 3:
+//
+//   12 bind(puerto)             0, o -22 -24 -98 -100
+//   13 send(buf, largo, dst)    0, o -9 -14 -22 -100 -113 -5
+//   14 recv(buf, max, src)      largo, o -9 -11 -14 -22
+//   15 close()                  0
+//   16 ticks()                  ticks del PIT (para los plazos)
+//
+// dst y src son un i64: (ip << 16) | puerto, con la IP como entero de 32
+// bits en orden de lectura (10.0.2.2 = 0x0A000202). Un proceso tiene como
+// mucho un socket. Todas pasan por zone_gate: una zona cuya máscara no
+// las incluye recibe -1 y se le suma `niega`.
+//
+// Los punteros del usuario se validan antes de tocar nada: tienen que
+// caer entera en las páginas del propio proceso (pila desde 0x401000, y
+// las que pidió con la syscall 8). Una dirección del kernel, negativa o
+// que cruce el final, da -14 y el kernel no la lee ni la escribe.
+//
+// El destino de todo envío es la MAC de la puerta (la aprendió `net up`):
+// la red de usuario no tiene otro vecino. Largo máximo: 512 bytes.
+
+packed struct UdpHdr {
+    sp_hi: u8,
+    sp_lo: u8,
+    dp_hi: u8,
+    dp_lo: u8,
+    len_hi: u8,
+    len_lo: u8,
+    sum_hi: u8,
+    sum_lo: u8
+}
+
+let udp_port: [i64; 4];
+let udp_owner: [i64; 4];
+let udp_head: [i64; 4];
+let udp_count: [i64; 4];
+let udp_qlen: [i64; 16];
+let udp_qsrc: [i64; 16];
+let udp_qbuf: [u8; 8192];
+let udp_tmp: [u8; 512];
+let udp_probe: [u8; 600];
+let udp_ipid: i64 = 0;
+let udp_rx_ok: i64 = 0;
+let udp_rx_bad: i64 = 0;
+let udp_rx_nosock: i64 = 0;
+let udp_rx_full: i64 = 0;
+let udp_tx_n: i64 = 0;
+
+fn udp_layout() -> i64 {
+    if (sizeof(UdpHdr) != 8) { return 0; }
+    if (offsetof(UdpHdr, dp_hi) != 2) { return 0; }
+    if (offsetof(UdpHdr, len_hi) != 4) { return 0; }
+    if (offsetof(UdpHdr, sum_hi) != 6) { return 0; }
+    return 1;
+}
+
+fn udp_reset() -> i64 {
+    let i = 0;
+    while (i < 4) {
+        udp_port[i] = 0;
+        udp_owner[i] = 0;
+        udp_head[i] = 0;
+        udp_count[i] = 0;
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn udp_sock_of(owner: i64) -> i64 {
+    let i = 0;
+    while (i < 4) {
+        if (udp_port[i] != 0 && udp_owner[i] == owner) { return i; }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+fn udp_sock_port(port: i64) -> i64 {
+    let i = 0;
+    while (i < 4) {
+        if (udp_port[i] == port) { return i; }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+fn udp_bind(owner: i64, port: i64) -> i64 {
+    if (port < 1 || port > 65535) { return 0 - 22; }
+    if (udp_sock_of(owner) >= 0) { return 0 - 22; }
+    if (udp_sock_port(port) >= 0) { return 0 - 98; }
+    let s = udp_sock_port(0);
+    if (s < 0) { return 0 - 24; }
+    udp_port[s] = port;
+    udp_owner[s] = owner;
+    udp_head[s] = 0;
+    udp_count[s] = 0;
+    return 0;
+}
+
+fn udp_close(owner: i64) -> i64 {
+    let s = udp_sock_of(owner);
+    if (s < 0) { return 0 - 9; }
+    udp_port[s] = 0;
+    udp_count[s] = 0;
+    udp_head[s] = 0;
+    return 0;
+}
+
+// Al morir el proceso (release_proc) su socket se cierra.
+fn udp_release(owner: i64) -> i64 {
+    udp_close(owner);
+    return 0;
+}
+
+// Suma de la pseudo-cabecera IPv4 (sin plegar): IP origen, destino,
+// protocolo 17 y largo UDP.
+fn udp_pseudo(p: *u8, ulen: i64) -> i64 {
+    let ip: *IpPkt = p as *IpPkt;
+    let s = 17 + ulen;
+    s = s + ((((ip.sip[0] & 255) as i64) << 8) | (ip.sip[1] & 255));
+    s = s + ((((ip.sip[2] & 255) as i64) << 8) | (ip.sip[3] & 255));
+    s = s + ((((ip.dip[0] & 255) as i64) << 8) | (ip.dip[1] & 255));
+    s = s + ((((ip.dip[2] & 255) as i64) << 8) | (ip.dip[3] & 255));
+    return s;
+}
+
+// Llamada desde net_ip con la cabecera IP ya validada y el destino
+// nuestro. 0: atendida o ignorada. 1: malformada, se descarta.
+fn udp_rx(p: *u8, ihl: i64, total: i64) -> i64 {
+    let ulen_ip = total - ihl;
+    if (ulen_ip < 8) { udp_rx_bad = udp_rx_bad + 1; return 1; }
+    let off = sizeof(EthHdr) + ihl;
+    let u: *UdpHdr = (p as i64 + off) as *UdpHdr;
+    let ulen = (((u.len_hi & 255) as i64) << 8) | (u.len_lo & 255);
+    if (ulen != ulen_ip) { udp_rx_bad = udp_rx_bad + 1; return 1; }
+    if (ulen - 8 > 512) { udp_rx_bad = udp_rx_bad + 1; return 1; }
+    let sum = (((u.sum_hi & 255) as i64) << 8) | (u.sum_lo & 255);
+    // Checksum 0 = el emisor no lo calculó (válido en IPv4).
+    if (sum != 0) {
+        let acc = net_sum(p, off, ulen, udp_pseudo(p, ulen));
+        if (net_fold(acc) != 0) { udp_rx_bad = udp_rx_bad + 1; return 1; }
+    }
+    let dport = (((u.dp_hi & 255) as i64) << 8) | (u.dp_lo & 255);
+    let sport = (((u.sp_hi & 255) as i64) << 8) | (u.sp_lo & 255);
+    let s = udp_sock_port(dport);
+    if (s < 0 || dport == 0) { udp_rx_nosock = udp_rx_nosock + 1; return 0; }
+    if (udp_count[s] >= 4) { udp_rx_full = udp_rx_full + 1; return 0; }
+    let q = s * 4 + ((udp_head[s] + udp_count[s]) & 3);
+    let n = ulen - 8;
+    let i = 0;
+    while (i < n) {
+        udp_qbuf[q * 512 + i] = p[off + 8 + i];
+        i = i + 1;
+    }
+    let ip: *IpPkt = p as *IpPkt;
+    let a = (((ip.sip[0] & 255) as i64) << 24) | (((ip.sip[1] & 255) as i64) << 16) | (((ip.sip[2] & 255) as i64) << 8) | (ip.sip[3] & 255);
+    udp_qlen[q] = n;
+    udp_qsrc[q] = (a << 16) | sport;
+    udp_count[s] = udp_count[s] + 1;
+    udp_rx_ok = udp_rx_ok + 1;
+    return 0;
+}
+
+// Saca el datagrama más viejo del socket s a udp_tmp. Devuelve el largo
+// entregado (recortado a max) y deja la fuente en udp_src; -11 si no hay.
+let udp_src: i64 = 0;
+fn udp_pop(s: i64, max: i64) -> i64 {
+    if (udp_count[s] == 0) { return 0 - 11; }
+    let q = s * 4 + (udp_head[s] & 3);
+    let n = udp_qlen[q];
+    if (n > max) { n = max; }
+    let i = 0;
+    while (i < n) {
+        udp_tmp[i] = udp_qbuf[q * 512 + i];
+        i = i + 1;
+    }
+    udp_src = udp_qsrc[q];
+    udp_head[s] = (udp_head[s] + 1) & 3;
+    udp_count[s] = udp_count[s] - 1;
+    return n;
+}
+
+// Arma Ethernet + IPv4 + UDP en out con la carga en src[0..len). Devuelve
+// el largo de la trama (sin relleno a 60).
+fn udp_build(out: *u8, sport: i64, dip: i64, dport: i64, src: *u8, len: i64) -> i64 {
+    let n = sizeof(EthHdr) + 20 + 8 + len;
+    let m = n;
+    if (m < 60) { m = 60; }
+    net_zero(out, m);
+    let ip: *IpPkt = out as *IpPkt;
+    let i = 0;
+    while (i < 6) {
+        ip.dst[i] = net_gw[i];
+        ip.src[i] = net_mac[i];
+        i = i + 1;
+    }
+    ip.et_hi = 0x08;
+    ip.vihl = 0x45;
+    let tl = 20 + 8 + len;
+    ip.len_hi = ((tl >> 8) & 255) as u8;
+    ip.len_lo = (tl & 255) as u8;
+    udp_ipid = udp_ipid + 1;
+    ip.id_hi = ((udp_ipid >> 8) & 255) as u8;
+    ip.id_lo = (udp_ipid & 255) as u8;
+    ip.frag_hi = 0x40;
+    ip.ttl = 64;
+    ip.proto = 17;
+    ip.sip[0] = 10;
+    ip.sip[1] = 0;
+    ip.sip[2] = 2;
+    ip.sip[3] = 15;
+    ip.dip[0] = ((dip >> 24) & 255) as u8;
+    ip.dip[1] = ((dip >> 16) & 255) as u8;
+    ip.dip[2] = ((dip >> 8) & 255) as u8;
+    ip.dip[3] = (dip & 255) as u8;
+    let c = net_csum(out, offsetof(IpPkt, vihl), 20);
+    ip.sum_hi = ((c >> 8) & 255) as u8;
+    ip.sum_lo = (c & 255) as u8;
+    let off = sizeof(EthHdr) + 20;
+    let u: *UdpHdr = (out as i64 + off) as *UdpHdr;
+    u.sp_hi = ((sport >> 8) & 255) as u8;
+    u.sp_lo = (sport & 255) as u8;
+    u.dp_hi = ((dport >> 8) & 255) as u8;
+    u.dp_lo = (dport & 255) as u8;
+    let ulen = 8 + len;
+    u.len_hi = ((ulen >> 8) & 255) as u8;
+    u.len_lo = (ulen & 255) as u8;
+    i = 0;
+    while (i < len) {
+        out[off + 8 + i] = src[i];
+        i = i + 1;
+    }
+    c = net_fold(net_sum(out, off, ulen, udp_pseudo(out, ulen)));
+    // 0 quiere decir «sin checksum»: se manda como 0xFFFF.
+    if (c == 0) { c = 65535; }
+    u.sum_hi = ((c >> 8) & 255) as u8;
+    u.sum_lo = (c & 255) as u8;
+    return n;
+}
+
+fn udp_tx(sport: i64, dip: i64, dport: i64, src: *u8, len: i64) -> i64 {
+    if (net_on == 0) { return 0 - 100; }
+    if (net_arp_seen == 0) { return 0 - 113; }
+    let old = net_cr3_in();
+    let n = udp_build(net_txb(), sport, dip, dport, src, len);
+    let rc = net_tx(n);
+    net_cr3_out(old);
+    if (rc != 0) { return 0 - 5; }
+    udp_tx_n = udp_tx_n + 1;
+    return 0;
+}
+
+// Rango del usuario que el proceso actual tiene mapeado. Para escribir
+// se excluye la página de código (solo lectura).
+fn udp_uptr_ok(p: i64, n: i64, write: i64) -> i64 {
+    if (n < 1 || n > 512) { return 0; }
+    let lo = 0x400000;
+    if (write != 0) { lo = 0x401000; }
+    let hi = 0x402000;
+    let pi = cur_i;
+    if (pi >= 0 && pi < 2 && proc_uva[pi] > hi) { hi = proc_uva[pi]; }
+    if (hi > 0x500000) { hi = 0x500000; }
+    if (p < lo) { return 0; }
+    if (p >= hi) { return 0; }
+    if (n > hi - p) { return 0; }
+    return 1;
+}
+
+fn udp_syscall(nr: i64, a1: i64, a2: i64, a3: i64) -> i64 {
+    if (nr == 16) { return ticks; }
+    if (sched_on == 0) { return 0 - 1; }
+    let me = cur_i;
+    if (nr == 12) {
+        if (net_on == 0) { return 0 - 100; }
+        return udp_bind(me, a1);
+    }
+    if (nr == 15) { return udp_close(me); }
+    let s = udp_sock_of(me);
+    if (s < 0) { return 0 - 9; }
+    if (nr == 13) {
+        let len = a2;
+        if (len < 0 || len > 512) { return 0 - 22; }
+        if (len > 0 && udp_uptr_ok(a1, len, 0) == 0) { return 0 - 14; }
+        let dport = a3 & 65535;
+        if (dport == 0) { return 0 - 22; }
+        let i = 0;
+        while (i < len) {
+            let b: *u8 = (a1 + i) as *u8;
+            udp_tmp[i] = b[0];
+            i = i + 1;
+        }
+        return udp_tx(udp_port[s], (a3 >> 16) & 0xFFFFFFFF, dport, udp_tmp, len);
+    }
+    if (nr == 14) {
+        let max = a2;
+        if (max < 0 || max > 512) { return 0 - 22; }
+        if (max > 0 && udp_uptr_ok(a1, max, 1) == 0) { return 0 - 14; }
+        if (a3 != 0 && udp_uptr_ok(a3, 8, 1) == 0) { return 0 - 14; }
+        if (udp_count[s] == 0 && net_on != 0 && net_irq_on == 0) {
+            let old = net_cr3_in();
+            net_rx_drain();
+            net_cr3_out(old);
+        }
+        let n = udp_pop(s, max);
+        if (n < 0) { return n; }
+        let i = 0;
+        while (i < n) {
+            let b: *u8 = (a1 + i) as *u8;
+            b[0] = udp_tmp[i];
+            i = i + 1;
+        }
+        if (a3 != 0) {
+            i = 0;
+            while (i < 8) {
+                let d: *u8 = (a3 + i) as *u8;
+                d[0] = ((udp_src >> (i * 8)) & 255) as u8;
+                i = i + 1;
+            }
+        }
+        return n;
+    }
+    return 0 - 22;
+}
+
+fn udp_fail(n: i64) -> i64 {
+    puts("udp test fail ");
+    put_int(n);
+    putc('\n');
+    return 0;
+}
+
+// Arma en udp_probe una trama UDP 10.0.2.2:1234 -> 10.0.2.15:7777 con
+// la carga «hi». sum es el checksum UDP que se escribe y ulen el largo
+// UDP declarado.
+fn udp_probe_frame(sum: i64, ulen: i64, dport: i64) -> i64 {
+    net_zero(udp_probe, 64);
+    let ip: *IpPkt = udp_probe as *IpPkt;
+    let i = 0;
+    while (i < 6) {
+        ip.dst[i] = net_mac[i];
+        i = i + 1;
+    }
+    ip.src[0] = 2;
+    ip.src[5] = 0x22;
+    ip.et_hi = 0x08;
+    ip.vihl = 0x45;
+    ip.len_lo = 30;
+    ip.ttl = 64;
+    ip.proto = 17;
+    ip.sip[0] = 10;
+    ip.sip[1] = 0;
+    ip.sip[2] = 2;
+    ip.sip[3] = 2;
+    ip.dip[0] = 10;
+    ip.dip[1] = 0;
+    ip.dip[2] = 2;
+    ip.dip[3] = 15;
+    let c = net_csum(udp_probe, offsetof(IpPkt, vihl), 20);
+    ip.sum_hi = ((c >> 8) & 255) as u8;
+    ip.sum_lo = (c & 255) as u8;
+    let u: *UdpHdr = (udp_probe as i64 + 34) as *UdpHdr;
+    u.sp_hi = 0x04;
+    u.sp_lo = 0xD2;
+    u.dp_hi = ((dport >> 8) & 255) as u8;
+    u.dp_lo = (dport & 255) as u8;
+    u.len_lo = ulen as u8;
+    u.sum_hi = ((sum >> 8) & 255) as u8;
+    u.sum_lo = (sum & 255) as u8;
+    udp_probe[42] = 0x68;
+    udp_probe[43] = 0x69;
+    return 0;
+}
+
+// Prueba sin dispositivo: recepción con el checksum de la mano (0x5C2D),
+// descartes, cola, armado del envío y validación de punteros.
+fn udp_selftest() -> i64 {
+    if (net_layout() == 0 || udp_layout() == 0) { return udp_fail(1); }
+    udp_reset();
+    if (udp_bind(2, 7777) != 0) { return udp_fail(2); }
+    if (udp_bind(2, 7778) != (0 - 22)) { return udp_fail(3); }
+    if (udp_bind(1, 7777) != (0 - 98)) { return udp_fail(4); }
+    // Suma de palabras: 0x0A00 0x0202 0x0A00 0x020F 0x0011 0x000A
+    // 0x04D2 0x1E61 0x000A 0x6869 = 0xA3D2. ~ = 0x5C2D.
+    udp_probe_frame(0x5C2D, 10, 7777);
+    if (net_frame(udp_probe, 60) != 0) { return udp_fail(5); }
+    if (udp_count[0] != 1) { return udp_fail(6); }
+    if (udp_pop(0, 512) != 2) { return udp_fail(7); }
+    if (udp_tmp[0] != 0x68 || udp_tmp[1] != 0x69) { return udp_fail(8); }
+    if (udp_src != ((0x0A000202 << 16) | 1234)) { return udp_fail(9); }
+    udp_probe_frame(0x5C2E, 10, 7777);
+    if (net_frame(udp_probe, 60) != 1) { return udp_fail(10); }
+    if (udp_count[0] != 0) { return udp_fail(11); }
+    udp_probe_frame(0, 10, 7777);
+    if (net_frame(udp_probe, 60) != 0) { return udp_fail(12); }
+    if (udp_count[0] != 1) { return udp_fail(13); }
+    udp_pop(0, 512);
+    udp_probe_frame(0, 11, 7777);
+    if (net_frame(udp_probe, 60) != 1) { return udp_fail(14); }
+    if (udp_count[0] != 0) { return udp_fail(15); }
+    let nos = udp_rx_nosock;
+    udp_probe_frame(0, 10, 7000);
+    if (net_frame(udp_probe, 60) != 0) { return udp_fail(16); }
+    if (udp_rx_nosock != nos + 1 || udp_count[0] != 0) { return udp_fail(17); }
+    let full = udp_rx_full;
+    let k = 0;
+    while (k < 5) {
+        udp_probe_frame(0, 10, 7777);
+        net_frame(udp_probe, 60);
+        k = k + 1;
+    }
+    if (udp_count[0] != 4 || udp_rx_full != full + 1) { return udp_fail(18); }
+    if (udp_close(2) != 0) { return udp_fail(19); }
+    if (udp_close(2) != (0 - 9)) { return udp_fail(20); }
+    // Envío: mismas palabras que la entrada, así que el mismo 0x5C2D.
+    udp_tmp[0] = 0x68;
+    udp_tmp[1] = 0x69;
+    let n = udp_build(udp_probe, 7777, 0x0A000202, 1234, udp_tmp, 2);
+    if (n != 44) { return udp_fail(21); }
+    if ((udp_probe[40] & 255) != 0x5C || (udp_probe[41] & 255) != 0x2D) { return udp_fail(22); }
+    if (net_csum(udp_probe, offsetof(IpPkt, vihl), 20) != 0) { return udp_fail(23); }
+    if (net_fold(net_sum(udp_probe, 34, 10, udp_pseudo(udp_probe, 10))) != 0) { return udp_fail(24); }
+    if ((udp_probe[12] & 255) != 0x08 || (udp_probe[23] & 255) != 17) { return udp_fail(25); }
+    // Punteros: nada del kernel, nada fuera de la pila ni de lo pedido.
+    if (udp_uptr_ok(0x401800, 16, 1) != 1) { return udp_fail(26); }
+    if (udp_uptr_ok(0x400000, 16, 0) != 1) { return udp_fail(27); }
+    if (udp_uptr_ok(0x400000, 16, 1) != 0) { return udp_fail(28); }
+    if (udp_uptr_ok(0xFFFFFFFF80400000, 16, 0) != 0) { return udp_fail(29); }
+    if (udp_uptr_ok(0xFFFF800000001000, 16, 1) != 0) { return udp_fail(30); }
+    if (udp_uptr_ok(0x1000, 16, 0) != 0) { return udp_fail(31); }
+    if (udp_uptr_ok(0x10000000, 16, 1) != 0) { return udp_fail(32); }
+    if (udp_uptr_ok(0 - 1, 1, 0) != 0) { return udp_fail(33); }
+    if (udp_uptr_ok(0x401FFF, 2, 1) != 0) { return udp_fail(34); }
+    if (udp_uptr_ok(0x402000, 1, 0) != 0) { return udp_fail(35); }
+    if (udp_uptr_ok(0x401800, 0, 1) != 0) { return udp_fail(36); }
+    if (udp_uptr_ok(0x401800, 513, 1) != 0) { return udp_fail(37); }
+    udp_reset();
+    udp_rx_ok = 0;
+    udp_rx_bad = 0;
+    udp_rx_nosock = 0;
+    udp_rx_full = 0;
+    puts("udp test ok\n");
+    return 1;
+}
+
+fn udp_show() -> i64 {
+    puts("udp rx ");
+    put_int(udp_rx_ok);
+    puts(" bad ");
+    put_int(udp_rx_bad);
+    puts(" nosock ");
+    put_int(udp_rx_nosock);
+    puts(" full ");
+    put_int(udp_rx_full);
+    puts(" tx ");
+    put_int(udp_tx_n);
+    putc('\n');
+    return 0;
+}
+
+fn udp_plant() -> i64 {
+    let n = udpeco_fill(exec_buf);
+    if (n < 16 || n > 4096) { return exec_fail(9); }
+    let r = fs_write("udpeco", exec_buf, n);
+    if (r != 0) { return exec_fail(r); }
+    puts("udp plant ok\n");
+    return 0;
+}
+
+fn cmd_udp() -> i64 {
+    let pos = fs_scan(3, fs_sub);
+    if (pos < 0) { return 0; }
+    if (fs_is("test")) { return udp_selftest(); }
+    if (fs_is("plant")) { return udp_plant(); }
+    if (fs_is("stat")) { return udp_show(); }
+    puts("udp fail arg\n");
+    return 0;
+}

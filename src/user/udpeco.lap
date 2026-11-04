@@ -1,0 +1,143 @@
+// Eco UDP de anillo 3 (RD-01). copihue --flat 0x400000.
+// Abre el puerto 7777 con la syscall 12. Si el kernel la niega (zona sin
+// red) imprime `udp denied` y sale. Si no, primero prueba punteros
+// malos contra las syscalls 13 y 14 (kernel, MMIO, página de código,
+// cruzando el final de la pila): todos tienen que dar -14 y entonces
+// imprime `udp ptr denied`. Después espera un datagrama hasta 5 s (500
+// ticks, syscall 16) y lo devuelve a quien lo mandó: `udp echo ok`.
+// El buffer es 0x401A00 y la fuente (ip << 16 | puerto) 0x401900, en la
+// página de la pila. Sin cadenas: cada letra va por la syscall 1.
+
+naked fn emit(c: i64) {
+    rax = 1;
+    syscall();
+}
+
+fn w_udp() {
+    emit(117);
+    emit(100);
+    emit(112);
+    emit(32);
+}
+
+fn say_denied() {
+    w_udp();
+    emit(100);
+    emit(101);
+    emit(110);
+    emit(105);
+    emit(101);
+    emit(100);
+    emit(10);
+}
+
+fn say_listen() {
+    w_udp();
+    emit(108);
+    emit(105);
+    emit(115);
+    emit(116);
+    emit(101);
+    emit(110);
+    emit(10);
+}
+
+fn say_ok() {
+    w_udp();
+    emit(101);
+    emit(99);
+    emit(104);
+    emit(111);
+    emit(32);
+    emit(111);
+    emit(107);
+    emit(10);
+}
+
+fn say_timeout() {
+    w_udp();
+    emit(116);
+    emit(105);
+    emit(109);
+    emit(101);
+    emit(111);
+    emit(117);
+    emit(116);
+    emit(10);
+}
+
+fn say_ptr() {
+    w_udp();
+    emit(112);
+    emit(116);
+    emit(114);
+    emit(32);
+    emit(100);
+    emit(101);
+    emit(110);
+    emit(105);
+    emit(101);
+    emit(100);
+    emit(10);
+}
+
+// 1 si la syscall n con esos argumentos dio -14.
+fn bad(n: i64, a1: i64, a2: i64, a3: i64) -> i64 {
+    let r: i64 = syscall(n, a1, a2, a3);
+    if (r == 0 - 14) { return 1; }
+    return 0;
+}
+
+fn ptr_attacks() {
+    // 0 - 0x7FC00000 es 0xFFFFFFFF80400000, el texto del kernel.
+    let k: i64 = 0 - 0x7FC00000;
+    let dst: i64 = (0x0A000202 << 16) | 1234;
+    let ok: i64 = 1;
+    ok = ok & bad(14, k, 16, 0);
+    ok = ok & bad(14, 0x401A00, 16, k);
+    ok = ok & bad(13, k, 16, dst);
+    ok = ok & bad(13, 0x1000, 16, dst);
+    ok = ok & bad(14, 0x10000000, 16, 0);
+    ok = ok & bad(14, 0x400000, 16, 0);
+    ok = ok & bad(13, 0x401FF8, 16, dst);
+    ok = ok & bad(14, 0x401FF8, 16, 0);
+    if (ok == 1) { say_ptr(); }
+}
+
+fn listen_and_echo() {
+    say_listen();
+    let t0: i64 = syscall(16);
+    let n: i64 = 0 - 11;
+    let t: i64 = 0;
+    while (n < 0 && t < 500) {
+        n = syscall(14, 0x401A00, 256, 0x401900);
+        if (n < 0) { syscall(4); }
+        let now: i64 = syscall(16);
+        t = now - t0;
+    }
+    if (n < 0) {
+        say_timeout();
+    } else {
+        let dst: i64 = *(0x401900 as *i64);
+        let s: i64 = syscall(13, 0x401A00, n, dst);
+        if (s == 0) { say_ok(); }
+    }
+    syscall(15);
+}
+
+fn echo_main() {
+    let r: i64 = syscall(12, 7777);
+    if (r != 0) {
+        say_denied();
+    } else {
+        ptr_attacks();
+        listen_and_echo();
+    }
+}
+
+naked fn _start() {
+    echo_main();
+    rax = 5;
+    syscall();
+    hlt();
+}

@@ -1,8 +1,10 @@
-// Red mínima: e1000 (82540EM) por PCI, ARP e ICMP.
+// Red mínima: e1000 (82540EM) por PCI, ARP, ICMP y UDP (udp.lap).
 //
-// No parte en el arranque. `net` arma el dispositivo, habla y lo apaga.
-// No hay TCP ni UDP. Lo único que se contesta es ARP who-has de
-// 10.0.2.15 e ICMP echo a esa misma IP.
+// No parte en el arranque. `net` arma el dispositivo, habla y lo apaga;
+// `net up` lo deja prendido. La recepción va por interrupción (la IRQ
+// PCI por el PIC): irq_net lee ICR, vacía el anillo y manda EOI. Se
+// contesta ARP who-has de 10.0.2.15, ICMP echo a esa IP y se entregan
+// los datagramas UDP de los puertos que abrió un programa de usuario.
 //
 // La trama sigue siendo el buffer de bytes que entrega el DMA. Encima
 // se lee con structs packed de a un byte: el ethertype y el resto van
@@ -100,6 +102,16 @@ let net_tx_rc: i64 = 0;
 let net_arp_seen: i64 = 0;
 let net_ping_seen: i64 = 0;
 let net_rx_n: i64 = 0;
+// IRQ: línea del PIC (0 = sin IRQ), si quedó armada, y contadores.
+// net_irqs cuenta entradas con causa en ICR; net_isr_rx, las tramas
+// que atendió la interrupción; net_poll_rx, las que atendió el sondeo.
+let net_irq: i64 = 0;
+let volatile net_irq_on: i64 = 0;
+let volatile net_irqs: i64 = 0;
+let volatile net_isr_rx: i64 = 0;
+let volatile net_poll_rx: i64 = 0;
+let volatile net_in_isr: i64 = 0;
+let net_on: i64 = 0;
 let net_mac: [u8; 6];
 let net_gw: [u8; 6];
 let net_probe: [u8; 64];
@@ -248,9 +260,10 @@ fn net_map_bar() -> i64 {
     // 0x10000000: sobre los 128 MiB de RAM y dentro del primer GiB,
     // que es lo único que el PDPT del arranque tiene presente.
     pci_wr(0, net_dev, net_fun, 0x10, 0x10000000);
-    // Memoria + bus master + INTx apagado. El estado (alto) va en 0
-    // para no borrar bits escribiendo 1.
-    pci_wr(0, net_dev, net_fun, 4, 0x0406);
+    // Memoria + bus master, INTx habilitado (bit 10 en 0). Lo que el
+    // chip emite lo manda IMS, que sigue en 0 hasta net_irq_setup. El
+    // estado (alto) va en 0 para no borrar bits escribiendo 1.
+    pci_wr(0, net_dev, net_fun, 4, 0x0006);
     let cmd = pci_rd(0, net_dev, net_fun, 4) & 0xFFFF;
     if ((cmd & 6) != 6) { return net_fail("net fail dma\n"); }
     let back = pci_rd(0, net_dev, net_fun, 0x10) & 0xFFFFFFF0;
@@ -413,25 +426,107 @@ fn net_bringup() -> i64 {
     // QEMU arma un timer de 1 s al escribir RCTL y mientras tanto
     // encola lo que llega. 120 ticks cubren ese segundo.
     net_sleep(120);
+    net_irq_setup();
+    cli();
     net_rx_drain();
+    sti();
+    net_on = 1;
+    return 0;
+}
+
+// El BAR del e1000 (0x10000000) está mapeado solo en las tablas base
+// (CR3 0x1000). El PML4 privado de un proceso de anillo 3 no lo tiene:
+// tocar el chip desde la interrupción o desde una syscall con ese CR3
+// da #PF. Quien toque el dispositivo pasa por aquí. La mitad alta, la
+// identidad baja con los buffers DMA y las pilas siguen presentes.
+fn net_cr3_in() -> i64 {
+    let old = read_cr3();
+    if (old != 0x1000) { write_cr3(0x1000); }
+    return old;
+}
+
+fn net_cr3_out(old: i64) -> i64 {
+    if (old != 0x1000) { write_cr3(old); }
+    return 0;
+}
+
+// Interrupción del e1000. ICR se lee primero: el chip baja la línea y
+// el EOI no la vuelve a levantar. Nada aquí espera con hlt: net_tx
+// (para ARP y echo) gira sobre DD.
+interrupt fn irq_net() {
+    if (net_mmio != 0 && net_irq_on != 0) {
+        let old = net_cr3_in();
+        let icr = e_rd(0x00C0);
+        if (icr != 0) {
+            net_irqs = net_irqs + 1;
+            net_in_isr = 1;
+            net_rx_drain();
+            net_in_isr = 0;
+        }
+        net_cr3_out(old);
+    }
+    if (net_irq >= 8) { outb(0xA0, 0x20); }
+    outb(0x20, 0x20);
+}
+
+// Línea que el firmware dejó en PCI 0x3C. 0, 2 (cascada) o más de 15 no
+// sirven: se queda en sondeo y `net` lo dice.
+fn net_irq_setup() -> i64 {
+    net_irq_on = 0;
+    let line = pci_rd(0, net_dev, net_fun, 0x3C) & 255;
+    if (line < 1 || line > 15 || line == 2) { return 1; }
+    net_irq = line;
+    set_gate(32 + line, &irq_net);
+    let m = inb(0x21);
+    if (line < 8) {
+        outb(0x21, m & (~(1 << line)) & 255);
+    } else {
+        outb(0x21, m & (~4) & 255);
+        let s = inb(0xA1);
+        outb(0xA1, s & (~(1 << (line - 8))) & 255);
+    }
+    e_wr(0xC4, 0);
+    e_wr(0xD8, 0xFFFFFFFF);
+    e_rd(0x00C0);
+    // RXT0 | RXO | RXDMT0 | LSC
+    e_wr(0x00D0, 0xD4);
+    net_irq_on = 1;
+    return 0;
+}
+
+fn net_irq_off() -> i64 {
+    if (net_irq == 0) { return 0; }
+    let line = net_irq;
+    net_irq_on = 0;
+    if (line < 8) {
+        outb(0x21, (inb(0x21) | (1 << line)) & 255);
+        set_gate(32 + line, &irq_master);
+    } else {
+        outb(0xA1, (inb(0xA1) | (1 << (line - 8))) & 255);
+        outb(0x21, (inb(0x21) | 4) & 255);
+        set_gate(32 + line, &irq_slave);
+    }
+    net_irq = 0;
     return 0;
 }
 
 fn net_down() -> i64 {
     if (net_mmio == 0) { return 0; }
+    e_wr(0xD8, 0xFFFFFFFF);
+    net_irq_off();
     e_wr(0x0100, 0);
     e_wr(0x0400, 0);
-    e_wr(0xD8, 0xFFFFFFFF);
+    net_on = 0;
+    udp_reset();
     return 0;
 }
 
+// DD llega en microsegundos. Gira, no duerme: net_tx corre también
+// dentro de la interrupción y con IF en 0, donde un hlt no vuelve.
 fn net_wait_dd(d: *TxD) -> i64 {
-    let t = ticks;
     let spin = 0;
-    while (spin < 5000) {
+    while (spin < 200000) {
         if ((d->status & 1) != 0) { return 0; }
-        if (ticks - t >= 100) { return 1; }
-        hlt();
         spin = spin + 1;
     }
     return 1;
@@ -478,8 +573,8 @@ fn net_b4(b0: i64, b1: i64, b2: i64, b3: i64, a: i64, b: i64, c: i64, d: i64) ->
 
 // Suma en complemento a uno, bytes en orden de red. Devuelve el
 // checksum ya invertido (16 bits).
-fn net_csum(p: *u8, off: i64, n: i64) -> i64 {
-    let s = 0;
+fn net_sum(p: *u8, off: i64, n: i64, acc: i64) -> i64 {
+    let s = acc;
     let i = 0;
     while (i + 1 < n) {
         let hi = p[off + i] & 255;
@@ -488,10 +583,18 @@ fn net_csum(p: *u8, off: i64, n: i64) -> i64 {
         i = i + 2;
     }
     if (i < n) { s = s + (((p[off + i] & 255) as i64) << 8); }
+    return s;
+}
+
+fn net_fold(s: i64) -> i64 {
     while ((s >> 16) != 0) {
         s = (s & 65535) + (s >> 16);
     }
     return (~s) & 65535;
+}
+
+fn net_csum(p: *u8, off: i64, n: i64) -> i64 {
+    return net_fold(net_sum(p, off, n, 0));
 }
 
 fn net_txb() -> *u8 {
@@ -700,13 +803,15 @@ fn net_ip(p: *u8, hw: i64) -> i64 {
     let frag = (((ip.frag_hi & 255) as i64) << 8) | (ip.frag_lo & 255);
     if ((frag & 0x3FFF) != 0) { return 0; }
     if (net_csum(p, offsetof(IpPkt, vihl), ihl) != 0) { return 1; }
-    if ((ip.proto & 255) != 1) { return 0; }
+    if ((ip.proto & 255) != 1 && (ip.proto & 255) != 17) { return 0; }
     if (net_b4(ip.dip[0], ip.dip[1], ip.dip[2], ip.dip[3], 10, 0, 2, 15) == 0) { return 0; }
     let i = 0;
     while (i < 6) {
         if ((ip.dst[i] & 255) != (net_mac[i] & 255)) { return 0; }
         i = i + 1;
     }
+    if ((ip.proto & 255) == 17) { return udp_rx(p, ihl, total); }
+    if ((ip.proto & 255) != 1) { return 0; }
     if (total < ihl + 8) { return 1; }
     let icmp = sizeof(EthHdr) + ihl;
     if (net_csum(p, icmp, total - ihl) != 0) { return 1; }
@@ -749,6 +854,7 @@ fn net_rx_once() -> i64 {
     if (tr_en[9] != 0) { trace_hit(9, proc_pid[cur_i], len, err); }
     let buf = net_rx_pa[net_rx_i];
     net_rx_n = net_rx_n + 1;
+    if (net_in_isr != 0) { net_isr_rx = net_isr_rx + 1; } else { net_poll_rx = net_poll_rx + 1; }
     if ((st & 2) != 0 && err == 0 && len >= 14 && len <= 2048) {
         let p: *u8 = buf as *u8;
         net_frame(p, len);
@@ -770,11 +876,22 @@ fn net_rx_drain() -> i64 {
     return 0;
 }
 
+// Sondeo con IF apagado, para el hilo del shell cuando no hay IRQ:
+// la interrupción comparte el anillo y el buffer de envío.
+fn net_poll() -> i64 {
+    cli();
+    net_rx_drain();
+    sti();
+    return 0;
+}
+
 fn net_wait_flag(which: i64) -> i64 {
     let t = ticks;
     let spin = 0;
     while (spin < 5000) {
-        net_rx_drain();
+        // Con IRQ armada no se sondea: lo atiende irq_net y la prueba
+        // lo comprueba con net_isr_rx.
+        if (net_irq_on == 0) { net_poll(); }
         if (which == 1 && net_arp_seen != 0) { return 0; }
         if (which == 2 && net_ping_seen != 0) { return 0; }
         if (ticks - t >= 100) { return 1; }
@@ -846,20 +963,111 @@ fn net_show_rx() -> i64 {
     return 0;
 }
 
-fn cmd_net() -> i64 {
-    if (net_layout() == 0) {
-        puts("net layout\n");
-        return 0;
+// Envíos desde el hilo del shell: IF apagado, porque irq_net también
+// usa el buffer de envío.
+fn net_arp_req_locked() -> i64 {
+    cli();
+    let r = net_send_arp_request();
+    sti();
+    return r;
+}
+
+fn net_ping_locked() -> i64 {
+    cli();
+    let r = net_send_ping();
+    sti();
+    return r;
+}
+
+fn net_self_locked() -> i64 {
+    cli();
+    let r = net_self_reply();
+    sti();
+    return r;
+}
+
+fn net_irq_report() -> i64 {
+    if (net_irq_on == 0) {
+        puts("net irq fail line\n");
+    } else if (net_isr_rx >= 2 && net_poll_rx == 0 && net_irqs >= 1) {
+        puts("net irq ok\n");
+    } else {
+        puts("net irq fail ");
+        put_int(net_irqs);
+        putc(' ');
+        put_int(net_isr_rx);
+        putc(' ');
+        put_int(net_poll_rx);
+        putc('\n');
     }
+    return 0;
+}
+
+fn net_stat() -> i64 {
+    puts("net on ");
+    put_int(net_on);
+    puts(" irq ");
+    put_int(net_irq);
+    puts(" irqs ");
+    put_int(net_irqs);
+    puts(" isr ");
+    put_int(net_isr_rx);
+    puts(" poll ");
+    put_int(net_poll_rx);
+    putc('\n');
+    return 0;
+}
+
+fn net_counters_reset() -> i64 {
     net_arp_seen = 0;
     net_ping_seen = 0;
     net_rx_n = 0;
+    net_irqs = 0;
+    net_isr_rx = 0;
+    net_poll_rx = 0;
+    return 0;
+}
+
+// `net up`: deja el chip prendido, con IRQ, y aprende la MAC de la
+// puerta. Los sockets UDP necesitan eso. `net down` lo apaga.
+fn net_up_cmd() -> i64 {
+    if (net_on != 0) {
+        puts("net up already\n");
+        return 0;
+    }
+    net_counters_reset();
     if (net_bringup() != 0) {
         net_down();
-    } else if (net_self_reply() != 0) {
+        return 0;
+    }
+    if (net_arp_req_locked() != 0) {
+        puts("net fail tx\n");
+        net_down();
+        return 0;
+    }
+    if (net_wait_flag(1) != 0) {
+        puts("net arp fail\n");
+        net_down();
+        return 0;
+    }
+    puts("net up ok\n");
+    return 0;
+}
+
+fn net_down_cmd() -> i64 {
+    net_down();
+    puts("net down ok\n");
+    return 0;
+}
+
+fn net_full() -> i64 {
+    net_counters_reset();
+    if (net_bringup() != 0) {
+        net_down();
+    } else if (net_self_locked() != 0) {
         puts("net fail reply\n");
         net_down();
-    } else if (net_send_arp_request() != 0) {
+    } else if (net_arp_req_locked() != 0) {
         puts("net fail tx\n");
         net_down();
     } else if (net_wait_flag(1) != 0) {
@@ -868,7 +1076,7 @@ fn cmd_net() -> i64 {
         net_down();
     } else {
         puts("net arp ok\n");
-        let pr = net_send_ping();
+        let pr = net_ping_locked();
         if (pr == 2) {
             puts("net fail csum\n");
         } else if (pr != 0) {
@@ -878,6 +1086,7 @@ fn cmd_net() -> i64 {
             net_show_rx();
         } else {
             puts("net ping ok\n");
+            net_irq_report();
         }
         net_down();
     }
@@ -886,5 +1095,20 @@ fn cmd_net() -> i64 {
     } else {
         puts("net drop fail\n");
     }
+    return 0;
+}
+
+fn cmd_net() -> i64 {
+    if (net_layout() == 0 || udp_layout() == 0) {
+        puts("net layout\n");
+        return 0;
+    }
+    let pos = fs_scan(3, fs_sub);
+    if (pos < 0) { return net_full(); }
+    if (fs_sub[0] == 0) { return net_full(); }
+    if (fs_is("up")) { return net_up_cmd(); }
+    if (fs_is("down")) { return net_down_cmd(); }
+    if (fs_is("stat")) { return net_stat(); }
+    puts("net fail arg\n");
     return 0;
 }

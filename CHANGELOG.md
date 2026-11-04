@@ -8,6 +8,35 @@ para ese commit es `legacy-tempo`.
 
 ## 0.8
 
+RD-01 (parte 1): red por interrupciones y UDP. **(1) IRQ.** El e1000 deja
+de sondearse: la línea PCI (`0x3C`; fue la IRQ 11 en QEMU 11.1.3) se abre
+en el PIC, `IMS = 0xD4`, y `irq_net` (`net.lap`) lee `ICR`, vacía el anillo
+y manda EOI; ARP e ICMP siguen igual pero atendidos ahí. `net_tx` gira
+sobre DD en vez de `hlt` (dentro de la interrupción IF está en 0).
+`net` imprime `net irq ok` solo si el ARP reply y el echo reply los
+atendió la interrupción (`isr >= 2`, `poll == 0`). Hallazgo de la prueba:
+el BAR (`0x10000000`) no está en el PML4 privado de un proceso, así que
+tocar el chip desde la interrupción o una syscall daba `#PF`
+(`cr2=0x100000c0`); `net_cr3_in` / `net_cr3_out` usan CR3 `0x1000` mientras
+se toca el chip. Comandos nuevos: `net up`, `net down`, `net stat`. **(2)
+UDP** (`udp.lap`): tabla de 4 puertos, cola de 4 datagramas de 512 bytes
+por puerto, checksum con pseudo-cabecera (0 aceptado como «sin checksum»),
+y syscalls 12 `bind`, 13 `send`, 14 `recv`, 15 `close`, 16 `ticks`. Los
+punteros de usuario se validan enteros contra las páginas del proceso
+antes de tocarlos; kernel, MMIO, código (para escribir) y fuera de rango
+dan -14. Las syscalls no están en la máscara de una zona nueva (-1 y
+`niega`); `zone net nombre` las agrega. `src/user/udpeco.lap` es el eco de
+anillo 3 (`udp plant`). **Pruebas:** `tests/qemu_udp_test.sh` (parte de
+`make qemu-test`; `make qemu-udp-test` solo ella): hostfwd UDP y socat
+mandan un datagrama y leen el mismo de vuelta; punteros malos reales dan
+-14; zona sin red recibe `udp denied`; zona con `zone net` hace el eco;
+el puerto se libera al morir el proceso; `udp test` cubre el checksum a
+mano (`0x5C2D`), descartes, cola llena y punteros del kernel sin
+dispositivo. **Sin probar:** hardware real (solo QEMU, e1000 82540EM),
+IRQ por IOAPIC (el kernel usa el PIC), línea compartida, ráfagas que
+llenen el anillo de 8, dos procesos con socket a la vez, y MAC de destino
+distinta de la puerta.
+
 SG-02: robustez del kernel antes de la red. **(1) Excepciones de anillo 3.**
 Todo vector de CPU salvo `#PF` pasa por `user_exc` (`idt.lap`): de anillo 3
 (`CS & 3 == 3`) mata solo al proceso por `user_kill`, igual que `#GP` y

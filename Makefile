@@ -4,6 +4,7 @@
 #   all        Construye build/lapageriaos.img (etapa 1 + etapa 2 + kernel plano).
 #   qemu       Arranca esa imagen en QEMU con consola curses (teclado PS/2).
 #   qemu-test  Arranque sin pantalla: sendkey y comprobaciones por COM1.
+#   qemu-udp-test  Solo la prueba de red por IRQ y UDP (tests/qemu_udp_test.sh).
 #   debug      Igual que qemu, y espera a gdb en tcp::1234 (-s -S).
 #   clean      Borra build/.
 #   help       Muestra esta lista.
@@ -112,11 +113,13 @@ COPIHUE_KERNEL_SRC = $(KERNEL_SRC)/copihue/console.lap \
                      $(KERNEL_SRC)/copihue/atk_img.lap \
                      $(KERNEL_SRC)/copihue/zone.lap \
                      $(KERNEL_SRC)/copihue/net.lap \
+                     $(KERNEL_SRC)/copihue/udpeco_img.lap \
+                     $(KERNEL_SRC)/copihue/udp.lap \
                      $(KERNEL_SRC)/copihue/trace.lap \
                      $(KERNEL_SRC)/copihue/shell.lap \
                      $(KERNEL_SRC)/copihue/kernel.lap
 
-.PHONY: all qemu qemu-test debug clean help
+.PHONY: all qemu qemu-test qemu-udp-test debug clean help
 
 # Imagen de arranque: LBA 0 etapa 1, LBA 1 etapa 2, LBA KERNEL_LBA el kernel.
 all: $(OS_IMAGE)
@@ -232,6 +235,16 @@ $(ATK_IMG): src/user/ataque.lap scripts/mkaxe.sh $(COPIHUE) | $(BUILD_DIR)
 	$(abspath $(COPIHUE)) --flat 0x400000 -o $(ATK_BIN) src/user/ataque.lap
 	scripts/mkaxe.sh $(ATK_BIN) $(ATK_AXE) $@ atk_fill
 
+# Programa de eco UDP de anillo 3 (RD-01). `udp plant` lo escribe como
+# udpeco. Ver docs/red.md.
+UDPECO_BIN = $(BUILD_DIR)/udpeco.bin
+UDPECO_AXE = $(BUILD_DIR)/udpeco.axe
+UDPECO_IMG = $(KERNEL_SRC)/copihue/udpeco_img.lap
+
+$(UDPECO_IMG): src/user/udpeco.lap scripts/mkaxe.sh $(COPIHUE) | $(BUILD_DIR)
+	$(abspath $(COPIHUE)) --flat 0x400000 -o $(UDPECO_BIN) src/user/udpeco.lap
+	scripts/mkaxe.sh $(UDPECO_BIN) $(UDPECO_AXE) $@ udpeco_fill
+
 # Consola curses: QEMU entrega el teclado al controlador PS/2 que lee el shell.
 qemu: $(OS_IMAGE) $(DATA_IMG)
 	qemu-system-$(ARCH) $(QEMU_CPU) $(QEMU_DRIVES) -display curses
@@ -242,7 +255,12 @@ qemu: $(OS_IMAGE) $(DATA_IMG)
 qemu-test: $(OS_IMAGE)
 	dd if=/dev/zero of=$(DATA_IMG) bs=512 count=$(DATA_SECTORS) status=none
 	$(TESTS_DIR)/qemu_shell_test.sh $(OS_IMAGE)
+	$(TESTS_DIR)/qemu_udp_test.sh $(OS_IMAGE)
 	COPIHUE=$(abspath $(COPIHUE)) $(TESTS_DIR)/stage2_big_test.sh $(BUILD_DIR)
+
+# Solo la red por IRQ y UDP. Usa una copia nueva del disco de datos.
+qemu-udp-test: $(OS_IMAGE)
+	$(TESTS_DIR)/qemu_udp_test.sh $(OS_IMAGE)
 
 # La imagen es un binario plano: gdb no tiene tabla de símbolos ELF.
 debug: $(OS_IMAGE) $(DATA_IMG)
@@ -250,7 +268,7 @@ debug: $(OS_IMAGE) $(DATA_IMG)
 
 clean:
 	rm -rf $(BUILD_DIR)
-	rm -f $(KERNEL_SRC)/copihue/exec_img.lap $(KERNEL_SRC)/copihue/zone_img.lap $(KERNEL_SRC)/copihue/atk_img.lap
+	rm -f $(KERNEL_SRC)/copihue/exec_img.lap $(KERNEL_SRC)/copihue/zone_img.lap $(KERNEL_SRC)/copihue/atk_img.lap $(KERNEL_SRC)/copihue/udpeco_img.lap
 
 help:
 	@echo "LapageriaOS $(VERSION) — kernel y arranque en Copihue $(COPIHUE_COMMIT)"
@@ -263,6 +281,8 @@ help:
 	@echo "                  Incluye el disco de datos (ata, bloques, CRC, fs, exec)"
 	@echo "                  la red de usuario con e1000 (arp, ping, descarte)"
 	@echo "                  y trace (sondas, anillo, perdidos)."
+	@echo "                  Y la red por IRQ con UDP (eco con socat y hostfwd, zonas)."
+	@echo "  make qemu-udp-test  Solo esa prueba de red (tests/qemu_udp_test.sh)."
 	@echo "  make debug      Igual que qemu, esperando gdb en tcp::1234."
 	@echo "  make clean      Borra build/."
 	@echo "  make help       Esta lista."

@@ -204,3 +204,12 @@ CR0.AM; #XM necesita CR4.OSXMMEXCPT; #SS por RSP no canónico: QEMU 11.1.3
 entrega #GP (`vec=13 err=0x00000000`, RIP en el `push`), no #SS, así que
 esa prueba no distingue el vector y se descartó.
 
+
+## Red (RD-01)
+
+Las syscalls 12..16 (UDP, ver `red.md`) no están en la máscara de una
+zona nueva: devuelven -1 y suman `niega`, como cualquier otra fuera de
+la máscara. `zone net nombre` (solo desde la zona 0) agrega esos cinco
+bits. Probado en `tests/qemu_udp_test.sh`: la zona sin red imprime
+`udp denied` (el `bind` dio -1) y su `niega` queda en 1 o más; la zona con
+`zone net` hace el eco UDP.
