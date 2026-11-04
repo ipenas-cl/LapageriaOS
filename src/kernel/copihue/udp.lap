@@ -1,16 +1,25 @@
-// UDP sobre el e1000 de net.lap (RD-01). Una tabla de 4 puertos, una cola
-// de 4 datagramas por puerto y cinco syscalls para anillo 3:
+// UDP sobre el e1000 de net.lap (RD-01). Una tabla de 8 sockets, una cola
+// de 64 datagramas por socket y cinco syscalls para anillo 3:
 //
-//   12 bind(puerto)             0, o -22 -24 -98 -100
-//   13 send(buf, largo, dst)    0, o -9 -14 -22 -100 -113 -5
-//   14 recv(buf, max, src)      largo, o -9 -11 -14 -22
-//   15 close()                  0
-//   16 ticks()                  ticks del PIT (para los plazos)
+//   12 bind(puerto)                      fd (0..3), o -22 -24 -98 -100
+//   13 send(fd, buf, largo, dst)         0, o -9 -14 -22 -100 -113 -5
+//   14 recv(fd, buf, max, src, plazo)    largo, o -9 -11 -14 -22 -110
+//   15 close(fd)                         0, o -9
+//   16 ticks()                           ticks del PIT (para los plazos)
 //
 // dst y src son un i64: (ip << 16) | puerto, con la IP como entero de 32
-// bits en orden de lectura (10.0.2.2 = 0x0A000202). Un proceso tiene como
-// mucho un socket. Todas pasan por zone_gate: una zona cuya máscara no
-// las incluye recibe -1 y se le suma `niega`.
+// bits en orden de lectura (10.0.2.2 = 0x0A000202). Un proceso tiene hasta
+// 4 sockets (fd 0..3); en total hay 8. Todas pasan por zone_gate: una zona
+// cuya máscara no las incluye recibe -1 y se le suma `niega`.
+//
+// recv con plazo 0 no espera (-11 si no hay nada). Con plazo de 1 a 6000
+// ticks el proceso duerme: queda en estado 4 y el planificador lo pasa a 1
+// cuando llega un datagrama a ese socket (udp_rx) o vence el plazo
+// (udp_tick, desde el PIT). El proceso se duerme reescribiendo su marco de
+// retorno para que, al despertar, vuelva a ejecutar la instrucción
+// `syscall` con los mismos argumentos: la llamada decide de nuevo con lo
+// que haya. Si no queda otro proceso listo, duerme en la propia syscall
+// (sti; hlt) hasta que llegue algo. Plazo negativo o sobre 6000: -22.
 //
 // Los punteros del usuario se validan antes de tocar nada: tienen que
 // caer entera en las páginas del propio proceso (pila desde 0x401000, y
@@ -18,7 +27,9 @@
 // que cruce el final, da -14 y el kernel no la lee ni la escribe.
 //
 // El destino de todo envío es la MAC de la puerta (la aprendió `net up`):
-// la red de usuario no tiene otro vecino. Largo máximo: 512 bytes.
+// la red de usuario no tiene otro vecino. Largo máximo: 512 bytes. Un
+// datagrama a un puerto sin socket recibe ICMP port-unreachable (tipo 3,
+// código 3), con tope de 20 por segundo.
 
 packed struct UdpHdr {
     sp_hi: u8,
@@ -31,21 +42,52 @@ packed struct UdpHdr {
     sum_lo: u8
 }
 
-let udp_port: [i64; 4];
-let udp_owner: [i64; 4];
-let udp_head: [i64; 4];
-let udp_count: [i64; 4];
-let udp_qlen: [i64; 16];
-let udp_qsrc: [i64; 16];
-let udp_qbuf: [u8; 8192];
+let udp_port: [i64; 8];
+let udp_owner: [i64; 8];
+let udp_head: [i64; 8];
+let udp_count: [i64; 8];
+// fd de un proceso -> socket + 1 (0 = libre). Índice: dueño * 4 + fd.
+let udp_fdmap: [i64; 16];
+// Datagramas encolados: pool compartido de 96 slots de 512 bytes (48 KiB;
+// 8 colas de 64 a 512 bytes dejaban la .bss sobre 0x480000, que
+// stage2_big_test compara). Cada socket guarda hasta 64 índices de slot.
+// Pool agotado = `full`.
+let udp_qidx: [i64; 512];
+let udp_qlen: [i64; 96];
+let udp_qsrc: [i64; 96];
+let udp_qbuf: [u8; 49152];
+let udp_pfree: [i64; 96];
+let udp_nfree: i64 = 0;
+let udp_pinit: i64 = 0;
 let udp_tmp: [u8; 512];
 let udp_probe: [u8; 600];
+let udp_icmpb: [u8; 128];
 let udp_ipid: i64 = 0;
 let udp_rx_ok: i64 = 0;
 let udp_rx_bad: i64 = 0;
 let udp_rx_nosock: i64 = 0;
 let udp_rx_full: i64 = 0;
 let udp_tx_n: i64 = 0;
+// ICMP port-unreachable enviados, y descartados por el tope.
+let udp_unr_n: i64 = 0;
+let udp_unr_drop: i64 = 0;
+let udp_unr_win: i64 = 0;
+let udp_unr_cnt: i64 = 0;
+// Espera de recv por proceso: 1 si hay una llamada dormida, socket que
+// espera y plazo absoluto en ticks (0 = sin plazo).
+let udp_wait: [i64; 2];
+let udp_wsock: [i64; 2];
+let udp_wdl: [i64; 2];
+let udp_blk: i64 = 0;
+let udp_woke: i64 = 0;
+let udp_wtmo: i64 = 0;
+let udp_tmo: i64 = 0;
+// Argumentos de la llamada que se duerme (para reescribir el marco).
+let udp_a_fd: i64 = 0;
+let udp_a_buf: i64 = 0;
+let udp_a_max: i64 = 0;
+let udp_a_src: i64 = 0;
+let udp_a_tmo: i64 = 0;
 
 fn udp_layout() -> i64 {
     if (sizeof(UdpHdr) != 8) { return 0; }
@@ -57,59 +99,100 @@ fn udp_layout() -> i64 {
 
 fn udp_reset() -> i64 {
     let i = 0;
-    while (i < 4) {
+    while (i < 8) {
         udp_port[i] = 0;
         udp_owner[i] = 0;
         udp_head[i] = 0;
         udp_count[i] = 0;
         i = i + 1;
     }
+    i = 0;
+    while (i < 16) {
+        udp_fdmap[i] = 0;
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 96) {
+        udp_pfree[i] = i;
+        i = i + 1;
+    }
+    udp_nfree = 96;
+    udp_pinit = 1;
     return 0;
 }
 
-fn udp_sock_of(owner: i64) -> i64 {
-    let i = 0;
-    while (i < 4) {
-        if (udp_port[i] != 0 && udp_owner[i] == owner) { return i; }
-        i = i + 1;
+// Devuelve al pool los slots que un socket tiene encolados.
+fn udp_drop_queue(s: i64) -> i64 {
+    let k = 0;
+    while (k < udp_count[s]) {
+        udp_pfree[udp_nfree] = udp_qidx[s * 64 + ((udp_head[s] + k) & 63)];
+        udp_nfree = udp_nfree + 1;
+        k = k + 1;
     }
-    return 0 - 1;
+    udp_count[s] = 0;
+    udp_head[s] = 0;
+    return 0;
+}
+
+// Socket del fd de un dueño, o -1.
+fn udp_fd_sock(owner: i64, fd: i64) -> i64 {
+    if (owner < 0 || owner > 3) { return 0 - 1; }
+    if (fd < 0 || fd > 3) { return 0 - 1; }
+    let m = udp_fdmap[owner * 4 + fd];
+    if (m == 0) { return 0 - 1; }
+    return m - 1;
 }
 
 fn udp_sock_port(port: i64) -> i64 {
     let i = 0;
-    while (i < 4) {
+    while (i < 8) {
         if (udp_port[i] == port) { return i; }
         i = i + 1;
     }
     return 0 - 1;
 }
 
+// Devuelve el fd nuevo.
 fn udp_bind(owner: i64, port: i64) -> i64 {
     if (port < 1 || port > 65535) { return 0 - 22; }
-    if (udp_sock_of(owner) >= 0) { return 0 - 22; }
+    if (owner < 0 || owner > 3) { return 0 - 22; }
+    if (udp_pinit == 0) { udp_reset(); }
     if (udp_sock_port(port) >= 0) { return 0 - 98; }
+    let fd = 0;
+    while (fd < 4 && udp_fdmap[owner * 4 + fd] != 0) { fd = fd + 1; }
+    if (fd >= 4) { return 0 - 24; }
     let s = udp_sock_port(0);
     if (s < 0) { return 0 - 24; }
     udp_port[s] = port;
     udp_owner[s] = owner;
     udp_head[s] = 0;
     udp_count[s] = 0;
-    return 0;
+    udp_fdmap[owner * 4 + fd] = s + 1;
+    return fd;
 }
 
-fn udp_close(owner: i64) -> i64 {
-    let s = udp_sock_of(owner);
+fn udp_close(owner: i64, fd: i64) -> i64 {
+    let s = udp_fd_sock(owner, fd);
     if (s < 0) { return 0 - 9; }
+    udp_drop_queue(s);
     udp_port[s] = 0;
-    udp_count[s] = 0;
-    udp_head[s] = 0;
+    udp_fdmap[owner * 4 + fd] = 0;
     return 0;
 }
 
-// Al morir el proceso (release_proc) su socket se cierra.
+// Al morir el proceso (release_proc) sus sockets se cierran y se borra su
+// espera.
 fn udp_release(owner: i64) -> i64 {
-    udp_close(owner);
+    let fd = 0;
+    while (fd < 4) {
+        udp_close(owner, fd);
+        fd = fd + 1;
+    }
+    if (owner >= 0 && owner < 2) {
+        udp_wait[owner] = 0;
+        udp_wsock[owner] = 0;
+        udp_wdl[owner] = 0;
+    }
     return 0;
 }
 
@@ -123,6 +206,82 @@ fn udp_pseudo(p: *u8, ulen: i64) -> i64 {
     s = s + ((((ip.dip[0] & 255) as i64) << 8) | (ip.dip[1] & 255));
     s = s + ((((ip.dip[2] & 255) as i64) << 8) | (ip.dip[3] & 255));
     return s;
+}
+
+// Arma en out el ICMP destination-unreachable / port-unreachable para el
+// datagrama p (cabecera IP de ihl bytes ya validada, total IP). Lleva la
+// cabecera IP original y los primeros 8 bytes del UDP. Devuelve el largo
+// de la trama (sin relleno a 60).
+fn udp_icmp_build(out: *u8, p: *u8, ihl: i64, total: i64) -> i64 {
+    let inner = ihl + 8;
+    let tl = 20 + 8 + inner;
+    let n = sizeof(EthHdr) + tl;
+    let m = n;
+    if (m < 60) { m = 60; }
+    net_zero(out, m);
+    let ip: *IpPkt = out as *IpPkt;
+    let s: *IpPkt = p as *IpPkt;
+    let i = 0;
+    while (i < 6) {
+        ip.dst[i] = s.src[i];
+        ip.src[i] = s.dst[i];
+        i = i + 1;
+    }
+    ip.et_hi = 0x08;
+    ip.vihl = 0x45;
+    ip.len_hi = ((tl >> 8) & 255) as u8;
+    ip.len_lo = (tl & 255) as u8;
+    udp_ipid = udp_ipid + 1;
+    ip.id_hi = ((udp_ipid >> 8) & 255) as u8;
+    ip.id_lo = (udp_ipid & 255) as u8;
+    ip.ttl = 64;
+    ip.proto = 1;
+    ip.sip[0] = 10;
+    ip.sip[1] = 0;
+    ip.sip[2] = 2;
+    ip.sip[3] = 15;
+    i = 0;
+    while (i < 4) {
+        ip.dip[i] = s.sip[i];
+        i = i + 1;
+    }
+    let ic: *IcmpEcho = (out as i64 + sizeof(IpPkt)) as *IcmpEcho;
+    ic.typ = 3;
+    ic.code = 3;
+    let off = sizeof(IpPkt) + 8;
+    i = 0;
+    while (i < inner) {
+        out[off + i] = p[sizeof(EthHdr) + i];
+        i = i + 1;
+    }
+    let c = net_csum(out, sizeof(IpPkt), 8 + inner);
+    ic.sum_hi = ((c >> 8) & 255) as u8;
+    ic.sum_lo = (c & 255) as u8;
+    c = net_csum(out, offsetof(IpPkt, vihl), 20);
+    ip.sum_hi = ((c >> 8) & 255) as u8;
+    ip.sum_lo = (c & 255) as u8;
+    return n;
+}
+
+// Contesta con port-unreachable, salvo a un origen 0.0.0.0 o de difusión.
+// Tope de 20 por ventana de 100 ticks. Sin el chip prendido no hace nada.
+fn udp_unreach(p: *u8, ihl: i64, total: i64) -> i64 {
+    let ip: *IpPkt = p as *IpPkt;
+    if (net_b4(ip.sip[0], ip.sip[1], ip.sip[2], ip.sip[3], 0, 0, 0, 0) != 0) { return 0; }
+    if (net_b4(ip.sip[0], ip.sip[1], ip.sip[2], ip.sip[3], 255, 255, 255, 255) != 0) { return 0; }
+    if (net_on == 0 || net_tx_pa == 0) { return 0; }
+    if (ticks - udp_unr_win >= 100) {
+        udp_unr_win = ticks;
+        udp_unr_cnt = 0;
+    }
+    if (udp_unr_cnt >= 20) {
+        udp_unr_drop = udp_unr_drop + 1;
+        return 0;
+    }
+    udp_unr_cnt = udp_unr_cnt + 1;
+    let n = udp_icmp_build(net_txb(), p, ihl, total);
+    if (net_tx(n) == 0) { udp_unr_n = udp_unr_n + 1; }
+    return 0;
 }
 
 // Llamada desde net_ip con la cabecera IP ya validada y el destino
@@ -144,9 +303,15 @@ fn udp_rx(p: *u8, ihl: i64, total: i64) -> i64 {
     let dport = (((u.dp_hi & 255) as i64) << 8) | (u.dp_lo & 255);
     let sport = (((u.sp_hi & 255) as i64) << 8) | (u.sp_lo & 255);
     let s = udp_sock_port(dport);
-    if (s < 0 || dport == 0) { udp_rx_nosock = udp_rx_nosock + 1; return 0; }
-    if (udp_count[s] >= 4) { udp_rx_full = udp_rx_full + 1; return 0; }
-    let q = s * 4 + ((udp_head[s] + udp_count[s]) & 3);
+    if (s < 0 || dport == 0) {
+        udp_rx_nosock = udp_rx_nosock + 1;
+        udp_unreach(p, ihl, total);
+        return 0;
+    }
+    if (udp_count[s] >= 64 || udp_nfree == 0) { udp_rx_full = udp_rx_full + 1; return 0; }
+    udp_nfree = udp_nfree - 1;
+    let q = udp_pfree[udp_nfree];
+    udp_qidx[s * 64 + ((udp_head[s] + udp_count[s]) & 63)] = q;
     let n = ulen - 8;
     let i = 0;
     while (i < n) {
@@ -159,6 +324,27 @@ fn udp_rx(p: *u8, ihl: i64, total: i64) -> i64 {
     udp_qsrc[q] = (a << 16) | sport;
     udp_count[s] = udp_count[s] + 1;
     udp_rx_ok = udp_rx_ok + 1;
+    // Despierta al dueño si está dormido en recv de este socket.
+    let o = udp_owner[s];
+    if (o >= 0 && o < 2) {
+        if (proc_state[o] == 4 && udp_wsock[o] == s) {
+            proc_state[o] = 1;
+            udp_woke = udp_woke + 1;
+        }
+    }
+    return 0;
+}
+
+// Desde el PIT: pasa a listo al proceso dormido cuyo plazo venció.
+fn udp_tick() -> i64 {
+    let i = 0;
+    while (i < 2) {
+        if (proc_state[i] == 4 && udp_wdl[i] != 0 && ticks >= udp_wdl[i]) {
+            proc_state[i] = 1;
+            udp_wtmo = udp_wtmo + 1;
+        }
+        i = i + 1;
+    }
     return 0;
 }
 
@@ -167,7 +353,7 @@ fn udp_rx(p: *u8, ihl: i64, total: i64) -> i64 {
 let udp_src: i64 = 0;
 fn udp_pop(s: i64, max: i64) -> i64 {
     if (udp_count[s] == 0) { return 0 - 11; }
-    let q = s * 4 + (udp_head[s] & 3);
+    let q = udp_qidx[s * 64 + (udp_head[s] & 63)];
     let n = udp_qlen[q];
     if (n > max) { n = max; }
     let i = 0;
@@ -176,7 +362,9 @@ fn udp_pop(s: i64, max: i64) -> i64 {
         i = i + 1;
     }
     udp_src = udp_qsrc[q];
-    udp_head[s] = (udp_head[s] + 1) & 3;
+    udp_pfree[udp_nfree] = q;
+    udp_nfree = udp_nfree + 1;
+    udp_head[s] = (udp_head[s] + 1) & 63;
     udp_count[s] = udp_count[s] - 1;
     return n;
 }
@@ -267,7 +455,95 @@ fn udp_uptr_ok(p: i64, n: i64, write: i64) -> i64 {
     return 1;
 }
 
-fn udp_syscall(nr: i64, a1: i64, a2: i64, a3: i64) -> i64 {
+// Otro proceso listo para correr (estado 1 con marco forjado), o -1.
+fn udp_ready_other(me: i64) -> i64 {
+    let i = 0;
+    while (i < 2) {
+        if (i != me && proc_state[i] == 1 && proc_ksp[i] != 0) { return i; }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+// Duerme al proceso me y pasa a q. No vuelve. El marco que se deja hace
+// que, al despertar, el proceso ejecute otra vez `syscall` con rax = 14 y
+// los argumentos de udp_a_*; rbp es el del usuario (el prólogo de la
+// syscall lo guardó 32 bytes bajo la pila del kernel).
+fn udp_park(me: i64, q: i64) -> i64 {
+    read_user_ctx();
+    let urbp = user_rbp();
+    uctx_rfl = uctx_rfl | 0x202;
+    forge(me, uctx_rip - 2, uctx_rsp, uctx_rfl);
+    let fr: *u64 = proc_ksp[me] as *u64;
+    fr[14] = 14;
+    fr[8] = udp_a_fd;
+    fr[9] = udp_a_buf;
+    fr[12] = udp_a_max;
+    fr[5] = udp_a_src;
+    fr[7] = udp_a_tmo;
+    fr[10] = urbp;
+    switch_to(q);
+    proc_state[me] = 4;
+    resume_frame();
+    return 0;
+}
+
+// recv ya validado. s es el socket; fd, buf, max, srcp y tmo, los argumentos.
+fn udp_recv(me: i64, s: i64, fd: i64, buf: i64, max: i64, srcp: i64, tmo: i64) -> i64 {
+    udp_a_fd = fd;
+    udp_a_buf = buf;
+    udp_a_max = max;
+    udp_a_src = srcp;
+    udp_a_tmo = tmo;
+    while (1) {
+        if (udp_count[s] == 0 && net_on != 0 && net_irq_on == 0) {
+            let old = net_cr3_in();
+            net_rx_drain();
+            net_cr3_out(old);
+        }
+        if (udp_count[s] > 0) {
+            udp_wait[me] = 0;
+            let n = udp_pop(s, max);
+            let i = 0;
+            while (i < n) {
+                let b: *u8 = (buf + i) as *u8;
+                b[0] = udp_tmp[i];
+                i = i + 1;
+            }
+            if (srcp != 0) {
+                i = 0;
+                while (i < 8) {
+                    let d: *u8 = (srcp + i) as *u8;
+                    d[0] = ((udp_src >> (i * 8)) & 255) as u8;
+                    i = i + 1;
+                }
+            }
+            return n;
+        }
+        if (tmo == 0) { return 0 - 11; }
+        if (udp_wait[me] == 0) {
+            udp_wait[me] = 1;
+            udp_wdl[me] = ticks + tmo;
+            udp_blk = udp_blk + 1;
+        }
+        if (ticks >= udp_wdl[me]) {
+            udp_wait[me] = 0;
+            udp_tmo = udp_tmo + 1;
+            return 0 - 110;
+        }
+        udp_wsock[me] = s;
+        let q = udp_ready_other(me);
+        if (q >= 0) { udp_park(me, q); }
+        // Nadie más listo: se duerme aquí hasta la próxima interrupción
+        // (PIT o e1000) y se vuelve a mirar.
+        sti();
+        hlt();
+        cli();
+    }
+    return 0;
+}
+
+fn udp_syscall(nr: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64) -> i64 {
     if (nr == 16) { return ticks; }
     if (sched_on == 0) { return 0 - 1; }
     let me = cur_i;
@@ -275,50 +551,30 @@ fn udp_syscall(nr: i64, a1: i64, a2: i64, a3: i64) -> i64 {
         if (net_on == 0) { return 0 - 100; }
         return udp_bind(me, a1);
     }
-    if (nr == 15) { return udp_close(me); }
-    let s = udp_sock_of(me);
+    if (nr == 15) { return udp_close(me, a1); }
+    let s = udp_fd_sock(me, a1);
     if (s < 0) { return 0 - 9; }
     if (nr == 13) {
-        let len = a2;
+        let len = a3;
         if (len < 0 || len > 512) { return 0 - 22; }
-        if (len > 0 && udp_uptr_ok(a1, len, 0) == 0) { return 0 - 14; }
-        let dport = a3 & 65535;
+        if (len > 0 && udp_uptr_ok(a2, len, 0) == 0) { return 0 - 14; }
+        let dport = a4 & 65535;
         if (dport == 0) { return 0 - 22; }
         let i = 0;
         while (i < len) {
-            let b: *u8 = (a1 + i) as *u8;
+            let b: *u8 = (a2 + i) as *u8;
             udp_tmp[i] = b[0];
             i = i + 1;
         }
-        return udp_tx(udp_port[s], (a3 >> 16) & 0xFFFFFFFF, dport, udp_tmp, len);
+        return udp_tx(udp_port[s], (a4 >> 16) & 0xFFFFFFFF, dport, udp_tmp, len);
     }
     if (nr == 14) {
-        let max = a2;
+        let max = a3;
         if (max < 0 || max > 512) { return 0 - 22; }
-        if (max > 0 && udp_uptr_ok(a1, max, 1) == 0) { return 0 - 14; }
-        if (a3 != 0 && udp_uptr_ok(a3, 8, 1) == 0) { return 0 - 14; }
-        if (udp_count[s] == 0 && net_on != 0 && net_irq_on == 0) {
-            let old = net_cr3_in();
-            net_rx_drain();
-            net_cr3_out(old);
-        }
-        let n = udp_pop(s, max);
-        if (n < 0) { return n; }
-        let i = 0;
-        while (i < n) {
-            let b: *u8 = (a1 + i) as *u8;
-            b[0] = udp_tmp[i];
-            i = i + 1;
-        }
-        if (a3 != 0) {
-            i = 0;
-            while (i < 8) {
-                let d: *u8 = (a3 + i) as *u8;
-                d[0] = ((udp_src >> (i * 8)) & 255) as u8;
-                i = i + 1;
-            }
-        }
-        return n;
+        if (max > 0 && udp_uptr_ok(a2, max, 1) == 0) { return 0 - 14; }
+        if (a4 != 0 && udp_uptr_ok(a4, 8, 1) == 0) { return 0 - 14; }
+        if (a5 < 0 || a5 > 6000) { return 0 - 22; }
+        return udp_recv(me, s, a1, a2, max, a4, a5);
     }
     return 0 - 22;
 }
@@ -373,12 +629,14 @@ fn udp_probe_frame(sum: i64, ulen: i64, dport: i64) -> i64 {
 }
 
 // Prueba sin dispositivo: recepción con el checksum de la mano (0x5C2D),
-// descartes, cola, armado del envío y validación de punteros.
+// descartes, cola, armado del envío y del ICMP, despertar de un proceso
+// dormido y validación de punteros.
 fn udp_selftest() -> i64 {
     if (net_layout() == 0 || udp_layout() == 0) { return udp_fail(1); }
     udp_reset();
+    // Dos sockets de un mismo dueño, y el puerto ocupado por otro.
     if (udp_bind(2, 7777) != 0) { return udp_fail(2); }
-    if (udp_bind(2, 7778) != (0 - 22)) { return udp_fail(3); }
+    if (udp_bind(2, 7778) != 1) { return udp_fail(3); }
     if (udp_bind(1, 7777) != (0 - 98)) { return udp_fail(4); }
     // Suma de palabras: 0x0A00 0x0202 0x0A00 0x020F 0x0011 0x000A
     // 0x04D2 0x1E61 0x000A 0x6869 = 0xA3D2. ~ = 0x5C2D.
@@ -402,16 +660,18 @@ fn udp_selftest() -> i64 {
     udp_probe_frame(0, 10, 7000);
     if (net_frame(udp_probe, 60) != 0) { return udp_fail(16); }
     if (udp_rx_nosock != nos + 1 || udp_count[0] != 0) { return udp_fail(17); }
+    // Cola de 64: 70 datagramas dejan 64 y cuentan 6 llenos.
     let full = udp_rx_full;
     let k = 0;
-    while (k < 5) {
+    while (k < 70) {
         udp_probe_frame(0, 10, 7777);
         net_frame(udp_probe, 60);
         k = k + 1;
     }
-    if (udp_count[0] != 4 || udp_rx_full != full + 1) { return udp_fail(18); }
-    if (udp_close(2) != 0) { return udp_fail(19); }
-    if (udp_close(2) != (0 - 9)) { return udp_fail(20); }
+    if (udp_count[0] != 64 || udp_rx_full != full + 6) { return udp_fail(18); }
+    if (udp_close(2, 0) != 0) { return udp_fail(19); }
+    if (udp_close(2, 0) != (0 - 9)) { return udp_fail(20); }
+    if (udp_fd_sock(2, 1) != 1) { return udp_fail(38); }
     // Envío: mismas palabras que la entrada, así que el mismo 0x5C2D.
     udp_tmp[0] = 0x68;
     udp_tmp[1] = 0x69;
@@ -434,6 +694,62 @@ fn udp_selftest() -> i64 {
     if (udp_uptr_ok(0x402000, 1, 0) != 0) { return udp_fail(35); }
     if (udp_uptr_ok(0x401800, 0, 1) != 0) { return udp_fail(36); }
     if (udp_uptr_ok(0x401800, 513, 1) != 0) { return udp_fail(37); }
+    // Límites de la tabla: 4 fds por dueño, 8 sockets en total.
+    udp_reset();
+    k = 0;
+    while (k < 4) {
+        if (udp_bind(3, 9000 + k) != k) { return udp_fail(39); }
+        k = k + 1;
+    }
+    if (udp_bind(3, 9100) != (0 - 24)) { return udp_fail(40); }
+    k = 0;
+    while (k < 4) {
+        if (udp_bind(2, 9200 + k) != k) { return udp_fail(41); }
+        k = k + 1;
+    }
+    if (udp_bind(1, 9300) != (0 - 24)) { return udp_fail(42); }
+    if (udp_bind(2, 0) != (0 - 22) || udp_bind(2, 65536) != (0 - 22)) { return udp_fail(43); }
+    udp_reset();
+    // ICMP port-unreachable: trama armada aparte, sin tocar el chip.
+    udp_probe_frame(0, 10, 7000);
+    n = udp_icmp_build(udp_icmpb, udp_probe, 20, 30);
+    if (n != 70) { return udp_fail(44); }
+    if ((udp_icmpb[0] & 255) != 2 || (udp_icmpb[5] & 255) != 0x22) { return udp_fail(45); }
+    if ((udp_icmpb[12] & 255) != 0x08 || (udp_icmpb[23] & 255) != 1) { return udp_fail(46); }
+    if ((udp_icmpb[16] & 255) != 0 || (udp_icmpb[17] & 255) != 56) { return udp_fail(47); }
+    if (net_csum(udp_icmpb, offsetof(IpPkt, vihl), 20) != 0) { return udp_fail(48); }
+    if ((udp_icmpb[34] & 255) != 3 || (udp_icmpb[35] & 255) != 3) { return udp_fail(49); }
+    if (net_csum(udp_icmpb, 34, 36) != 0) { return udp_fail(50); }
+    if (net_b4(udp_icmpb[26], udp_icmpb[27], udp_icmpb[28], udp_icmpb[29], 10, 0, 2, 15) == 0) { return udp_fail(51); }
+    if (net_b4(udp_icmpb[30], udp_icmpb[31], udp_icmpb[32], udp_icmpb[33], 10, 0, 2, 2) == 0) { return udp_fail(52); }
+    // Lleva la cabecera IP original (a partir de 42) y el UDP (62): puerto
+    // de destino 7000 = 0x1B58.
+    if ((udp_icmpb[42] & 255) != 0x45 || (udp_icmpb[51] & 255) != 17) { return udp_fail(53); }
+    if ((udp_icmpb[64] & 255) != 0x1B || (udp_icmpb[65] & 255) != 0x58) { return udp_fail(54); }
+    // Un proceso dormido en recv se despierta al llegar su datagrama y no
+    // por uno de otro socket.
+    let st1 = proc_state[1];
+    if (udp_bind(1, 7777) != 0) { return udp_fail(55); }
+    if (udp_bind(1, 7778) != 1) { return udp_fail(56); }
+    proc_state[1] = 4;
+    udp_wsock[1] = 1;
+    udp_probe_frame(0, 10, 7777);
+    net_frame(udp_probe, 60);
+    if (proc_state[1] != 4) { return udp_fail(57); }
+    let w = udp_woke;
+    udp_probe_frame(0, 10, 7778);
+    net_frame(udp_probe, 60);
+    if (proc_state[1] != 1 || udp_woke != w + 1) { return udp_fail(58); }
+    // Plazo vencido: udp_tick lo pasa a listo.
+    proc_state[1] = 4;
+    udp_wdl[1] = ticks;
+    udp_tick();
+    if (proc_state[1] != 1) { return udp_fail(59); }
+    proc_state[1] = st1;
+    udp_wdl[1] = 0;
+    udp_wsock[1] = 0;
+    udp_wtmo = 0;
+    udp_woke = 0;
     udp_reset();
     udp_rx_ok = 0;
     udp_rx_bad = 0;
@@ -454,15 +770,33 @@ fn udp_show() -> i64 {
     put_int(udp_rx_full);
     puts(" tx ");
     put_int(udp_tx_n);
+    puts(" unr ");
+    put_int(udp_unr_n);
+    puts(" unrdrop ");
+    put_int(udp_unr_drop);
+    puts(" blk ");
+    put_int(udp_blk);
+    puts(" woke ");
+    put_int(udp_woke);
+    puts(" wtmo ");
+    put_int(udp_wtmo);
+    puts(" tmo ");
+    put_int(udp_tmo);
     putc('\n');
     return 0;
 }
 
-fn udp_plant() -> i64 {
-    let n = udpeco_fill(exec_buf);
+fn udp_plant_one(name: *u8, n: i64) -> i64 {
     if (n < 16 || n > 4096) { return exec_fail(9); }
-    let r = fs_write("udpeco", exec_buf, n);
+    let r = fs_write(name, exec_buf, n);
     if (r != 0) { return exec_fail(r); }
+    return 0;
+}
+
+fn udp_plant() -> i64 {
+    if (udp_plant_one("udpeco", udpeco_fill(exec_buf)) != 0) { return 0; }
+    if (udp_plant_one("udpdos", udpdos_fill(exec_buf)) != 0) { return 0; }
+    if (udp_plant_one("udpwait", udpwait_fill(exec_buf)) != 0) { return 0; }
     puts("udp plant ok\n");
     return 0;
 }

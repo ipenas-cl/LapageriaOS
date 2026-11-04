@@ -1,0 +1,81 @@
+// Eco UDP con dos sockets (RD-01 parte 2). copihue --flat 0x400000.
+// Abre 7781 (fd 0) y 7782 (fd 1) en el mismo proceso. Duerme en recv del
+// fd 0 hasta 5 s, devuelve el datagrama por el fd 0, y repite con el fd 1:
+// la respuesta sale desde el puerto de cada socket. Si ambos eco andan
+// imprime `udp dos echo ok`; si no, `udp dos fail`. Sin red (zona) la
+// primera syscall da -1 y imprime `udp denied`.
+// Mismo ABI y mismo convenio de mensajes que udpeco.lap.
+
+naked fn emit(c: i64) {
+    rax = 1;
+    syscall();
+}
+
+fn say8(w: i64) {
+    let x: i64 = w;
+    while (x != 0) {
+        emit(x & 255);
+        x = x >> 8;
+    }
+}
+
+fn w_dos() {
+    say8(0x20736f6420706475);
+}
+
+fn say_denied() {
+    say8(0x20706475);
+    say8(0x0a6465696e6564);
+}
+
+fn say_listen() {
+    w_dos();
+    say8(0x0a6e657473696c);
+}
+
+fn say_ok() {
+    w_dos();
+    say8(0x0a6b6f206f686365);
+}
+
+fn say_fail() {
+    w_dos();
+    say8(0x0a6c696166);
+}
+
+// Espera un datagrama en el fd, lo devuelve por el mismo fd. 1 si anduvo.
+fn echo_one(fd: i64) -> i64 {
+    let n: i64 = syscall(14, fd, 0x401A00, 256, 0x401900, 500);
+    if (n < 0) { return 0; }
+    let dst: i64 = *(0x401900 as *i64);
+    let s: i64 = syscall(13, fd, 0x401A00, n, dst, 0);
+    if (s == 0) { return 1; }
+    return 0;
+}
+
+fn dos_main() {
+    let a: i64 = syscall(12, 7781);
+    if (a != 0) {
+        say_denied();
+        return;
+    }
+    let b: i64 = syscall(12, 7782);
+    if (b != 1) {
+        say_fail();
+        return;
+    }
+    say_listen();
+    let ok: i64 = 1;
+    ok = ok & echo_one(0);
+    ok = ok & echo_one(1);
+    if (ok == 1) { say_ok(); } else { say_fail(); }
+    syscall(15, 0);
+    syscall(15, 1);
+}
+
+naked fn _start() {
+    dos_main();
+    rax = 5;
+    syscall();
+    hlt();
+}

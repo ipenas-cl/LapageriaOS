@@ -29,12 +29,16 @@ en 0); el chip no emite nada mientras IMS esté en 0.
 
 ## Anillos
 
-Ocho descriptores de recepción y ocho de transmisión, más un buffer de
-envío y ocho de recepción. Cada uno sale de `alloc_low_page`. Se
+32 descriptores de recepción (RD-01b; eran 8) y 8 de transmisión, más
+un buffer de envío. Los de recepción son 32 buffers de 2048 bytes, dos
+por página, de 16 páginas. Cada página sale de `alloc_low_page`. Se
 rechaza la página si no está alineada a 4 KiB, si pasa de 4 GiB, o si
 no cae en la identidad de 2 MiB (ahí la CPU puede escribirla). El alto
-del descriptor de 64 bits queda en 0. `RDLEN` y `TDLEN` son 128, que es
-múltiplo de 128.
+del descriptor de 64 bits queda en 0. `RDLEN` es 512 y `TDLEN` 128,
+ambos múltiplos de 128. `RDT` parte en 31: el chip no deja que la
+cabeza alcance a la cola, así que caben 31 tramas sin atender.
+`net_rx_drain` recorre hasta 64 descriptores por llamada (dos vueltas),
+para no dejar listos sin que nadie vuelva a levantar la interrupción.
 
 El descriptor es un `packed struct` de 16 bytes (`sizeof(RxD)` y
 `sizeof(TxD)`). La trama también: `EthHdr` mide 14, `ArpPkt` 42 e
@@ -106,16 +110,29 @@ el ARP reply y el echo reply los atendió la interrupción.
 
 ## UDP
 
-Código en `udp.lap`. Tabla de 4 puertos; cada uno con cola de 4
-datagramas de hasta 512 bytes (no hay fragmentos: se tiran). Un proceso
-tiene a lo más un socket y se cierra solo cuando el proceso muere
-(`release_proc`). IP fija `10.0.2.15`.
+Código en `udp.lap`. Tabla de 8 sockets; cada uno con cola de hasta 64
+datagramas de hasta 512 bytes, sacados de un pool compartido de 96 slots
+(48 KiB; si se agota cuenta como `full`; con 8 colas de 64 la `.bss`
+pasaba de `0x480000` y rompía `stage2_big_test`). No hay fragmentos: se
+tiran. Un proceso
+tiene hasta 4 sockets (fd 0..3, en el orden en que los abre) y se cierran
+solos cuando el proceso muere (`release_proc`). IP fija `10.0.2.15`.
+Hay dos ranuras de proceso (`exec2 a b` los corre a la vez).
 
 Recepción (`udp_rx`, desde `net_ip` con la cabecera IP validada): el
 largo UDP tiene que ser igual al total IP menos la cabecera; el checksum,
 si no es 0, se verifica con la pseudo-cabecera (0 significa «sin
 checksum», que IPv4 permite y slirp usa). Malformado: se descarta
-(`bad`). Sin socket en ese puerto: `nosock`. Cola llena: `full`.
+(`bad`). Sin socket en ese puerto: `nosock` y un ICMP port-unreachable.
+Cola llena: `full` (el datagrama se descarta y se cuenta).
+
+ICMP port-unreachable (`udp_icmp_build`, `udp_unreach`): tipo 3, código
+3, desde `10.0.2.15` a quien mandó, a su MAC de origen, con la cabecera IP
+original y los primeros 8 bytes del UDP; checksums IP e ICMP calculados.
+No se contesta a un origen `0.0.0.0` ni `255.255.255.255`, ni con el chip
+apagado. Tope de 20 por ventana de 100 ticks; lo que pasa del tope se
+cuenta en `unrdrop`. Solo se contesta después de validar largo y checksum
+del UDP: un datagrama malo no genera ICMP.
 
 Envío (`udp_build`): Ethernet + IPv4 (DF, TTL 64, id creciente) + UDP con
 checksum calculado; un resultado 0 se manda como `0xFFFF`. El destino
@@ -124,17 +141,36 @@ Ethernet es siempre la MAC de la puerta, aprendida por el ARP de
 
 Syscalls (en la máscara de zona solo si se agregan; ver `zonas.md`):
 
+La ABI cambió en RD-01b: `syscall fn sys_user` recibe ahora 5 argumentos
+(`rdi rsi rdx r10 r8`) y el fd va primero.
+
 | Nº | Llamada | Resultado |
 |---|---|---|
-| 12 | `bind(puerto)` | 0; `-22` puerto 0 o ya tiene socket; `-98` en uso; `-24` tabla llena; `-100` red apagada |
-| 13 | `send(buf, largo, dst)` | 0; `-9` sin socket; `-14` puntero; `-22` largo o puerto; `-100`, `-113`, `-5` |
-| 14 | `recv(buf, max, src)` | largo (recortado a `max`); `-11` nada; `-9`; `-14`; `-22` |
-| 15 | `close()` | 0; `-9` |
+| 12 | `bind(puerto)` | el fd (0..3); `-22` puerto fuera de 1..65535; `-98` en uso; `-24` sin fd o sin socket libre; `-100` red apagada |
+| 13 | `send(fd, buf, largo, dst)` | 0; `-9` fd malo; `-14` puntero; `-22` largo o puerto; `-100`, `-113`, `-5` |
+| 14 | `recv(fd, buf, max, src, plazo)` | largo (recortado a `max`); `-11` nada y plazo 0; `-110` venció el plazo; `-9`; `-14`; `-22` |
+| 15 | `close(fd)` | 0; `-9` |
 | 16 | `ticks()` | ticks del PIT, para plazos |
 
 `dst` y `src` son un i64: `(ip << 16) | puerto`, con la IP como entero
-`0x0A000202` para `10.0.2.2`. `recv` no bloquea: el programa reintenta
-y cede con la syscall 4. `src` puede ser 0.
+`0x0A000202` para `10.0.2.2`. `src` puede ser 0. `plazo` va en ticks
+(100 por segundo): 0 no espera; 1..6000 duerme hasta ese plazo; fuera de
+ese rango, `-22` (no hay espera infinita: el shell queda parado mientras
+corre un proceso).
+
+recv bloqueante: si no hay datagrama, el proceso queda en estado 4 con su
+plazo absoluto y el planificador corre al otro. Lo pasa a listo (estado
+1) `udp_rx` cuando llega un datagrama **a ese socket** (`woke`), o
+`udp_tick` desde el PIT cuando vence el plazo (`wtmo`); el PIT lo reparte
+en el siguiente tick. Para dormir, `udp_park` reescribe el marco de
+retorno: `rip` apunta a la instrucción `syscall` (RIP - 2), `rax = 14`,
+los argumentos vuelven a `rdi rsi rdx r10 r8` y `rbp` es el del usuario.
+Al despertar la syscall se ejecuta de nuevo con los mismos argumentos y
+decide con lo que haya: entrega, vuelve a dormir o devuelve `-110`. Si no
+hay otro proceso listo, duerme dentro de la propia syscall (`sti; hlt;
+cli`) hasta la próxima interrupción. Si un proceso termina mientras el
+otro duerme, `exit_current` lo cuenta como vivo (`other_alive`) y le da la
+CPU. `yield` ahora también conserva `rbp`.
 
 Punteros de usuario (`udp_uptr_ok`): el rango entero tiene que caer en
 las páginas del propio proceso: desde `0x400000` para leer y desde
@@ -148,12 +184,37 @@ Zonas: las syscalls 12..16 no están en la máscara de una zona nueva.
 Reciben `-1` y suman `niega`. `zone net nombre` (solo desde la zona 0)
 las agrega.
 
-Comandos: `net up`, `net down`, `net stat`, `udp test`, `udp plant`
-(escribe `udpeco`, el programa de `src/user/udpeco.lap`), `udp stat`.
+Comandos: `net up`, `net down`, `net stat`, `net hold N`, `udp test`,
+`udp plant` (escribe `udpeco`, `udpdos` y `udpwait`, de `src/user/`),
+`udp stat`, `exec2 a b`.
 
-Límites conocidos: sin ICMP port-unreachable, sin fragmentación, sin
-multicast, sin más vecino que la puerta, `recv` por reintento, un socket
-por proceso, IP fija.
+`udp stat` imprime `rx bad nosock full tx unr unrdrop blk woke wtmo tmo`:
+`blk` es cuántas llamadas de recv se durmieron, `woke` las que despertó
+una llegada, `wtmo` las que despertó el plazo en el PIT y `tmo` las que
+devolvieron `-110`. `net stat` agrega `net ring 32 rxo R mpc M`: `rxo` son
+las interrupciones de desborde del chip y `mpc` su contador de tramas
+perdidas por falta de descriptor (se acumula; el registro se borra al
+leerlo).
+
+`net hold N` apaga las interrupciones del chip (IMC) N ticks para que una
+ráfaga llene el anillo sin que nadie lo vacíe, y después cuenta los
+descriptores listos (`ring`), las tramas sacadas (`drained`) y `mpc`.
+
+Programas de anillo 3 (`src/user/`), sin cadenas: cada mensaje va por la
+syscall 1, de a 8 bytes (`say8`):
+
+- `udpeco`: puerto 7777, punteros malos (`udp ptr denied`), recv de hasta
+  5 s y eco (`udp echo ok`).
+- `udpdos`: dos sockets, 7781 (fd 0) y 7782 (fd 1), eco por cada uno
+  (`udp dos echo ok`).
+- `udpwait`: puertos 7790 y 7791. Plazo de 50 ticks (`udp timeout ok`),
+  duerme hasta que llega «despierta» (`udp wake ok`) y cuenta una ráfaga
+  de 64 datagramas en orden mientras duerme en el otro socket
+  (`udp burst n=64`, `udp burst ok`).
+
+Límites conocidos: sin fragmentación, sin multicast, sin más vecino que la
+puerta, IP fija, dos ranuras de proceso (8 sockets en total), sin `select`
+(un recv espera un solo socket) y sin espera infinita.
 
 ## Prueba
 
@@ -191,9 +252,32 @@ nuevo. Habla con el invitado desde socat. `UDP_PCAP=ruta` guarda la captura
 | `zone exec n udpeco` | `udp denied`; `niega >= 1`; no llegó a las pruebas de punteros |
 | `zone net m` y `zone exec m udpeco` | eco idéntico dentro de la zona |
 | `exec udpeco` otra vez | el puerto 7777 se liberó al morir el proceso; eco |
+| `exec2 udpeco udpdos` | tres datagramas juntos (7777, 7781, 7782); cada uno vuelve idéntico; `blk` sube >= 2 y `woke` >= 1 |
+| `exec udpwait` | `udp timeout ok`; `udp wake ok` con «despierta» enviado al ver `udp sleep`; ráfaga de 64 en orden: `udp burst n=64`, `udp burst ok`; `udp stat`: `rx` +65, `full` +0, `bad` +0, `tmo` +3 o más; `net stat`: `mpc 0` |
+| datagrama al 7999 (sin socket) | `nosock` +1, `unr` +1, y en el pcap un ICMP 3/3 de `10.0.2.15` a `10.0.2.2` con el puerto 7999 en el UDP original (bytes, y con `tcpdump -vv` si está: `udp port 7999 unreachable` sin checksum malo) |
+| `net hold 150` | 40 datagramas al 7999 con el chip enmascarado: `ring >= 31`; `nosock + mpc == 40`; `unr + unrdrop == nosock` |
 | `net down`, `echo vivo` | el shell sigue |
+
+Qué probó cada cosa y qué no:
+
+- La ráfaga de 64 sin `net hold` **no** llenó el anillo: la interrupción
+  lo vacía al vuelo (`rxo 0`, `mpc 0`). Sirve para la cola de 64 por
+  socket y el orden. El desborde del anillo solo se produjo con `net hold`.
+- Con el anillo lleno, QEMU 11.1.3 **sí pierde tramas**: en la corrida de
+  este informe, de 40 datagramas el invitado atendió 32 y `mpc` dio 8.
+  No se evita; se contabiliza (`mpc`) y la prueba exige que
+  `nosock + mpc` sea exacto. Con interrupciones armadas no se vio pérdida.
+- El port-unreachable se ve en la captura (`filter-dump`), no en el socket
+  del host: slirp no devuelve el ICMP del invitado al emisor. No se probó
+  `ECONNREFUSED` en el host.
+- Con `exec2` los dos procesos corren en la zona 0. No se probó `exec2`
+  dentro de una zona.
+- Nunca se probaron más de dos procesos (hay dos ranuras).
 
 Con socat, `nosock` subió 2 por un solo `nadie` (con bash subió 1). Se
 supone que socat manda además un datagrama vacío al ver el fin de su
 entrada; no se verificó en la captura. Por eso el chequeo de `nosock` usa
-`/dev/udp` de bash (un solo datagrama).
+`/dev/udp` de bash (un solo datagrama). La prueba de RD-01b también usa
+`/dev/udp` para la ráfaga y el unreachable, y arranca QEMU con cinco
+`hostfwd` (HPORT..HPORT+4 hacia 7777, 7781, 7782, 7790 y 7999) y un
+`filter-dump` siempre prendido (`UDP_PCAP=ruta` lo conserva).

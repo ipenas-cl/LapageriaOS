@@ -7,7 +7,7 @@
 
 let user_ran: i64 = 0;
 
-syscall fn sys_user(nr: i64, ch: i64, a2: i64, a3: i64) -> i64 {
+syscall fn sys_user(nr: i64, ch: i64, a2: i64, a3: i64, a4: i64, a5: i64) -> i64 {
     // sys-enter: número y argumento. sys-exit: número y resultado.
     // yield y exit no vuelven, así que no hay sys-exit de esas dos.
     if (tr_en[0] != 0) { trace_hit(0, proc_pid[cur_i], nr, ch); }
@@ -69,7 +69,7 @@ syscall fn sys_user(nr: i64, ch: i64, a2: i64, a3: i64) -> i64 {
     }
     // 12..16: UDP (udp.lap). La máscara de zona ya filtró arriba.
     if (nr >= 12 && nr <= 16) {
-        let r = udp_syscall(nr, ch, a2, a3);
+        let r = udp_syscall(nr, ch, a2, a3, a4, a5);
         if (tr_en[1] != 0) { trace_hit(1, proc_pid[cur_i], nr, r); }
         return r;
     }

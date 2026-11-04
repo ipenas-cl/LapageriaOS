@@ -1,0 +1,164 @@
+// recv bloqueante con plazo y ráfaga (RD-01 parte 2). copihue --flat 0x400000.
+// Abre 7790 (fd 0) y 7791 (fd 1) y hace tres pruebas, cada una con su línea:
+//
+//   1. recv del fd 0 con plazo de 50 ticks y nadie que escriba: tiene que
+//      volver -110 entre 50 y 60 ticks después. `udp timeout ok`.
+//   2. imprime `udp sleep` y duerme en recv del fd 0 (600 ticks). El host
+//      manda un datagrama al ver esa línea: tiene que volver con 9 bytes
+//      antes del plazo. `udp wake ok`.
+//   3. imprime `udp burst go` y duerme 200 ticks en el fd 1 (nadie le
+//      escribe), mientras el host manda 64 datagramas de 2 bytes al fd 0.
+//      Después vacía el fd 0 sin esperar, cuenta y comprueba el orden (el
+//      primer byte es 33 + índice), y un recv con plazo de 30 ticks
+//      confirma que no sobra nada. `udp burst n=64` y `udp burst ok`.
+//
+// Sin red (zona) la primera syscall da -1 y imprime `udp denied`. Buffer
+// 0x401A00 y fuente 0x401900, como udpeco.lap.
+
+naked fn emit(c: i64) {
+    rax = 1;
+    syscall();
+}
+
+fn say8(w: i64) {
+    let x: i64 = w;
+    while (x != 0) {
+        emit(x & 255);
+        x = x >> 8;
+    }
+}
+
+fn w_udp() {
+    say8(0x20706475);
+}
+
+fn w_fail() {
+    say8(0x0a6c696166);
+}
+
+fn w_ok() {
+    say8(0x0a6b6f);
+}
+
+fn say_denied() {
+    w_udp();
+    say8(0x0a6465696e6564);
+}
+
+fn say_tmo_ok() {
+    w_udp();
+    say8(0x2074756f656d6974);
+    w_ok();
+}
+
+fn say_tmo_fail() {
+    w_udp();
+    say8(0x2074756f656d6974);
+    w_fail();
+}
+
+fn say_sleep() {
+    w_udp();
+    say8(0x0a7065656c73);
+}
+
+fn say_wake_ok() {
+    w_udp();
+    say8(0x0a6b6f20656b6177);
+}
+
+fn say_wake_fail() {
+    w_udp();
+    say8(0x20656b6177);
+    w_fail();
+}
+
+fn say_burst_go() {
+    w_udp();
+    say8(0x6f67207473727562);
+    emit(10);
+}
+
+fn say_burst_ok() {
+    w_udp();
+    say8(0x207473727562);
+    w_ok();
+}
+
+fn say_burst_fail() {
+    w_udp();
+    say8(0x207473727562);
+    w_fail();
+}
+
+fn say_burst_n(n: i64) {
+    w_udp();
+    say8(0x207473727562);
+    say8(0x3d6e);
+    let h: i64 = n / 100;
+    let t: i64 = (n / 10) % 10;
+    let o: i64 = n % 10;
+    if (h > 0) { emit(48 + h); }
+    if (h > 0 || t > 0) { emit(48 + t); }
+    emit(48 + o);
+    emit(10);
+}
+
+fn t_timeout() {
+    let t0: i64 = syscall(16);
+    let r: i64 = syscall(14, 0, 0x401A00, 256, 0, 50);
+    let t1: i64 = syscall(16);
+    let dt: i64 = t1 - t0;
+    if (r == 0 - 110 && dt >= 50 && dt <= 60) { say_tmo_ok(); } else { say_tmo_fail(); }
+}
+
+fn t_wake() {
+    say_sleep();
+    let t0: i64 = syscall(16);
+    let r: i64 = syscall(14, 0, 0x401A00, 256, 0x401900, 600);
+    let t1: i64 = syscall(16);
+    let dt: i64 = t1 - t0;
+    if (r == 9 && dt < 600) { say_wake_ok(); } else { say_wake_fail(); }
+}
+
+fn t_burst() {
+    say_burst_go();
+    let r: i64 = syscall(14, 1, 0x401A00, 256, 0, 200);
+    let n: i64 = 0;
+    let ord: i64 = 1;
+    r = syscall(14, 0, 0x401A00, 256, 0, 0);
+    while (r >= 0) {
+        let c: i64 = *(0x401A00 as *u8);
+        if (c != 33 + n) { ord = 0; }
+        n = n + 1;
+        r = syscall(14, 0, 0x401A00, 256, 0, 0);
+    }
+    let last: i64 = syscall(14, 0, 0x401A00, 256, 0, 30);
+    say_burst_n(n);
+    if (n == 64 && ord == 1 && last == 0 - 110) { say_burst_ok(); } else { say_burst_fail(); }
+}
+
+fn wait_main() {
+    let a: i64 = syscall(12, 7790);
+    if (a != 0) {
+        say_denied();
+        return;
+    }
+    let b: i64 = syscall(12, 7791);
+    if (b != 1) {
+        say_denied();
+        return;
+    }
+    t_timeout();
+    t_wake();
+    t_burst();
+    syscall(15, 0);
+    syscall(15, 1);
+}
+
+naked fn _start() {
+    wait_main();
+    rax = 5;
+    syscall();
+    hlt();
+}

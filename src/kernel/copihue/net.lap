@@ -95,7 +95,7 @@ let net_fun: i64 = 0;
 let net_rx_ring: i64 = 0;
 let net_tx_ring: i64 = 0;
 let net_tx_pa: i64 = 0;
-let net_rx_pa: [i64; 8];
+let net_rx_pa: [i64; 32];
 let net_rx_i: i64 = 0;
 let net_tx_i: i64 = 0;
 let net_tx_rc: i64 = 0;
@@ -111,6 +111,10 @@ let volatile net_irqs: i64 = 0;
 let volatile net_isr_rx: i64 = 0;
 let volatile net_poll_rx: i64 = 0;
 let volatile net_in_isr: i64 = 0;
+// Desbordes del anillo: interrupciones RXO y el contador MPC del chip
+// (tramas perdidas por falta de descriptor). Salen en `net stat`.
+let volatile net_rxo: i64 = 0;
+let net_mpc: i64 = 0;
 let net_on: i64 = 0;
 let net_mac: [u8; 6];
 let net_gw: [u8; 6];
@@ -200,11 +204,13 @@ fn net_alloc() -> i64 {
     if (net_pa_ok(net_rx_ring) == 0) { return 1; }
     if (net_pa_ok(net_tx_ring) == 0) { return 1; }
     if (net_pa_ok(net_tx_pa) == 0) { return 1; }
+    // 32 descriptores de 2048 bytes: dos por página.
     let i = 0;
-    while (i < 8) {
+    while (i < 16) {
         let pa = alloc_low_page();
         if (net_pa_ok(pa) == 0) { return 1; }
-        net_rx_pa[i] = pa;
+        net_rx_pa[i * 2] = pa;
+        net_rx_pa[i * 2 + 1] = pa + 2048;
         zero_va(pa);
         i = i + 1;
     }
@@ -364,7 +370,7 @@ fn net_read_mac() -> i64 {
 
 fn net_rings() -> i64 {
     let i = 0;
-    while (i < 8) {
+    while (i < 32) {
         let rx: *RxD = (net_rx_ring + i * sizeof(RxD)) as *RxD;
         rx->addr = net_rx_pa[i];
         rx->len = 0;
@@ -372,6 +378,10 @@ fn net_rings() -> i64 {
         rx->status = 0;
         rx->err = 0;
         rx->special = 0;
+        i = i + 1;
+    }
+    i = 0;
+    while (i < 8) {
         let tx: *TxD = (net_tx_ring + i * sizeof(TxD)) as *TxD;
         tx->addr = net_tx_pa;
         tx->len = 0;
@@ -386,9 +396,9 @@ fn net_rings() -> i64 {
     net_tx_i = 0;
     e_wr(0x2800, net_rx_ring);
     e_wr(0x2804, 0);
-    e_wr(0x2808, 128);
+    e_wr(0x2808, 512);
     e_wr(0x2810, 0);
-    e_wr(0x2818, 7);
+    e_wr(0x2818, 31);
     e_wr(0x3800, net_tx_ring);
     e_wr(0x3804, 0);
     e_wr(0x3808, 128);
@@ -459,6 +469,8 @@ interrupt fn irq_net() {
         let icr = e_rd(0x00C0);
         if (icr != 0) {
             net_irqs = net_irqs + 1;
+            // RXO: el anillo se llenó y el chip dejó caer una trama.
+            if ((icr & 0x40) != 0) { net_rxo = net_rxo + 1; }
             net_in_isr = 1;
             net_rx_drain();
             net_in_isr = 0;
@@ -862,14 +874,17 @@ fn net_rx_once() -> i64 {
     d->status = 0;
     let old = net_rx_i;
     net_rx_i = net_rx_i + 1;
-    if (net_rx_i >= 8) { net_rx_i = 0; }
+    if (net_rx_i >= 32) { net_rx_i = 0; }
     e_wr(0x2818, old);
     return 1;
 }
 
+// Vacía el anillo entero (hasta dos vueltas, por si llegan tramas mientras
+// se atiende). Un tope menor dejaría descriptores listos sin que nadie
+// vuelva a levantar la interrupción.
 fn net_rx_drain() -> i64 {
     let n = 0;
-    while (n < 16) {
+    while (n < 64) {
         if (net_rx_once() == 0) { return 0; }
         n = n + 1;
     }
@@ -1015,10 +1030,24 @@ fn net_stat() -> i64 {
     puts(" poll ");
     put_int(net_poll_rx);
     putc('\n');
+    // MPC se borra al leerlo: se acumula aquí. Con IF en 0 para que la
+    // interrupción no toque el chip a la vez.
+    if (net_on != 0) {
+        cli();
+        net_mpc = net_mpc + e_rd(0x4010);
+        sti();
+    }
+    puts("net ring 32 rxo ");
+    put_int(net_rxo);
+    puts(" mpc ");
+    put_int(net_mpc);
+    putc('\n');
     return 0;
 }
 
 fn net_counters_reset() -> i64 {
+    net_rxo = 0;
+    net_mpc = 0;
     net_arp_seen = 0;
     net_ping_seen = 0;
     net_rx_n = 0;
@@ -1051,6 +1080,54 @@ fn net_up_cmd() -> i64 {
         return 0;
     }
     puts("net up ok\n");
+    return 0;
+}
+
+// `net hold N`: apaga las interrupciones del chip (IMC) durante N ticks para
+// que una ráfaga del host llene el anillo sin que nadie lo vacíe; después
+// cuenta los descriptores listos, restablece IMS y vacía el anillo. Imprime
+// cuántos había (`ring`), cuántas tramas salieron del anillo (`drained`) y
+// los contadores de pérdida (`rxo`, `mpc`). El anillo útil es de 31 (el
+// chip no deja que la cabeza alcance a la cola).
+fn net_hold_cmd(pos: i64) -> i64 {
+    if (net_on == 0 || net_irq_on == 0) {
+        puts("net hold fail off\n");
+        return 0;
+    }
+    parse_pos = pos;
+    let n = parse_int();
+    if (n < 1 || n > 1000) {
+        puts("net hold fail arg\n");
+        return 0;
+    }
+    cli();
+    e_wr(0xD8, 0xFFFFFFFF);
+    sti();
+    puts("net hold go\n");
+    net_sleep(n);
+    cli();
+    let ready = 0;
+    let i = 0;
+    while (i < 32) {
+        let d: *RxD = (net_rx_ring + i * sizeof(RxD)) as *RxD;
+        if ((d->status & 1) != 0) { ready = ready + 1; }
+        i = i + 1;
+    }
+    let before = net_rx_n;
+    e_rd(0x00C0);
+    e_wr(0x00D0, 0xD4);
+    net_in_isr = 1;
+    net_rx_drain();
+    net_in_isr = 0;
+    net_mpc = net_mpc + e_rd(0x4010);
+    sti();
+    puts("net hold ring ");
+    put_int(ready);
+    puts(" drained ");
+    put_int(net_rx_n - before);
+    puts(" mpc ");
+    put_int(net_mpc);
+    putc('\n');
     return 0;
 }
 
@@ -1108,6 +1185,7 @@ fn cmd_net() -> i64 {
     if (fs_sub[0] == 0) { return net_full(); }
     if (fs_is("up")) { return net_up_cmd(); }
     if (fs_is("down")) { return net_down_cmd(); }
+    if (fs_is("hold")) { return net_hold_cmd(pos); }
     if (fs_is("stat")) { return net_stat(); }
     puts("net fail arg\n");
     return 0;
