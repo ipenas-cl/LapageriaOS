@@ -574,3 +574,25 @@ de Copihue lista `pushfd`/`popfd`; no los probé en este kernel). En `net.lap` s
 (`net_*_locked` para el hilo; las otras sin cli/sti) y con que `net_tx`
 no duerma nunca. Pedido: `read_rflags()` o un par `irq_save()` /
 `irq_restore(flags)` en `--flat` de 64 bits.
+
+## OB-01 (trazas), con Copihue v0.42.4
+
+Sin `asm()` nuevo y sin contornos nuevos: nada del lenguaje bloqueó el
+trabajo. Dos notas, ninguna con contorno:
+
+1. `tr_req[1] = id;` con `tr_req: [u8; 8]` e `id: i64` da `expected u8,
+   found i64`; hay que escribir `id as u8`. Es coherente con el resto del
+   lenguaje; se anota porque el mensaje no sugiere el cast. Mínimo:
+
+       let b: [u8; 4];
+       fn f(x: i64) { b[0] = x; }
+
+2. Los programas de anillo 3 de este repositorio (`src/user/*.lap`) siguen
+   sin cadenas: cada palabra va como constante de 8 bytes (`say8`), por
+   convención del repositorio. **No probé** si v0.42.4 con `--flat 0x400000`
+   acepta literales de cadena en esos programas (el kernel sí las usa).
+   `traza.lap` sigue la convención y ocupa 3981 de 4080 bytes. Mínimo para
+   probar:
+
+       fn emit(c: i64) { syscall(1, c); }
+       fn _start() { let s: *u8 = "ok\n"; emit(s[0]); syscall(5); }
