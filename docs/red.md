@@ -57,7 +57,7 @@ IP fija `10.0.2.15`. La puerta de la red de usuario es `10.0.2.2`.
 - ICMP echo request a nuestra IP se contesta. El comando manda un echo
   a la puerta (id `0x4242`, seq 1, datos `ATOM`) y espera el reply.
 
-No hay TCP. UDP está en «UDP». Nada de esto escucha en el arranque:
+UDP está en «UDP» y TCP en «TCP». Nada de esto escucha en el arranque:
 `net` prende el chip y al salir apaga `RCTL` y `TCTL`; `net up` lo deja
 prendido y `net down` lo apaga.
 
@@ -216,6 +216,111 @@ Límites conocidos: sin fragmentación, sin multicast, sin más vecino que la
 puerta, IP fija, dos ranuras de proceso (8 sockets en total), sin `select`
 (un recv espera un solo socket) y sin espera infinita.
 
+## TCP
+
+Código en `tcp.lap` (RD-02). Seis bloques de control (TCB) con 4 KiB de
+envío y 4 KiB de recepción cada uno (48 KiB de `.bss`), compartidos por
+todos los procesos y por los huérfanos que quedan cerrando. Los estados son
+los de RFC 793: 1 LISTEN, 2 SYN_SENT, 3 SYN_RCVD, 4 ESTABLISHED, 5..9
+FIN_WAIT_1, FIN_WAIT_2, CLOSE_WAIT, CLOSING, LAST_ACK, 10 TIME_WAIT, y un 11
+propio: conexión muerta por error cuyo fd sigue existiendo para devolver el
+error (`-104` reset, `-111` rechazada, `-110` agotó los reintentos).
+
+**Qué hace.**
+
+- Handshake de 3 vías activo (`connect`) y pasivo (`listen` + `accept`,
+  hasta 3 hijos pendientes por escuchador; un SYN sin TCB libre se descarta
+  y el cliente reintenta).
+- ISN aleatorio: xorshift64 que se vuelve a mezclar en cada conexión con el
+  contador del canal 0 del PIT, los ticks, el segundero del CMOS y la MAC.
+  **No es criptográfico**: en una máquina virtual la entropía es poca. El
+  `qemu64` no tiene `rdrand` y Copihue no tiene `rdtsc`.
+- Aritmética de secuencia de 32 bits con vuelta (`tcp_sub`).
+- Ventana: se anuncia `4096 - bytes sin leer` en cada segmento; el envío
+  respeta la ventana del par. Si el par la cierra con datos pendientes, un
+  timer de sondeo manda 1 byte con el mismo backoff.
+- ACK inmediato por cada segmento con datos o FIN. Solo se acepta lo que
+  llega en orden: lo adelantado o repetido se descarta y se contesta con un
+  ACK (contador `dup`).
+- Retransmisión con timer: el PIT llama a `tcp_tick` en cada tick (con o sin
+  procesos). RTO inicial 50 ticks, se duplica hasta 400; al vencer se
+  vuelve a mandar desde lo no confirmado (go-back-N); 8 intentos (6 para
+  SYN y SYN|ACK) y se abandona con RST y `-110` (`giveup`). Un ACK nuevo
+  devuelve el RTO a 50.
+- Cierre FIN en ambos sentidos. `close` manda el FIN después de los datos
+  pendientes y el socket queda huérfano hasta que termina: el que cierra
+  primero pasa por FIN_WAIT_1/2 y TIME_WAIT (200 ticks; el estándar pide 2
+  MSL, aquí se acortó), el otro por CLOSE_WAIT y LAST_ACK. Cerrar con datos
+  sin leer manda RST y libera. Datos que llegan a un huérfano también
+  reciben RST. FIN_WAIT_2 de un huérfano vence a los 1000 ticks.
+- RST: un segmento a un puerto sin socket recibe RST (`seq = ack` si traía
+  ACK; si no, `seq 0` y `ack = seq + largo` con ACK), salvo que sea un RST;
+  tope de 20 por ventana de 100 ticks (`rstdrop`). Un RST en SYN_SENT da
+  `-111`; en otro estado sincronizado, `-104` (solo si su número de
+  secuencia es exactamente el esperado).
+- Checksum con pseudo-cabecera verificado siempre (malo: `bad`, se
+  descarta). Opción MSS en los SYN (anuncia 1460; se respeta la del par,
+  tope 1460).
+
+**Qué no hace.** Control de congestión, medición de RTT (el RTO es fijo con
+backoff), ventana escalada, SACK, retransmisión rápida, cola fuera de orden,
+datos urgentes, keepalive, opciones de timestamps, `shutdown` a medias,
+`SO_REUSEADDR`. Un solo vecino (la puerta) e IP fija, como en UDP. Sin
+espera infinita (plazo máximo 6000 ticks).
+
+Syscalls. Los fd de TCP son una tabla aparte de la de UDP (4 por proceso en
+cada una). `dst` es `(ip << 16) | puerto`, como en UDP. Todas pasan por
+`zone_gate`: una zona sin red recibe `-1` y suma `niega`; `zone net`
+agrega 12..22. Los punteros se validan antes de tocar nada con el mismo
+rango que UDP (`uptr_range_ok`, ahora compartido), pero hasta 4096 bytes.
+
+| Nº | Llamada | Resultado |
+|---|---|---|
+| 17 | `listen(puerto)` | el fd; `-22` puerto fuera de 1..65535; `-98` en uso; `-24` sin fd o TCB; `-100` red apagada |
+| 18 | `accept(fd, plazo)` | fd nuevo; `-9`; `-22` no es escuchador; `-11` nada y plazo 0; `-110`; `-24` |
+| 19 | `connect(dst, plazo)` | el fd; plazo 1..6000 (`-22` si no); `-113` sin ARP de la puerta; `-111` rechazada; `-104`; `-110` venció (el intento se aborta); `-24` |
+| 20 | `send(fd, buf, largo, plazo)` | bytes copiados al buffer de envío (>= 1; puede ser menos que `largo`); 0 si `largo` es 0; `-14` puntero; `-22` largo; `-32` el socket ya no envía; `-104`/`-111` error del socket; `-11` buffer lleno y plazo 0; `-110` |
+| 21 | `recv(fd, buf, max, plazo)` | bytes (1..max); **0 = el par cerró y no queda nada**; `-14`; `-22`; error del socket; `-11`; `-110` |
+| 22 | `close(fd)` | 0; `-9` |
+
+`send` y `recv` duermen igual que el `recv` de UDP (estado 4, plazo en
+`udp_wdl`, marco reescrito para repetir la `syscall` al despertar). Cualquier
+evento del TCB (segmento aceptado, cambio de estado) pasa a listo a su
+dueño (a la del escuchador, si es un hijo sin `accept`); un despertar de más
+es inofensivo porque la llamada mira de nuevo. `connect` además guarda su
+TCB pendiente por proceso, para que la repetición no abra otra conexión. Al
+morir el proceso (`release_proc`) se cierran sus fd como un `close`.
+
+Comandos: `tcp test`, `tcp plant` (escribe `tcpeco` y `tcpcli`), `tcp stat`:
+`rx bad tx retx rstout rstin rstdrop est closed dup blk tmo giveup used lst tw
+iss`. `used` es el número de TCB ocupados (la prueba de fugas exige 0 al
+final), `tw` los que están en TIME_WAIT e `iss` el último ISN.
+
+Programas de anillo 3 (`src/user/`):
+
+- `tcpeco`: escucha en 7001. Prueba 9 punteros malos contra 20 y 21 (`tcp ptr
+  denied`), `tcp listen`. Conexión 1: devuelve todo en trozos de 1024 hasta
+  el EOF del par y cuenta bytes y suma (`tcp eof n=… sum=…`, `tcp echo1 ok`).
+  Conexión 2: un mensaje de vuelta y cierra primero (`tcp echo2 ok`). Sale
+  con `tcp srv done`.
+- `tcpcli`: conecta a 10.0.2.100:7100 (guestfwd). `tcp conn ok`, `tcp
+  pause` (duerme 150 ticks en recv, `-110`), envía 3000 bytes (`tcp sent
+  n=3000 sum=…`), lee «respuesta» y el EOF (`tcp got ok`), `tcp cli ok`. Luego
+  `connect` a 10.0.2.2:1, donde nadie escucha: `-111` (`tcp refused ok`).
+
+Los programas no pueden tener globales: la página de código es de solo
+lectura y un `let` global cae ahí (el primer intento de `tcpeco` murió con
+`#PF` en 0x400af8). Los totales van a la página de la pila.
+
+**Tamaño.** `scripts/mkaxe.sh` generaba una asignación por byte
+(`p[i] = n;`) y el compilador emite unas 7 líneas de ensamblador (≈ 20 bytes de kernel) por
+cada byte de la imagen. Con las dos imágenes nuevas el kernel pasaba de 495 KB y
+`stage2_big_test` (que exige `kernel.bin + 64 KiB < 0x80000`) fallaba. Ahora
+las imágenes se escriben de a 4 bytes (`q[i] = n` con `q: *u32`): el
+contenido de los AXE no cambia y el kernel mide menos que antes de TCP
+(278 189 bytes, 544 sectores, contra 351 250 y 687). La `.bss` sube de 83 764 a 134 580
+bytes (fin de imagen en `0x464C61`, tope `0x600000`).
+
 ## Prueba
 
 `make qemu-test` arranca con `-nic none -netdev user,id=n0 -device
@@ -281,3 +386,47 @@ entrada; no se verificó en la captura. Por eso el chequeo de `nosock` usa
 `/dev/udp` para la ráfaga y el unreachable, y arranca QEMU con cinco
 `hostfwd` (HPORT..HPORT+4 hacia 7777, 7781, 7782, 7790 y 7999) y un
 `filter-dump` siempre prendido (`UDP_PCAP=ruta` lo conserva).
+
+### RD-02: `tests/qemu_tcp_test.sh`
+
+`make qemu-test` lo corre después de la prueba de UDP, y `make
+qemu-tcp-test` solo a él. QEMU arranca con `hostfwd=tcp:127.0.0.1:P-:7001`
+(eco), `hostfwd=tcp:127.0.0.1:P+1-:7999` (sin socket),
+`guestfwd=tcp:10.0.2.100:7100-cmd:socat - TCP:127.0.0.1:P+100` (el
+invitado conecta al host) y un `filter-dump` (`TCP_PCAP=ruta` lo conserva).
+P sale de `$RANDOM`.
+
+| Paso | Qué exige |
+|---|---|
+| `net`, `tcp test` | `net irq ok`; `tcp test ok`: sin dispositivo (trama inyectada por `net_frame`, salida en seco en `tcp_last`): vuelta de 32 bits en la secuencia; SYN, SYN\|ACK con MSS 1460 y checksum válido, ACK; checksum malo descartado (`bad`); datos, duplicado y adelantado (ACK sin cambio, `dup`); lectura y envío; retransmisión: a 40 ticks no, a 60 sí, el RTO pasa de 50 a 100 y vuelve a 50 con el ACK; FIN del par, `recv` 0, `close`, LAST_ACK; RST\|ACK y RST para SYN y ACK a un puerto cerrado, un RST no se contesta; connect activo, RST en SYN_SENT (`-111`) y en ESTABLISHED (`-104`); cierre activo FIN_WAIT_1 → 2 → TIME_WAIT → libre a los 200 ticks; `close` con datos sin leer manda RST; ventana: 100 segmentos de 200 bytes sin leer llenan 4096 y la ventana anunciada es 0; al final 0 TCB ocupados |
+| `fs format`, `tcp plant`, `net up` | `tcp stat` con `used 0` |
+| (a) `exec tcpeco` | `tcp ptr denied` (9 punteros malos dan -14); socat envía 64 KiB de `/dev/urandom` por `hostfwd` y lee de vuelta: `cmp` idéntico; el invitado cuenta `n=65536` y la misma suma de bytes que calcula el host (`od`+`awk`); el FIN de socat llega al servidor (recv 0) y el servidor cierra |
+| (a) segunda conexión | `adios` vuelve idéntico y socat termina porque el invitado cerró primero; `tcp echo2 ok`, `tcp srv done`; `est` = 2 |
+| ISN | en el pcap, los dos SYN\|ACK desde el 7001 (puerto `0x1B59`, offset 6, flags `0x12`) llevan números distintos y mayores que 65535 |
+| (b) `exec tcpcli` | socat del host escucha en P+100; el invitado conecta (guestfwd), imprime `tcp pause`; la prueba hace `set_link n0 off` 2,4 s y `on`; el cliente manda 3000 bytes durante el corte; `retx` sube >= 1; el host recibe 3000 bytes con la misma suma que imprimió el invitado; recibe «respuesta» y el EOF; `connect` a 10.0.2.2:1 da -111 (`rstin` +1) |
+| (c) RST | socat del host conecta a P+1 (invitado 7999, sin socket): `rstout` +1 y en el pcap un segmento desde el puerto 7999 con `seq 0`, offset 5 y flags `0x14`; con `tcpdump`, `Flags [R.]` y sin checksum malo |
+| (d) zonas | `zone exec n tcpeco` (sin red): `tcp denied`, `niega >= 1`, no llega a las pruebas de punteros; `zone net m` y `zone exec m tcpeco`: dos ecos idénticos |
+| (e) fugas | `tcp stat` llega a `used 0`, `lst 0`, `tw 0`, con `bad 0` y `giveup 0`; todos los procesos liberan las mismas páginas (`freed=6`); `net down` deja 0 TCB y el shell sigue |
+
+Qué probó cada cosa y qué no:
+
+- El corte de enlace con `set_link n0 off` descarta los dos sentidos: el
+  invitado perdió sus envíos y los retransmitió; el host (slirp) tiene su
+  propio TCP y también retransmite. La prueba mide solo `retx` del invitado.
+  No se probó pérdida de un solo segmento en medio de una ráfaga, ni
+  reordenamiento, ni duplicados de la red: eso solo lo ejerce `tcp test`.
+- El eco de 64 KiB con ventana de 4096 pasa por muchos ACK y ventanas
+  (corrida de referencia, tras las dos conexiones: `rx 76 tx 164 retx 0 dup
+  2`; en otra corrida `dup 0`; sin retransmisiones, y 0 a 2 segmentos repetidos o adelantados que
+  el invitado descartó con ACK; no se investigó cuáles fueron). El
+  descarte de segmentos adelantados con pérdida real solo está probado sin
+  dispositivo.
+- El RST del puerto cerrado sale por el chip y se ve en el pcap; el host no
+  lo observa como `ECONNREFUSED` (slirp ya aceptó la conexión del host). El
+  rechazo que sí llega al invitado es el de `tcpcli` hacia 10.0.2.2:1.
+- Un solo proceso a la vez usa TCP en las pruebas. Con `exec2` no se probó
+  TCP, ni dos conexiones simultáneas, ni zonas con `exec2`. Las ranuras de
+  proceso siguen siendo dos: no hizo falta subirlas.
+- No se probó el agotamiento de los 6 TCB (SYN descartados), el límite de
+  3 hijos pendientes, ni conexiones desde varios clientes a la vez.
+- El ISN es aleatorio pero con poca entropía (ver «TCP»).

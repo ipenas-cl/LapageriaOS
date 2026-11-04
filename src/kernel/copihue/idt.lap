@@ -218,6 +218,8 @@ interrupt fn irq_timer(frame: *InterruptFrame) {
     // otro saved_ksp + 120 reanuda ese proceso. No se nombra rbp.
     // pit: una muestra por tick mientras está prendida.
     if (tr_en[4] != 0) { trace_hit(4, proc_pid[cur_i], ticks, 0); }
+    // Retransmisión y TIME_WAIT de TCP, con o sin procesos corriendo.
+    tcp_tick();
     if (sched_on != 0) {
         // Despierta a quien duerme en recv con el plazo vencido.
         udp_tick();

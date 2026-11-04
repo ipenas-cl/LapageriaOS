@@ -1,0 +1,213 @@
+// Servidor de eco TCP de anillo 3 (RD-02). copihue --flat 0x400000.
+//
+// Escucha en el 7001 (syscall 17, fd 0). Si el kernel la niega (zona sin
+// red) imprime `tcp denied` y sale. Si no: prueba punteros malos contra las
+// syscalls 20 y 21 (todos tienen que dar -14, entonces `tcp ptr denied`),
+// imprime `tcp listen` y atiende dos conexiones, una tras otra:
+//
+//   1. Devuelve todo lo que recibe, en trozos de 1024, hasta que el par
+//      cierra (recv devuelve 0). Imprime `tcp eof n=<bytes> sum=<suma>`
+//      (la suma de los bytes recibidos) y `tcp echo1 ok`.
+//   2. Recibe un mensaje, lo devuelve y cierra ella primero (el FIN sale del
+//      invitado). Imprime `tcp echo2 ok`.
+//
+// Al final cierra el escuchador y sale (`tcp srv done`). Buffer 0x401400
+// (1024 bytes), en la página de la pila. Sin cadenas: cada mensaje va por la
+// syscall 1, de a 8 bytes (say8) con el primero en el byte bajo.
+
+naked fn emit(c: i64) {
+    rax = 1;
+    syscall();
+}
+
+fn say8(w: i64) {
+    let x: i64 = w;
+    while (x != 0) {
+        emit(x & 255);
+        x = x >> 8;
+    }
+}
+
+fn say_num(n: i64) {
+    let v: i64 = n;
+    if (v < 0) {
+        emit(45);
+        v = 0 - v;
+    }
+    let p: i64 = 1;
+    while (v / p >= 10) { p = p * 10; }
+    while (p > 0) {
+        emit(48 + (v / p) % 10);
+        p = p / 10;
+    }
+}
+
+fn w_tcp() {
+    say8(0x20706374);
+}
+
+fn say_denied() {
+    w_tcp();
+    say8(0x0a6465696e6564);
+}
+
+fn say_listen() {
+    w_tcp();
+    say8(0x0a6e657473696c);
+}
+
+fn say_ptr() {
+    w_tcp();
+    say8(0x20727470);
+    say8(0x0a6465696e6564);
+}
+
+fn say_fail(step: i64, r: i64) {
+    w_tcp();
+    say8(0x206c696166);
+    say_num(step);
+    emit(32);
+    say_num(r);
+    emit(10);
+}
+
+fn say_eof(n: i64, sum: i64) {
+    w_tcp();
+    say8(0x3d6e20666f65);
+    say_num(n);
+    say8(0x3d6d757320);
+    say_num(sum);
+    emit(10);
+}
+
+fn say_echo1() {
+    w_tcp();
+    say8(0x6b6f20316f686365);
+    emit(10);
+}
+
+fn say_echo2() {
+    w_tcp();
+    say8(0x6b6f20326f686365);
+    emit(10);
+}
+
+fn say_done() {
+    w_tcp();
+    say8(0x656e6f6420767273);
+    emit(10);
+}
+
+// 1 si la syscall n con esos argumentos dio -14.
+fn bad(n: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64) -> i64 {
+    let r: i64 = syscall(n, a1, a2, a3, a4, a5);
+    if (r == 0 - 14) { return 1; }
+    return 0;
+}
+
+fn ptr_attacks() {
+    // 0 - 0x7FC00000 es 0xFFFFFFFF80400000, el texto del kernel.
+    let k: i64 = 0 - 0x7FC00000;
+    let ok: i64 = 1;
+    ok = ok & bad(21, 0, k, 16, 0, 0);
+    ok = ok & bad(20, 0, k, 16, 0, 0);
+    ok = ok & bad(21, 0, 0x10000000, 16, 0, 0);
+    ok = ok & bad(20, 0, 0x1000, 16, 0, 0);
+    ok = ok & bad(21, 0, 0x400000, 16, 0, 0);
+    ok = ok & bad(21, 0, 0x401FF8, 16, 0, 0);
+    ok = ok & bad(20, 0, 0x401FF8, 16, 0, 0);
+    ok = ok & bad(21, 0, 0 - 1, 1, 0, 0);
+    ok = ok & bad(20, 0, 0x402000, 1, 0, 0);
+    if (ok == 1) { say_ptr(); }
+}
+
+// Devuelve lo recibido por el fd c hasta el cierre del par. Deja el
+// total en 0x401380 y la suma en 0x401388 (la página de código es de solo
+// lectura: nada de globales); el resultado es 0 o un error.
+
+fn echo_all(c: i64) -> i64 {
+    let err: i64 = 0;
+    let go: i64 = 1;
+    let tot: *i64 = 0x401380 as *i64;
+    tot[0] = 0;
+    tot[1] = 0;
+    while (go == 1) {
+        let n: i64 = syscall(21, c, 0x401400, 1024, 1000);
+        if (n < 0) {
+            err = n;
+            go = 0;
+        } else {
+            if (n == 0) {
+                go = 0;
+            } else {
+                let i: i64 = 0;
+                while (i < n) {
+                    let q: *u8 = (0x401400 + i) as *u8;
+                    tot[1] = tot[1] + (q[0] & 255);
+                    i = i + 1;
+                }
+                tot[0] = tot[0] + n;
+                let off: i64 = 0;
+                while (off < n && err == 0) {
+                    let s: i64 = syscall(20, c, 0x401400 + off, n - off, 1000);
+                    if (s <= 0) {
+                        err = s;
+                        if (s == 0) { err = 0 - 1; }
+                    } else {
+                        off = off + s;
+                    }
+                }
+                if (err != 0) { go = 0; }
+            }
+        }
+    }
+    return err;
+}
+
+fn serve() {
+    let c: i64 = syscall(18, 0, 1500);
+    if (c < 0) {
+        say_fail(1, c);
+        return;
+    }
+    let e: i64 = echo_all(c);
+    let tot: *i64 = 0x401380 as *i64;
+    say_eof(tot[0], tot[1]);
+    syscall(22, c);
+    if (e == 0) { say_echo1(); } else { say_fail(2, e); }
+    c = syscall(18, 0, 1500);
+    if (c < 0) {
+        say_fail(3, c);
+        return;
+    }
+    let n: i64 = syscall(21, c, 0x401400, 1024, 1000);
+    if (n <= 0) {
+        say_fail(4, n);
+        syscall(22, c);
+        return;
+    }
+    let s: i64 = syscall(20, c, 0x401400, n, 1000);
+    // Cierra primero: el FIN sale de aquí.
+    syscall(22, c);
+    if (s == n) { say_echo2(); } else { say_fail(5, s); }
+}
+
+fn srv_main() {
+    let fd: i64 = syscall(17, 7001);
+    if (fd != 0) {
+        say_denied();
+    } else {
+        ptr_attacks();
+        say_listen();
+        serve();
+        syscall(22, 0);
+        say_done();
+    }
+}
+
+naked fn _start() {
+    srv_main();
+    rax = 5;
+    syscall();
+    hlt();
+}

@@ -15,6 +15,30 @@ Sin `asm()` nuevo. Una función de 7 parámetros (`udp_recv`; el séptimo es
 el plazo) compila y la prueba de plazo la ejerce; `udp_park` usa globales
 por prudencia, no porque haya fallado algo.
 
+## Pedidos de RD-02 (TCP), con Copihue v0.34.1
+
+El kernel de TCP compila sin `asm()` nuevo. `syscall fn` de 6 parámetros,
+`interrupt fn`, `sti()`/`hlt()`/`cli()`, `inb`/`outb`, `packed struct`,
+`*u32`/`*i64` como punteros indexables y las constantes de 64 bits
+alcanzaron. Dos cosas que faltan o duelen:
+
+1. **Sin `rdtsc` ni `rdrand`.** El ISN aleatorio se siembra con el contador
+   del canal 0 del PIT (`outb(0x43, 0)` + dos `inb(0x40)`), los ticks, el
+   segundero del CMOS y la MAC. Un `rdtsc()` (y `rdrand()` donde exista)
+   daría mejor entropía. `qemu64` no tiene `rdrand`, así que aquí sólo
+   serviría `rdtsc`.
+2. **Una asignación por byte cuesta ≈ 20 bytes de kernel (unas 7 líneas de ensamblador).** `p[i] = n;` pasa por
+   `push`/`pop` y `imul` del índice; las imágenes de usuario embebidas
+   (`scripts/mkaxe.sh`) llevaron el kernel a 495 KB con sólo dos programas
+   de 2,5 KB. Se resolvió en el script escribiendo de a 4 bytes. Un
+   inicializador de arreglo constante (o un bloque `data` con bytes que se
+   pueda copiar con `rep movsb`) evitaría ese código: hoy `data` sólo se usa
+   para alinear.
+
+No es de Copihue pero conviene dejarlo escrito: un `let` global en un programa
+de anillo 3 cae en la página de código (solo lectura) y mata al proceso con
+`#PF`; los programas de usuario guardan estado en la página de la pila.
+
 ## Cerrado en v0.27.0 y v0.27.1
 
 Un arreglo adentro de `packed struct` ahora mide `N * sizeof(T)`.

@@ -55,18 +55,35 @@ fi
 {
     echo "// Generado por scripts/mkaxe.sh. No editar."
     echo "fn ${fn_name}(p: *u8) -> i64 {"
+    echo "    let q: *u32 = p as *u32;"
+    # De a 4 bytes (little-endian) en una sola escritura: el compilador
+    # emite unos 20 bytes de código por cada asignación, y a byte por byte las
+    # imágenes de usuario sumaban unos 200 KiB de kernel.
     od -An -tu1 -v "$axe" | awk '
+        BEGIN { n = 0 }
         {
             for (i = 1; i <= NF; i++) {
-                printf "    p[%d] = %d;\n", n, $i
+                b[n] = $i
                 n++
+            }
+        }
+        END {
+            k = 0
+            for (o = 0; o + 4 <= n; o += 4) {
+                printf "    q[%d] = %.0f;\n", k, b[o] + b[o + 1] * 256 + b[o + 2] * 65536 + b[o + 3] * 16777216
+                k++
+            }
+            for (; o < n; o++) {
+                printf "    p[%d] = %d;\n", o, b[o]
             }
         }
     '
     echo "    return $total;"
     echo "}"
 } > "$lap"
-assigns=$(grep -c 'p\[' "$lap" || true)
+words=$(grep -c ' q\[' "$lap" || true)
+rest=$(grep -c ' p\[' "$lap" || true)
+assigns=$((words * 4 + rest))
 if [ "$assigns" -ne "$total" ]; then
     echo "mkaxe: quedaron $assigns bytes en el fuente; son $total" >&2
     exit 1

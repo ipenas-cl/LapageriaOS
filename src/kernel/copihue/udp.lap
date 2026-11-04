@@ -443,6 +443,12 @@ fn udp_tx(sport: i64, dip: i64, dport: i64, src: *u8, len: i64) -> i64 {
 // se excluye la página de código (solo lectura).
 fn udp_uptr_ok(p: i64, n: i64, write: i64) -> i64 {
     if (n < 1 || n > 512) { return 0; }
+    return uptr_range_ok(p, n, write);
+}
+
+// El rango entero (n >= 1) cae en las páginas del proceso actual. Lo usan
+// UDP y TCP.
+fn uptr_range_ok(p: i64, n: i64, write: i64) -> i64 {
     let lo = 0x400000;
     if (write != 0) { lo = 0x401000; }
     let hi = 0x402000;
