@@ -2,50 +2,54 @@
 // No arma el prefijo: el kernel lo agrega. El nombre va en 0x401800
 // (16 bytes) y los datos en 0x401C00. rdi es el largo. Syscall 1
 // escribe un carácter; 5 sale.
+//
+// Además de la historia feliz, intenta romper la zona a propósito
+// (SG-01): nombres fuera del prefijo, números de syscall fuera de la
+// máscara, el escape y la cuota. Cada línea "zone ..." se imprime solo
+// si TODOS los intentos de su grupo fueron negados. El kernel cuenta
+// por su lado (niega, fuga, max) y el shell mira el disco después.
+// El código cabe en 4080 bytes (mkaxe.sh); las palabras de los mensajes
+// se comparten para no gastarlos.
 
 naked fn emit(c: i64) {
     rax = 1;
     syscall();
 }
 
-naked fn say_fs_ok() {
-    emit(122);
-    emit(111);
-    emit(110);
-    emit(101);
-    emit(32);
-    emit(102);
-    emit(115);
-    emit(32);
-    emit(111);
-    emit(107);
+naked fn nl() {
     emit(10);
 }
 
-naked fn say_fs_denied() {
+naked fn w_zone() {
     emit(122);
     emit(111);
     emit(110);
     emit(101);
     emit(32);
+}
+
+naked fn w_fs() {
     emit(102);
     emit(115);
     emit(32);
+}
+
+naked fn w_denied() {
     emit(100);
     emit(101);
     emit(110);
     emit(105);
     emit(101);
     emit(100);
+}
+
+naked fn w_ok() {
+    emit(111);
+    emit(107);
     emit(10);
 }
 
-naked fn say_sys() {
-    emit(122);
-    emit(111);
-    emit(110);
-    emit(101);
-    emit(32);
+naked fn w_syscall() {
     emit(115);
     emit(121);
     emit(115);
@@ -54,38 +58,90 @@ naked fn say_sys() {
     emit(108);
     emit(108);
     emit(32);
-    emit(100);
-    emit(101);
-    emit(110);
-    emit(105);
-    emit(101);
-    emit(100);
-    emit(10);
 }
 
-naked fn say_quota() {
-    emit(122);
-    emit(111);
-    emit(110);
-    emit(101);
-    emit(32);
+naked fn w_quota() {
     emit(113);
     emit(117);
     emit(111);
     emit(116);
     emit(97);
     emit(32);
-    emit(111);
-    emit(107);
-    emit(10);
 }
 
-naked fn say_escape() {
-    emit(122);
-    emit(111);
-    emit(110);
-    emit(101);
+// zone fs ok
+naked fn say_fs_ok() {
+    w_zone();
+    w_fs();
+    w_ok();
+}
+
+// zone fs denied
+naked fn say_fs_denied() {
+    w_zone();
+    w_fs();
+    w_denied();
+    nl();
+}
+
+// zone fs denied create
+naked fn say_create() {
+    w_zone();
+    w_fs();
+    w_denied();
     emit(32);
+    emit(99);
+    emit(114);
+    emit(101);
+    emit(97);
+    emit(116);
+    emit(101);
+    nl();
+}
+
+// zone syscall denied
+naked fn say_sys() {
+    w_zone();
+    w_syscall();
+    w_denied();
+    nl();
+}
+
+// zone syscall flood denied
+naked fn say_flood() {
+    w_zone();
+    w_syscall();
+    emit(102);
+    emit(108);
+    emit(111);
+    emit(111);
+    emit(100);
+    emit(32);
+    w_denied();
+    nl();
+}
+
+// zone quota ok
+naked fn say_quota() {
+    w_zone();
+    w_quota();
+    w_ok();
+}
+
+// zone quota hold
+naked fn say_hold() {
+    w_zone();
+    w_quota();
+    emit(104);
+    emit(111);
+    emit(108);
+    emit(100);
+    nl();
+}
+
+// zone escape denied
+naked fn say_escape() {
+    w_zone();
     emit(101);
     emit(115);
     emit(99);
@@ -93,17 +149,136 @@ naked fn say_escape() {
     emit(112);
     emit(101);
     emit(32);
-    emit(100);
-    emit(101);
-    emit(110);
-    emit(105);
-    emit(101);
-    emit(100);
-    emit(10);
+    w_denied();
+    nl();
+}
+
+// Deja en 0x401800 los 8 bytes de v (el menos significativo primero) y
+// ocho ceros. Un byte 0 corta el nombre. "zb" es 0x627a.
+fn npack(v: i64) {
+    let i: i64 = 0;
+    while (i < 16) {
+        let b: i64 = 0;
+        if (i < 8) { b = (v >> (i * 8)) & 255; }
+        *((0x401800 + i) as *u8) = b as u8;
+        i = i + 1;
+    }
+}
+
+// n copias de c y el resto en cero. n = 16 deja el nombre sin NUL.
+fn nfill(c: i64, n: i64) {
+    let i: i64 = 0;
+    while (i < 16) {
+        if (i < n) { *((0x401800 + i) as *u8) = c as u8; }
+        else { *((0x401800 + i) as *u8) = 0; }
+        i = i + 1;
+    }
+}
+
+// 1 si escribir y leer el nombre de 0x401800 dan -12. Si un intento
+// pasara, el archivo quedaría en el disco y el shell lo ve con fs cat.
+fn deny_raw() -> i64 {
+    let w: i64 = syscall(6, 1);
+    let r: i64 = syscall(7, 8);
+    if (w == 0 - 12 && r == 0 - 12) { return 1; }
+    return 0;
+}
+
+fn deny(v: i64) -> i64 {
+    npack(v);
+    return deny_raw();
+}
+
+// Crear o abrir fuera del prefijo: el prefijo de otra zona ("zb",
+// "zbx"), archivos de la zona 0 ("c", "a", "m", "ztest"), rutas con /
+// y .., nombre vacío, byte alto, espacio, 9 letras y 16 sin NUL.
+// Después, largos que el kernel rechaza con -9 antes de ver el nombre.
+fn fs_attacks() -> i64 {
+    let ok: i64 = 1;
+    ok = ok & deny(0x627a);
+    ok = ok & deny(0x78627a);
+    ok = ok & deny(0x63);
+    ok = ok & deny(0x61);
+    ok = ok & deny(0x6d);
+    ok = ok & deny(0x747365747a);
+    ok = ok & deny(0x632f);
+    ok = ok & deny(0x632f2e2e);
+    ok = ok & deny(0x632e);
+    ok = ok & deny(0x6100);
+    ok = ok & deny(0x61ff);
+    ok = ok & deny(0x622061);
+    nfill(97, 9);
+    ok = ok & deny_raw();
+    nfill(97, 16);
+    ok = ok & deny_raw();
+    npack(0x78);
+    if (syscall(6, 0) != 0 - 9) { ok = 0; }
+    if (syscall(6, 65) != 0 - 9) { ok = 0; }
+    if (syscall(6, 0 - 1) != 0 - 9) { ok = 0; }
+    if (syscall(7, 0 - 1) != 0 - 9) { ok = 0; }
+    return ok;
+}
+
+// 1 si el número nr da -1. rdi = 88 ('X'): si el kernel dejara pasar
+// un 1 por recorte a 32 bits, saldría una X.
+fn neg(nr: i64) -> i64 {
+    let r: i64 = syscall(nr, 88);
+    if (r == 0 - 1) { return 1; }
+    return 0;
+}
+
+// Todo número fuera de la máscara tiene que dar -1 y no tener efecto:
+// 2 imprimiría "user leak", 3 "getpid", 4 cedería la CPU, 10 y 11 los
+// avisos de nx y hh. 1, 5, 6, 7 y 8 están en la máscara y 9 es el
+// escape, que cuenta aparte. Son 58 números del 0 al 63 más 5 de afuera
+// (64, 1000, 2^32+1 y 2^32+2 por si el kernel recorta a 32 bits, y -1).
+// Con el rax=2 de _start, niega=64.
+fn flood() -> i64 {
+    let ok: i64 = 1;
+    let n: i64 = 0;
+    while (n < 64) {
+        let skip: i64 = 0;
+        if (n == 1 || n == 5 || n == 6 || n == 7 || n == 8 || n == 9) { skip = 1; }
+        if (skip == 0) { ok = ok & neg(n); }
+        n = n + 1;
+    }
+    ok = ok & neg(64);
+    ok = ok & neg(1000);
+    ok = ok & neg(0x100000001);
+    ok = ok & neg(0x100000002);
+    ok = ok & neg(0 - 1);
+    return ok;
+}
+
+// 1 si cambiar de zona al destino t da -2.
+fn esc(t: i64) -> i64 {
+    let r: i64 = syscall(9, t);
+    if (r == 0 - 2) { return 1; }
+    return 0;
+}
+
+// Cambiar de zona hacia la 0, otra zona viva, una que no existe y -1.
+// Todos -2. Con el intento 0, fuga=5.
+fn run_escape() {
+    let ok: i64 = esc(0);
+    ok = ok & esc(1);
+    ok = ok & esc(2);
+    ok = ok & esc(7);
+    ok = ok & esc(0 - 1);
+    if (ok == 1) { say_escape(); }
+}
+
+fn run_fs_attacks() {
+    if (fs_attacks() == 1) { say_create(); }
+}
+
+fn run_flood() {
+    if (flood() == 1) { say_flood(); }
 }
 
 // r vive en la pila de 0x402000. Un let de _start naked caería en la
-// página de código, y el kernel la deja solo lectura.
+// página de código, y el kernel la deja solo lectura. Después del primer
+// -1, 40 intentos más tienen que seguir dando -1.
 fn zone_pages() {
     let r: i64 = 0;
     let n: i64 = 0;
@@ -111,7 +286,17 @@ fn zone_pages() {
         r = syscall(8);
         if (r == 0) { n = n + 1; }
     }
-    if (r == 0 - 1) { say_quota(); }
+    if (r == 0 - 1) {
+        say_quota();
+        let hold: i64 = 1;
+        let k: i64 = 0;
+        while (k < 40) {
+            let q: i64 = syscall(8);
+            if (q != 0 - 1) { hold = 0; }
+            k = k + 1;
+        }
+        if (hold == 1) { say_hold(); }
+    }
 }
 
 naked fn _start() {
@@ -157,16 +342,17 @@ naked fn _start() {
         if (*(0x401708 as *u8) == 1) { say_fs_denied(); }
     }
 
+    run_fs_attacks();
+
     rax = 2;
     syscall();
     if (rax == 0 - 1) { say_sys(); }
 
+    run_flood();
+
     zone_pages();
 
-    rax = 9;
-    rdi = 0;
-    syscall();
-    if (rax == 0 - 2) { say_escape(); }
+    run_escape();
 
     rax = 5;
     syscall();

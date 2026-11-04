@@ -8,6 +8,31 @@ para ese commit es `legacy-tempo`.
 
 ## 0.8
 
+SG-01 (parte 1): pruebas adversarias de zonas, solo (a) archivos fuera
+del prefijo, (b) cuota de memoria y (c) syscalls fuera de la máscara.
+(d) anillo 3 contra memoria del kernel y NX, y (e) punteros de usuario,
+quedan para otra vuelta. `src/user/zona.lap` intenta 14 nombres fuera
+del prefijo (lectura y escritura), 4 largos inválidos, 63 números de
+syscall fuera de la máscara (58 del 0 al 63, más 64, 1000, 2^32+1, 2^32+2
+y -1), 5 escapes de zona y 40 pedidos de página después del tope.
+`tests/qemu_shell_test.sh` revisa lo que el programa no puede falsear:
+`niega=64`, `fuga=5`, `max=12`, el directorio del disco (solo aparece
+`zan`), la zona `b` intacta, siete `zone create` inválidos que fallan
+con `zone fail 11` y una zona de 1 página que da `zone fail 6` sin
+filtrar memoria. Cambio en el kernel: `zone ls` agrega `max=`, la
+marca de agua de páginas por zona (`zone_hi` en `zone.lap`); no cambia
+ninguna decisión del kernel. Bugs de aislamiento encontrados: ninguno
+por lectura del código; las pruebas nuevas **no se han corrido en
+QEMU** (esta máquina no tiene `socat`, que el script usa para el
+monitor), así que ningún resultado de ejecución respalda esta entrada.
+`make` compila: `kernel.bin` 198741 bytes (389 sectores, `.bss` 22252),
+`zona.axe` 3642 bytes (tope 4080 de código). `tests/qemu_shell_test.sh`
+suelta también `hola` antes de plantar `ztest`, para dejar un cupo libre
+en el directorio y que un archivo filtrado se vea. `src/bootloader/stage2.lap`:
+el comentario sobre `ebx` ahora dice que v0.34.1 lo preserva (y `edx`);
+se verificó desensamblando `build/stage2.bin` con `ndisasm -b 16`. No se
+leyó la salida de `copihue -S`.
+
 CP-01: el compilador fijado sube de v0.31.0 a v0.34.1 (commit
 `330ec195b27c8cd66aa1cf5ee5113c767a1ea5ca`). No hubo cambios de código
 en `src/`: `make` compila igual. `kernel.bin` mide 157775 bytes (309
