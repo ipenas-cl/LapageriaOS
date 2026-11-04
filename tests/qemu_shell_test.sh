@@ -847,8 +847,12 @@ atk_run 7 14 0x00000015 0x0000000000402000
 atk_run 9 14 0x00000015 $K
 # Su propio código es de solo lectura (P, W, U).
 atk_run 8 14 0x00000007 0x0000000000400000
-# Dirección no canónica: #GP, no #PF. addr es el RIP del programa.
-atk_run a 13 0x00000000 '0x00000000004[0-9a-f]{5}'
+# Dirección no canónica: QEMU 11.1 (y el hardware) dan #GP con addr = RIP
+# del programa; el QEMU de Ubuntu en CI la entrega como #PF con CR2 = la
+# dirección. Las dos niegan el acceso y matan solo al proceso: se acepta
+# cualquiera de las dos, pero nada más.
+atk_run a '(13|14)' '0x0000000[05]' '(0x00000000004[0-9a-f]{5}|0x8000000000000000)'
+tr -d '\r' < "$SERIAL" | grep '^user killed ' | grep -Eq 'vec=13 err=0x00000000 addr=0x00000000004|vec=14 err=0x00000005 addr=0x8000000000000000$' || fail "attack a: unexpected fault combination"
 # Página de usuario que no existe (no presente, U).
 atk_run b 14 0x00000004 0x0000000000500000
 typefs "zone ls"
