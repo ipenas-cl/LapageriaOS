@@ -9,6 +9,8 @@ src/kernel/copihue/atk_img.lap
 src/kernel/copihue/udpeco_img.lap
 src/kernel/copihue/udpdos_img.lap
 src/kernel/copihue/udpwait_img.lap
+src/kernel/copihue/tcpeco_img.lap
+src/kernel/copihue/tcpcli_img.lap
 
 *.o
 *.img

@@ -1,0 +1,204 @@
+// Cliente TCP de anillo 3 (RD-02): el kernel conecta hacia el host.
+// copihue --flat 0x400000.
+//
+// 1. connect (syscall 19) a 10.0.2.100:7100, que la red de usuario de QEMU
+//    reenvía (guestfwd) a un socat del host. Si la zona niega la syscall:
+//    `tcp denied`. Conectado: `tcp conn ok`.
+// 2. Imprime `tcp pause` y duerme 150 ticks en recv (el host no manda nada
+//    todavía: tiene que volver -110). La prueba aprovecha esa pausa para
+//    cortar el enlace del e1000 y así perder los primeros envíos.
+// 3. Manda 3000 bytes (3 trozos de 1000, byte i = (i*7+3) & 255) e imprime
+//    `tcp sent n=3000 sum=<suma>`. El host responde «respuesta» y cierra:
+//    recv devuelve 9 bytes y luego 0 (`tcp got ok`), cierra y `tcp cli ok`.
+// 4. connect a 10.0.2.2:1, donde nadie escucha: tiene que dar -111 (RST
+//    recibido en SYN_SENT). `tcp refused ok`.
+//
+// Buffer 0x401400 (1024 bytes) en la página de la pila. Sin cadenas.
+
+naked fn emit(c: i64) {
+    rax = 1;
+    syscall();
+}
+
+fn say8(w: i64) {
+    let x: i64 = w;
+    while (x != 0) {
+        emit(x & 255);
+        x = x >> 8;
+    }
+}
+
+fn say_num(n: i64) {
+    let v: i64 = n;
+    if (v < 0) {
+        emit(45);
+        v = 0 - v;
+    }
+    let p: i64 = 1;
+    while (v / p >= 10) { p = p * 10; }
+    while (p > 0) {
+        emit(48 + (v / p) % 10);
+        p = p / 10;
+    }
+}
+
+fn w_tcp() {
+    say8(0x20706374);
+}
+
+fn say_denied() {
+    w_tcp();
+    say8(0x0a6465696e6564);
+}
+
+fn say_conn() {
+    w_tcp();
+    say8(0x0a6b6f206e6e6f63);
+}
+
+fn say_pause() {
+    w_tcp();
+    say8(0x0a6573756170);
+}
+
+fn say_fail(step: i64, r: i64) {
+    w_tcp();
+    say8(0x206c696166);
+    say_num(step);
+    emit(32);
+    say_num(r);
+    emit(10);
+}
+
+fn say_sent(sum: i64) {
+    w_tcp();
+    say8(0x3d6e20746e6573);
+    say_num(3000);
+    say8(0x3d6d757320);
+    say_num(sum);
+    emit(10);
+}
+
+fn say_got() {
+    w_tcp();
+    say8(0x20746f67);
+    say8(0x0a6b6f);
+}
+
+fn say_cli() {
+    w_tcp();
+    say8(0x6b6f20696c63);
+    emit(10);
+}
+
+fn say_refused() {
+    w_tcp();
+    say8(0x2064657375666572);
+    say8(0x0a6b6f);
+}
+
+fn say_refused_fail(r: i64) {
+    w_tcp();
+    say8(0x2064657375666572);
+    say8(0x0a6c696166);
+}
+
+fn fill_buf() -> i64 {
+    let q: *u8 = 0x401400 as *u8;
+    let sum: i64 = 0;
+    let i: i64 = 0;
+    while (i < 1000) {
+        let v: i64 = (i * 7 + 3) & 255;
+        q[i] = v as u8;
+        sum = sum + v;
+        i = i + 1;
+    }
+    return sum;
+}
+
+// Manda los len bytes de 0x401400 por c. 0 o el error.
+fn send_all(c: i64, len: i64) -> i64 {
+    let off: i64 = 0;
+    while (off < len) {
+        let s: i64 = syscall(20, c, 0x401400 + off, len - off, 1000);
+        if (s <= 0) {
+            if (s == 0) { return 0 - 1; }
+            return s;
+        }
+        off = off + s;
+    }
+    return 0;
+}
+
+fn talk(c: i64) {
+    say_conn();
+    say_pause();
+    let r: i64 = syscall(21, c, 0x401400, 1, 150);
+    if (r != 0 - 110) {
+        say_fail(2, r);
+        return;
+    }
+    let one: i64 = fill_buf();
+    let k: i64 = 0;
+    while (k < 3) {
+        r = send_all(c, 1000);
+        if (r != 0) {
+            say_fail(3, r);
+            return;
+        }
+        k = k + 1;
+    }
+    say_sent(one * 3);
+    let got: i64 = 0;
+    let sum: i64 = 0;
+    let go: i64 = 1;
+    while (go == 1) {
+        let n: i64 = syscall(21, c, 0x401400, 64, 800);
+        if (n < 0) {
+            say_fail(4, n);
+            go = 0;
+            got = 0 - 1;
+        } else {
+            if (n == 0) {
+                go = 0;
+            } else {
+                let q: *u8 = 0x401400 as *u8;
+                let i: i64 = 0;
+                while (i < n) {
+                    sum = sum + (q[i] & 255);
+                    i = i + 1;
+                }
+                got = got + n;
+            }
+        }
+    }
+    if (got == 9 && sum == 988) { say_got(); } else { say_fail(5, got); }
+    syscall(22, c);
+    say_cli();
+}
+
+fn refused() {
+    let r: i64 = syscall(19, (0x0A000202 << 16) | 1, 300);
+    if (r == 0 - 111) { say_refused(); } else { say_refused_fail(r); say_num(r); emit(10); }
+}
+
+fn cli_main() {
+    let c: i64 = syscall(19, (0x0A000264 << 16) | 7100, 500);
+    if (c == 0 - 1) {
+        say_denied();
+        return;
+    }
+    if (c < 0) {
+        say_fail(1, c);
+    } else {
+        talk(c);
+    }
+    refused();
+}
+
+naked fn _start() {
+    cli_main();
+    rax = 5;
+    syscall();
+    hlt();
+}

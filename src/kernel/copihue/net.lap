@@ -530,6 +530,7 @@ fn net_down() -> i64 {
     e_wr(0x0400, 0);
     net_on = 0;
     udp_reset();
+    tcp_reset();
     return 0;
 }
 
@@ -815,7 +816,7 @@ fn net_ip(p: *u8, hw: i64) -> i64 {
     let frag = (((ip.frag_hi & 255) as i64) << 8) | (ip.frag_lo & 255);
     if ((frag & 0x3FFF) != 0) { return 0; }
     if (net_csum(p, offsetof(IpPkt, vihl), ihl) != 0) { return 1; }
-    if ((ip.proto & 255) != 1 && (ip.proto & 255) != 17) { return 0; }
+    if ((ip.proto & 255) != 1 && (ip.proto & 255) != 17 && (ip.proto & 255) != 6) { return 0; }
     if (net_b4(ip.dip[0], ip.dip[1], ip.dip[2], ip.dip[3], 10, 0, 2, 15) == 0) { return 0; }
     let i = 0;
     while (i < 6) {
@@ -823,6 +824,7 @@ fn net_ip(p: *u8, hw: i64) -> i64 {
         i = i + 1;
     }
     if ((ip.proto & 255) == 17) { return udp_rx(p, ihl, total); }
+    if ((ip.proto & 255) == 6) { return tcp_rx(p, ihl, total); }
     if ((ip.proto & 255) != 1) { return 0; }
     if (total < ihl + 8) { return 1; }
     let icmp = sizeof(EthHdr) + ihl;

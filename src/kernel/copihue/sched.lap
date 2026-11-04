@@ -239,6 +239,7 @@ fn release_proc(pi: i64) -> i64 {
     proc_zone[pi] = 0;
     proc_uva[pi] = 0;
     udp_release(pi);
+    tcp_release(pi);
     return f;
 }
 
@@ -438,6 +439,7 @@ fn build_proc(pi: i64, src: i64, n: i64, secret: i64) -> i64 {
     proc_uva[pi] = 0;
     proc_held[pi] = 0;
     udp_release(pi);
+    tcp_release(pi);
     proc_zone[pi] = build_zone;
     if (zone_acquire(build_zone) != 0) { return 0; }
     proc_held[pi] = 1;
