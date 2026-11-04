@@ -855,6 +855,33 @@ atk_run a '(13|14)' '0x0000000[05]' '(0x00000000004[0-9a-f]{5}|0x800000000000000
 tr -d '\r' < "$SERIAL" | grep '^user killed ' | grep -Eq 'vec=13 err=0x00000000 addr=0x00000000004|vec=14 err=0x00000005 addr=0x8000000000000000$' || fail "attack a: unexpected fault combination"
 # Página de usuario que no existe (no presente, U).
 atk_run b 14 0x00000004 0x0000000000500000
+# SG-02: excepciones de CPU de anillo 3 que no son #PF ni #GP de memoria.
+# El addr de `user killed` es el RIP de la instrucción que falla (trap de
+# fallo: apunta a ella). Se exige que esté dentro del programa y que los
+# bytes de build/ataque.bin en ese RIP sean la instrucción esperada: así
+# el vector no puede venir de otro lado. El vector y el error son exactos:
+# #UD de ud2 (6, sin código de error), #DE de idiv (0, sin código) e
+# `int 3`, que no da #BP: la puerta 3 de la IDT es DPL 0 (0x8E) y INT n
+# con CPL 3 > DPL da #GP con error = 3*8+2 = 0x1a.
+ATK_BIN=$(dirname "$IMAGE")/ataque.bin
+[ -f "$ATK_BIN" ] || fail "no $ATK_BIN to check the faulting instruction"
+exc_bytes() {
+    local rip=$1 n=$2 off
+    off=$((rip - 0x400000))
+    [ "$off" -ge 0 ] && [ "$off" -lt "$(wc -c < "$ATK_BIN")" ] || { echo "fuera"; return; }
+    od -An -tx1 -v -j "$off" -N "$n" "$ATK_BIN" | tr -d ' \n'
+}
+# exc_run modo vec err regex_de_bytes_en_rip
+exc_run() {
+    local mode=$1 vec=$2 err=$3 want=$4 rip got
+    atk_run "$mode" "$vec" "$err" '0x00000000004[0-9a-f]{5}'
+    rip=$(tr -d '\r' < "$SERIAL" | grep '^user killed ' | tail -1 | sed 's/.* addr=//')
+    got=$(exc_bytes "$((rip))" 3)
+    printf '%s\n' "$got" | grep -Eq "^$want" || fail "attack $mode: bytes at RIP $rip are [$got], want $want"
+}
+exc_run u 6 0x00000000 '0f0b'
+exc_run z 0 0x00000000 '(48)?f7'
+exc_run i 13 0x0000001a 'cd03'
 typefs "zone ls"
 zk=$(tr -d '\r' < "$SERIAL" | grep '^zone 4 k pre=zk ' | tail -1)
 [ -n "$zk" ] || fail "zone k missing after the attacks"

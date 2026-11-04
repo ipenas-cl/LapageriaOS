@@ -15,6 +15,9 @@
 //   'a' leer una dirección no canónica (#GP)
 //   'b' leer una página de usuario que no existe
 //   'd' punteros del kernel como argumento de las syscalls 6 y 7
+//   'u' ud2 (#UD)
+//   'z' INT64_MIN / -1 (#DE; Copihue define x / 0 como 0)
+//   'i' int 3 (la puerta de la IDT es DPL 0: da #GP, no #BP)
 //
 // Cada ataque tiene que matar al proceso con un fallo, así que el mensaje
 // `atk survived` solo sale si el kernel NO lo negó. Los mensajes comparten
@@ -134,6 +137,19 @@ fn attack(m: i64) {
     if (m == 57) { jump_to(0xFFFFFFFF80010000); }
     if (m == 97) { x = *((1 << 63) as *u8); }
     if (m == 98) { x = *(0x500000 as *u8); }
+    // SG-02: excepciones de CPU que no son #PF ni #GP de memoria.
+    if (m == 117) { ud2(); }
+    if (m == 122) {
+        // Copihue define x / 0 como 0 (test rbx,rbx antes del idiv): no hay
+        // #DE por divisor cero. INT64_MIN / -1 sí desborda el cociente y
+        // el idiv da #DE. Los operandos salen de memoria, no del compilador.
+        *(0x401C20 as *u8) = 1;
+        let one: i64 = *(0x401C20 as *u8);
+        let d: i64 = 0 - one;
+        let n: i64 = one << 63;
+        x = n / d;
+    }
+    if (m == 105) { int(3); }
     if (x == 123456) { emit(88); }
     say_survived();
 }
