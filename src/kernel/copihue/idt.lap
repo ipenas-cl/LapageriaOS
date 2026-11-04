@@ -116,7 +116,15 @@ interrupt fn exc9() { cpu_fault(9, 0, 0); }
 interrupt fn exc10(err: i64) { cpu_fault(10, err, 1); }
 interrupt fn exc11(err: i64) { cpu_fault(11, err, 1); }
 interrupt fn exc12(err: i64) { cpu_fault(12, err, 1); }
-interrupt fn exc13(err: i64) { cpu_fault(13, err, 1); }
+// #GP de anillo 3 (por ejemplo, una dirección no canónica): muere el
+// proceso y nadie más. En anillo 0 sigue siendo fatal.
+interrupt fn exc13(frame: *PfFrame) {
+    if (sched_on != 0 && (frame.cs & 3) == 3) {
+        user_kill(13, frame.error_code, frame.rip);
+        return;
+    }
+    cpu_fault(13, frame.error_code, 1);
+}
 interrupt fn exc14(frame: *PfFrame) {
     // Fallo de anillo 3 con el planificador prendido: se reescribe rip
     // y el epílogo hace iretq. El de `user` (sin sched) vuelve al shell.
@@ -148,6 +156,10 @@ interrupt fn exc14(frame: *PfFrame) {
         return;
     }
     if (sched_on != 0 && (frame.error_code & 4) != 0) {
+        if (user_fault_rec() == 0) {
+            user_kill(14, frame.error_code, read_cr2());
+            return;
+        }
         note_user_fault(frame.error_code);
         frame.rip = patch_rip;
         return;

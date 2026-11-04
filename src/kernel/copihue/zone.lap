@@ -539,6 +539,22 @@ fn zone_plant() -> i64 {
     return 0;
 }
 
+// SG-01 parte 2. Escribe `zatk` (el programa de ataque) y `kentry`: un
+// AXE1 válido salvo que la cabecera pone la entrada en el texto del kernel.
+// `exec kentry` tiene que decir `exec bad entry` y no correr nada.
+fn zone_plant_atk() -> i64 {
+    let n = atk_fill(exec_buf);
+    if (n < 16 || n > 4096) { return exec_fail(9); }
+    let r = fs_write("zatk", exec_buf, n);
+    if (r != 0) { return exec_fail(r); }
+    let h: *Axe = axe_of(exec_buf);
+    h.entry = (hh_base() + 0x10000) as u64;
+    r = fs_write("kentry", exec_buf, n);
+    if (r != 0) { return exec_fail(r); }
+    puts("zone atk plant ok\n");
+    return 0;
+}
+
 fn zone_run(z: i64) -> i64 {
     let before = pmm_free;
     puts("zone mem ");
@@ -601,5 +617,6 @@ fn cmd_zone() -> i64 {
     if (fs_is("ls")) { return zone_ls(); }
     if (fs_is("exec")) { return zone_exec_cmd(pos); }
     if (fs_is("plant")) { return zone_plant(); }
+    if (fs_is("atk")) { return zone_plant_atk(); }
     return zone_fail(11);
 }

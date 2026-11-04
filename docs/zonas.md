@@ -113,14 +113,66 @@ líneas solas no prueban nada.)
 2^32+1 sirve para ver si el kernel recorta el número a 32 bits: eso
 sería la syscall 1 con `rdi=88` y saldría una `X`.
 
-Quedan para otra vuelta: anillo 3 contra memoria del kernel y página NX
-en una zona (d), y punteros de usuario hacia el kernel (e). Hoy ninguna
-syscall de zona recibe un puntero: el nombre y los datos se leen de
-`0x401800` y `0x401C00`, direcciones fijas del propio proceso.
+El archivo de prueba tiene que caber en 4080 bytes (`mkaxe.sh`). `zona`
+pesa 3626; `ataque` pesa 1648.
 
-El archivo de prueba tiene que caber en 4080 bytes (`mkaxe.sh`). El
-programa pesa 3626. Para sumar más ataques hay que repartirlos en otro
-programa o comprimir mensajes.
+## Pruebas adversarias (SG-01, parte 2)
 
-**Estado:** `make` compila. La prueba nueva no se ha corrido en QEMU
-(ver CHANGELOG).
+`src/user/ataque.lap` hace un ataque por corrida, en una zona `k`
+(`zone create k zk 12`). El modo está en el archivo `zkq` de la zona (el
+shell lo escribe con `fs write zkq N`); `zone atk` planta el programa
+como `zatk`. Cada ataque tiene que terminar con la línea
+`user killed pid=1 vec= err= addr=` del kernel, sin `atk survived`, con
+`zone exec ok` (el shell recupera el control), sin `zone leak`, y la zona
+queda con `pag=0` y `proc=0/`.
+
+| Modo | Ataque desde anillo 3 | Resultado |
+|---|---|---|
+| 1 / 2 | leer / escribir `0xFFFFFFFF80010000` (texto del kernel) | #PF `err=0x5` / `0x7` |
+| 3 / 4 | leer / escribir `0xFFFF800000001000` (alias alto de las tablas) | #PF `0x5` / `0x7` |
+| 5 | leer `0x1000` (identidad baja, tablas) | #PF `0x5` |
+| 6 | ejecutar la pila (`0x401800`, NX) | #PF `0x15` |
+| 7 | ejecutar la página pedida con la syscall 8 (`0x402000`, NX) | #PF `0x15` |
+| 8 | escribir su página de código (solo lectura) | #PF `0x7` |
+| 9 | ejecutar el texto del kernel | #PF `0x15` |
+| a | leer una dirección no canónica | #GP (vec 13) |
+| b | leer una página de usuario inexistente (`0x500000`) | #PF `0x4` |
+
+**Bug encontrado y arreglado.** Antes de este cambio, el modo 1 (y todos
+los demás) paraba la máquina: un proceso de `exec` o de zona no tiene
+punto de recuperación (`proc_rec0/1` solo los arma la prueba `sched`), y
+`note_user_fault` imprimía `pf-cross norec` y hacía `hlt`. Se corrió la
+prueba contra el kernel sin el arreglo: el serial termina en
+`atk 1` / `pf-cross norec` y el shell no vuelve. El #GP de anillo 3 era
+fatal por la misma vía (`cpu_fault`). Arreglo: `user_fault_rec` y
+`user_kill` en `sched.lap`, y `exc13` con marco en `idt.lap`. El proceso
+muere como en `exit` (devuelve páginas y cupo de la zona). Los #PF con
+registro de recuperación (la prueba `sched`) no cambian.
+
+**(e) Punteros de usuario.** Hoy ninguna syscall recibe un puntero: el
+nombre y los datos se leen de `0x401800` y `0x401C00`, direcciones fijas
+del propio proceso, y `rdi` es un largo o un carácter. No hay superficie
+de «puntero de usuario hacia el kernel» que probar tal cual. Lo que sí se
+probó (modo `d` y `exec kentry`):
+
+- largos que son punteros del kernel (`0xFFFFFFFF80010000`,
+  `0xFFFF800000001000`, `2^63-1` en la syscall 6; los dos primeros y
+  `1<<63` en la 7): `-9`. La lectura con un largo positivo enorme se
+  recorta a 64 y devuelve 1 (el archivo mide 1 byte), sin copiar de más;
+- punteros del kernel en `rsi` y `rdx`: el kernel no los usa, la lectura
+  sigue dando el mismo byte;
+- un AXE1 cuya cabecera pone la entrada en `0xFFFFFFFF80010000`
+  (`kentry`, el único valor que llega del disco): `exec bad entry`, tanto
+  con `exec` como con `zone exec`, sin `run begin`.
+
+Si alguna syscall pasa a recibir un puntero, hay que agregar la
+validación (rango de usuario) y un ataque nuevo.
+
+**Límites.** Las excepciones de anillo 3 distintas de #PF y #GP (#UD,
+#DE, …) siguen entrando a `cpu_fault` y deteniendo el kernel; se leyó el
+código, no se probó, y no se arregló (fuera de alcance de memoria).
+La dirección absoluta de 64 bits se trunca en el compilador; ver
+`docs/PEDIDOS_COPIHUE.md`.
+
+**Estado:** `make qemu-test` termina en 0 en QEMU con estas pruebas y las
+de la parte 1 (ver CHANGELOG).

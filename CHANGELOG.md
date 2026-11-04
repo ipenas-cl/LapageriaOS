@@ -8,6 +8,32 @@ para ese commit es `legacy-tempo`.
 
 ## 0.8
 
+SG-01 (parte 2): (d) anillo 3 contra la memoria del kernel y las páginas
+NX, y (e) punteros del kernel como argumento de syscalls. **Bug real
+encontrado y arreglado:** un proceso de `exec` o de zona que fallaba en
+anillo 3 (`#PF`) no tenía punto de recuperación (`proc_rec0/1`, que solo
+arma la prueba `sched`), así que `note_user_fault` imprimía
+`pf-cross norec` y paraba TODA la máquina con `hlt`: cualquier programa de
+una zona podía colgar el kernel leyendo `0xFFFFFFFF80010000`. Un `#GP`
+de anillo 3 (dirección no canónica) también era fatal para el kernel
+(`cpu_fault` hace `hlt`). Ahora ambos matan solo al proceso: `user_kill`
+(`sched.lap`) imprime `user killed pid= vec= err= addr=`, lo da de baja como
+`exit` (devuelve páginas y cupo de zona) y vuelve al shell o al otro
+proceso. Los `#PF` con registro de recuperación (prueba `sched`) siguen
+igual. Prueba nueva: `src/user/ataque.lap` (un ataque por corrida, modo en
+el archivo `zkq`; `zone atk` lo planta como `zatk`), 11 ataques en
+`tests/qemu_shell_test.sh`. Detalle y resultados en
+[docs/zonas.md](docs/zonas.md). No quedan syscalls con punteros de usuario;
+lo que sí se probó para (e) está en ese documento. Quedan sin arreglar y
+sin probar los demás vectores de excepción de anillo 3 (`#UD`, `#DE`,
+…): por lectura del código siguen deteniendo el kernel. Corrido en QEMU
+(qemu-system-x86_64 11.1.3, macOS, `socat` de /opt/homebrew/bin): sin el
+arreglo, la prueba se cuelga en `pf-cross norec` en el primer ataque; con
+el arreglo, `make qemu-test` termina en 0 (también las pruebas de la parte
+1, que sí pasaron). La prueba detectó además que Copihue trunca a 32 bits
+un operando absoluto de 64 bits (el ataque 3 leía `0x1000`): anotado en
+`docs/PEDIDOS_COPIHUE.md`. `kernel.bin` 235686 bytes (461 sectores).
+
 SG-01 (parte 1): pruebas adversarias de zonas, solo (a) archivos fuera
 del prefijo, (b) cuota de memoria y (c) syscalls fuera de la máscara.
 (d) anillo 3 contra memoria del kernel y NX, y (e) punteros de usuario,
@@ -22,9 +48,8 @@ con `zone fail 11` y una zona de 1 página que da `zone fail 6` sin
 filtrar memoria. Cambio en el kernel: `zone ls` agrega `max=`, la
 marca de agua de páginas por zona (`zone_hi` en `zone.lap`); no cambia
 ninguna decisión del kernel. Bugs de aislamiento encontrados: ninguno
-por lectura del código; las pruebas nuevas **no se han corrido en
-QEMU** (esta máquina no tiene `socat`, que el script usa para el
-monitor), así que ningún resultado de ejecución respalda esta entrada.
+por lectura del código; las pruebas de esta parte no se habían corrido
+en QEMU al escribir esta entrada (la parte 2 las corrió: pasan).
 `make` compila: `kernel.bin` 198741 bytes (389 sectores, `.bss` 22252),
 `zona.axe` 3642 bytes (tope 4080 de código). `tests/qemu_shell_test.sh`
 suelta también `hola` antes de plantar `ztest`, para dejar un cupo libre

@@ -37,6 +37,7 @@ let proc_sys: [i64; 2];
 let proc_npages: [i64; 2];
 let proc_freed: [i64; 2];
 let proc_pages: [i64; 32];
+let user_kills: i64 = 0;
 let proc_rec0: [i64; 2];
 let proc_rec1: [i64; 2];
 let proc_faults: [i64; 2];
@@ -250,6 +251,33 @@ fn exit_current() -> i64 {
         resume_shell();
     }
     return 0;
+}
+
+// Hay un punto de recuperación para el próximo fallo de este proceso?
+// Solo la prueba `sched` los arma (proc_rec0/1). Un proceso de `exec` o de
+// zona no tiene: antes caía en `pf-cross norec` y el kernel entero se
+// detenía con hlt. Ahora se le mata a él solo (SG-01 parte 2).
+fn user_fault_rec() -> i64 {
+    if (proc_faults[cur_i] == 0) { return proc_rec0[cur_i]; }
+    return proc_rec1[cur_i];
+}
+
+// Mata al proceso en curso por un fallo de anillo 3: lo da de baja como
+// exit (devuelve sus páginas y su cupo de zona) y sigue con el otro
+// proceso o vuelve al shell. addr es CR2 en un #PF y RIP en un #GP.
+fn user_kill(vec: i64, err: i64, addr: i64) -> i64 {
+    putc('\n');
+    puts("user killed pid=");
+    put_int(proc_pid[cur_i]);
+    puts(" vec=");
+    put_int(vec);
+    puts(" err=");
+    put_hex(err);
+    puts(" addr=");
+    put_hex64(addr);
+    puts("\n");
+    user_kills = user_kills + 1;
+    return exit_current();
 }
 
 fn note_user_fault(err: i64) -> i64 {
