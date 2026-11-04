@@ -78,7 +78,7 @@ typeline() {
     local s=$1 i c k
     for ((i = 0; i < ${#s}; i++)); do
         c=${s:i:1}
-        case "$c" in " ") k=spc ;; "-") k=minus ;; "=") k=equal ;; *) k=$c ;; esac
+        case "$c" in " ") k=spc ;; "-") k=minus ;; "/") k=slash ;; ".") k=dot ;; "=") k=equal ;; *) k=$c ;; esac
         mon "sendkey $k"
     done
     mon "sendkey ret"
@@ -137,8 +137,8 @@ grep -q "lapageria> " "$SERIAL" || fail "no shell prompt"
 typewait "fs format" 50
 typewait "zone par" 50
 has "zone par plant ok" || fail "zone par"
-typewait "zone create za ia 12" 30
-typewait "zone create zb ib 12" 30
+typewait "zone create za 12" 30
+typewait "zone create zb 12" 30
 for z in za zb; do
     typewait "zone sched $z" 30
     typewait "zone trace $z" 30
@@ -147,11 +147,11 @@ has "zone trace ok" || fail "zone trace"
 typewait "trace on zone-deny" 30
 
 # 1. Dos zonas distintas: todo lo ajeno se niega, todo lo propio se permite.
-typewait "fs write iaq c" 30
-typewait "fs write ibq c" 30
+typewait "fs write /zonas/za/q c" 30
+typewait "fs write /zonas/zb/q c" 30
 pair_run za zb
 want=1111111111111
-r1=$(catf iar1); r2=$(catf ibr2)
+r1=$(catf /zonas/za/r1); r2=$(catf /zonas/zb/r2)
 [ "$r1" = "$want" ] || fail "zona za (pid 1): resultado [$r1], esperaba [$want]"
 [ "$r2" = "$want" ] || fail "zona zb (pid 2): resultado [$r2], esperaba [$want]"
 printf '%s\n' "$w" | grep -q '^kill pid=' && fail "algún proceso mató a otro de otra zona"
@@ -174,10 +174,10 @@ echo "ok   zonas za/zb: 13 intentos por proceso, todos como se esperaba (negados
 # 2. La misma zona dos veces: se ven, uno lee la traza y mata al otro.
 # Hace falta una sonda que deje eventos de la zona sin negar nada.
 typewait "trace on sys-enter" 30
-typewait "fs write iaq s" 30
+typewait "fs write /zonas/za/q s" 30
 pair_run za za
 printf '%s\n' "$w" | grep -qx 'kill pid=2 by pid=1' || fail "falta 'kill pid=2 by pid=1': $(printf '%s' "$w" | tr '\n' '|')"
-r1=$(catf iar1); r2=$(catf iar2)
+r1=$(catf /zonas/za/r1); r2=$(catf /zonas/za/r2)
 [ "$r1" = 111111 ] || fail "misma zona, pid 1: [$r1], esperaba [111111]"
 [ "$r2" = 11 ] || fail "misma zona, pid 2: [$r2], esperaba [11]"
 typewait "trace count" 30
@@ -186,10 +186,10 @@ pd=$(pc zone-deny)
 echo "ok   misma zona: se ven (25), el pid 1 lee su traza y mata al pid 2 (kill pid=2 by pid=1), después ya no lo ve; sin zone-deny, sin fugas"
 
 # 3. La zona global ve, traza y mata a la de za.
-typewait "fs rm ibq" 30
-typewait "fs rm ibr2" 30
-typewait "fs rm iar2" 30
-typewait "fs write iaq w" 30
+typewait "fs rm /zonas/zb/q" 30
+typewait "fs rm /zonas/zb/r2" 30
+typewait "fs rm /zonas/za/r2" 30
+typewait "fs write /zonas/za/q w" 30
 typewait "fs write g g" 30
 pair_run global za
 printf '%s\n' "$w" | grep -qx 'kill pid=2 by pid=1' || fail "global: falta 'kill pid=2 by pid=1': $(printf '%s' "$w" | tr '\n' '|')"
@@ -201,8 +201,8 @@ pd=$(pc zone-deny)
 echo "ok   zona global: ve a la zona za, lee solo sus eventos (z 1) y los de todas, lee un contador y la mata; sin zone-deny, sin fugas"
 
 typewait "zone ls" 30
-win "zone ls" | grep -q '^zone 1 za pre=ia .* proc=0/2 pag=0 ' || fail "za quedó con procesos o páginas: $(win 'zone ls' | tr '\n' '|')"
-win "zone ls" | grep -q '^zone 2 zb pre=ib .* proc=0/2 pag=0 ' || fail "zb quedó con procesos o páginas"
+win "zone ls" | grep -q '^zone 1 za root=/zonas/za .* proc=0/2 pag=0 ' || fail "za quedó con procesos o páginas: $(win 'zone ls' | tr '\n' '|')"
+win "zone ls" | grep -q '^zone 2 zb root=/zonas/zb .* proc=0/2 pag=0 ' || fail "zb quedó con procesos o páginas"
 typewait "echo vivo" 30
 has "vivo" || fail "el shell no respondió"
 echo "ok   zonas sin procesos ni páginas al terminar, shell vivo"

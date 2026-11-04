@@ -19,9 +19,9 @@
 # (not the built-in user/sched strings). A missing name, a bad magic and
 # an oversized header return to the prompt. After `fs corrupt`, exec
 # rejects the file on checksum and does not run it.
-# Then zones: a program in zone A writes and reads under its prefix
-# (`zone fs ok`), is denied a zone-0 file and zone B's prefix
-# (`zone fs denied`), a syscall outside the mask (`zone syscall denied`),
+# Then zones: a program in zone A writes and reads under its root /zonas/a
+# (`zone fs ok`), is denied `../c` and a zone-0 file (`zone fs denied`),
+# paths that leave it (`zone fs denied create`, -1 and `niega`), a syscall outside the mask (`zone syscall denied`),
 # a page past its quota (`zone quota ok`, global free memory returns),
 # and a zone change (`zone escape denied`). A missing line fails the script.
 # Then net: user-mode e1000. The kernel ARPs 10.0.2.2 (`net arp ok`),
@@ -90,7 +90,7 @@ typeline() {
     local s=$1 i c k
     for ((i = 0; i < ${#s}; i++)); do
         c=${s:i:1}
-        case "$c" in " ") k=spc ;; "-") k=minus ;; *) k=$c ;; esac
+        case "$c" in " ") k=spc ;; "-") k=minus ;; "/") k=slash ;; ".") k=dot ;; *) k=$c ;; esac
         mon "sendkey $k"
     done
     mon "sendkey ret"
@@ -565,8 +565,8 @@ END {
 }
 ' || fail "fs story missing a line"
 echo "ok   fs format, snap v1, live v2, rollback, two blocks"
-
-# El directorio ya tiene c, a, b y m (tope 7). plant escribe hola, malo
+# exec plant escribe hola, malo
+# plant escribe hola, malo
 # y gordo. exec lee con fs_read: no salta a la copia del kernel.
 typefs "exec plant"
 typefs "exec hola"
@@ -661,31 +661,31 @@ END {
 ' || fail "exec story missing a line"
 echo "ok   exec desde disco, missing, bad magic, bad size, corrupt"
 
-# El directorio cabe 7. exec plant lo llenó. Se sueltan malo y gordo
-# para plantar ztest y dejar un cupo al archivo de la zona.
+# exec plant dejó hola, malo y gordo. Se sueltan malo y gordo
+# para plantar ztest.
 typefs "fs rm malo"
 typefs "fs rm gordo"
 typefs "fs rm hola"
 typefs "zone plant"
-typefs "zone create a za 12"
-typefs "zone create b zb 12"
-# SG-01: crear zonas que pisan el espacio de otra o con tope absurdo tiene
-# que fallar con `zone fail 11` y no crear nada: mismo prefijo, prefijo
-# que es cabeza del de a, prefijo que lo extiende, tope 0, tope sobre
+typefs "zone create a 12"
+typefs "zone create b 12"
+# SG-01: crear zonas con tope absurdo o repetidas tiene
+# que fallar con `zone fail 11` y no crear nada: la forma vieja con prefijo
+# (`c za 5`, `d z 5`, `e zab 5`: el prefijo ya no existe), tope 0, tope sobre
 # 4096, tope negativo y nombre repetido.
 typefs "zone create c za 5"
 typefs "zone create d z 5"
 typefs "zone create e zab 5"
-typefs "zone create f zf 0"
-typefs "zone create g zg 5000"
-typefs "zone create h zh -5"
-typefs "zone create a zq 5"
+typefs "zone create f 0"
+typefs "zone create g 5000"
+typefs "zone create h -5"
+typefs "zone create a 5"
 typefs "zone ls"
-# Directorio antes del ataque: tiene que quedar igual salvo `zan`.
+# Directorio raíz antes del ataque: tiene que quedar igual (lo que la zona escribe va a /zonas/a).
 typefs "fs ls"
 typewait "zone exec a ztest" 200
 typefs "zone ls"
-typefs "fs cat zan"
+typefs "fs cat /zonas/a/n"
 typefs "fs cat n"
 typefs "fs cat c"
 typefs "fs cat zbx"
@@ -694,7 +694,7 @@ typefs "fs ls"
 # SG-01: tope de 1 página. armar el proceso no cabe: `zone fail 6`, sin
 # páginas ni procesos retenidos. `zone exec t nosuch` solo imprime
 # `zone mem` y vuelve: sirve de sonda de memoria libre entre intentos.
-typefs "zone create t zt 1"
+typefs "zone create t 1"
 typefs "zone exec t nosuch"
 typefs "zone exec t ztest"
 typefs "zone exec t nosuch"
@@ -767,26 +767,26 @@ END { exit !(s==2 && q) }
 # Contadores del kernel. a: 64 negadas, 5 intentos de escape, el tope se
 # alcanzó (max=12) y nunca se pasó. b no se tocó. t: una página, soltada.
 z1=$(printf '%s\n' "$clean" | grep '^zone 1 ' | tail -1)
-printf '%s\n' "$z1" | grep -q 'pre=za ' || fail "zone 1 lost prefix za ($z1)"
+printf '%s\n' "$z1" | grep -q 'root=/zonas/a ' || fail "zone 1 lost its root /zonas/a ($z1)"
 printf '%s\n' "$z1" | grep -q ' pag=0 ' || fail "zone 1 pages not released ($z1)"
 printf '%s\n' "$z1" | grep -q 'proc=0/' || fail "zone 1 process leaked ($z1)"
-printf '%s\n' "$z1" | grep -q ' niega=64 ' || fail "denied syscalls: want niega=64 ($z1)"
+printf '%s\n' "$z1" | grep -q ' niega=91 ' || fail "denied syscalls and paths: want niega=91 (64 + 27) ($z1)"
 printf '%s\n' "$z1" | grep -q ' fuga=5 ' || fail "zone escapes: want fuga=5 ($z1)"
 printf '%s\n' "$z1" | grep -q ' max=12$' || fail "zone 1 quota 12 not reached exactly, or passed ($z1)"
-z2=$(printf '%s\n' "$clean" | grep '^zone 2 b pre=zb ' | tail -1)
+z2=$(printf '%s\n' "$clean" | grep '^zone 2 b root=/zonas/b ' | tail -1)
 [ -n "$z2" ] || fail "zone B missing after exec"
 printf '%s\n' "$z2" | grep -q ' pag=0 niega=0 fuga=0 max=0$' || fail "zone B was touched by zone A ($z2)"
-z3=$(printf '%s\n' "$clean" | grep '^zone 3 t pre=zt ' | tail -1)
+z3=$(printf '%s\n' "$clean" | grep '^zone 3 t root=/zonas/t ' | tail -1)
 [ -n "$z3" ] || fail "zone t missing"
 printf '%s\n' "$z3" | grep -q ' pag=0 ' || fail "zone t kept pages ($z3)"
 printf '%s\n' "$z3" | grep -q 'proc=0/' || fail "zone t kept a process ($z3)"
 printf '%s\n' "$z3" | grep -q ' max=1$' || fail "zone t passed its 1-page quota ($z3)"
 # Disco: los intentos fuera del prefijo no dejaron archivos. Entre los dos
-# `fs ls` solo aparece `zan`; zbx y x no existen; c sigue vacío.
+# `fs ls` es el mismo; zbx y x no existen; c sigue vacío.
 ls1=$(printf '%s\n' "$clean" | awk '/^lapageria> fs ls$/ {k++; next} k && /^fs file / {c[k]=c[k] " " $3} END {print c[k-1]}')
 ls2=$(printf '%s\n' "$clean" | awk '/^lapageria> fs ls$/ {k++; next} k && /^fs file / {c[k]=c[k] " " $3} END {print c[k]}')
 [ -n "$ls1" ] && [ -n "$ls2" ] || fail "could not read fs ls before and after the zone attack"
-want2=$(printf '%s\n' $ls1 zan | sort | tr '\n' ' ')
+want2=$(printf "%s\n" $ls1 | sort | tr '\n' ' ')
 got2=$(printf '%s\n' $ls2 | sort | tr '\n' ' ')
 [ "$want2" = "$got2" ] || fail "directory changed: before [$ls1 ] after [$ls2 ]"
 n_fail7=$(printf '%s\n' "$clean" | awk '/^lapageria> fs cat zbx$/ {f=1; next} f && /^lapageria> / {exit} f && $0=="fs fail 7" {c++} END {print c+0}')
@@ -805,16 +805,16 @@ echo "ok   zone attacks: fs create denied, 64 syscalls denied, 5 escapes, quota 
 # el shell tiene que seguir vivo para el ataque siguiente. El directorio
 # cabe 7: se sueltan ztest y zan, que ya cumplieron.
 typefs "fs rm ztest"
-typefs "fs rm zan"
+typefs "fs rm /zonas/a/n"
 typefs "zone atk"
-typefs "zone create k zk 12"
-typefs "fs write zkq 1"
+typefs "zone create k 12"
+typefs "fs write /zonas/k/q 1"
 typefs "fs ls"
 attack_n=0
 # atk_run modo vec err addr: el #PF trae CR2 en addr; el #GP trae RIP.
 atk_run() {
     local mode=$1 vec=$2 err=$3 addr=$4 off win kill
-    typefs "fs write zkq $mode"
+    typefs "fs write /zonas/k/q $mode"
     off=$(wc -c < "$SERIAL" | tr -d ' ')
     typewait "zone exec k zatk" 100
     win=$(tail -c +$((off + 1)) "$SERIAL" | tr -d '\r')
@@ -885,7 +885,7 @@ exc_run r 0 0x00000000 '(48)?f7'
 exc_run m 0 0x00000000 '(48)?f7'
 exc_run i 13 0x0000001a 'cd03'
 typefs "zone ls"
-zk=$(tr -d '\r' < "$SERIAL" | grep '^zone 4 k pre=zk ' | tail -1)
+zk=$(tr -d '\r' < "$SERIAL" | grep '^zone 4 k root=/zonas/k ' | tail -1)
 [ -n "$zk" ] || fail "zone k missing after the attacks"
 printf '%s\n' "$zk" | grep -q ' pag=0 ' || fail "zone k kept pages after being killed ($zk)"
 printf '%s\n' "$zk" | grep -q 'proc=0/' || fail "zone k kept a process after being killed ($zk)"
@@ -898,7 +898,7 @@ echo "ok   ring 3 vs kernel memory: $attack_n attacks (read/write kernel, exec k
 # puede es mandar punteros del kernel como largo (syscalls 6 y 7) y en rsi y
 # rdx, y apuntar la entrada del AXE1 al kernel (el kernel lee esa cabecera
 # del disco). Todo se niega y nada se filtra.
-typefs "fs write zkq d"
+typefs "fs write /zonas/k/q d"
 off=$(wc -c < "$SERIAL" | tr -d ' ')
 typewait "zone exec k zatk" 100
 win=$(tail -c +$((off + 1)) "$SERIAL" | tr -d '\r')
@@ -907,8 +907,8 @@ printf '%s\n' "$win" | grep -qx 'zone ptr denied' || fail "kernel pointers as sy
 printf '%s\n' "$win" | grep -q 'atk survived' && fail "a kernel pointer argument was accepted"
 printf '%s\n' "$win" | grep -q 'user killed' && fail "pointer attack faulted: the kernel touched a bad address?"
 printf '%s\n' "$win" | grep -qx 'zone exec ok' || fail "pointer attack did not finish"
-typefs "fs cat zkq"
-tr -d '\r' < "$SERIAL" | awk '/^lapageria> fs cat zkq$/ {f=1; next} f && /^fs live / {print; exit}' | grep -qx 'fs live d' || fail "pointer attack changed the file"
+typefs "fs cat /zonas/k/q"
+tr -d '\r' < "$SERIAL" | awk '$0=="lapageria> fs cat /zonas/k/q" {f=1; next} f && /^fs live / {print; exit}' | grep -qx 'fs live d' || fail "pointer attack changed the file"
 typefs "exec kentry"
 typefs "zone exec k kentry"
 tr -d '\r' < "$SERIAL" | awk '
@@ -920,7 +920,7 @@ g && /^exec bad entry$/ { b=1 }
 END { exit !(a && b && !r) }
 ' || fail "AXE1 with entry in the kernel was not rejected, or it ran"
 echo "ok   kernel pointers as syscall arguments denied; AXE1 entry in kernel rejected (exec bad entry)"
-typefs "fs rm zkq"
+typefs "fs rm /zonas/k/q"
 typefs "fs rm zatk"
 typefs "fs rm kentry"
 
