@@ -8,6 +8,12 @@ para ese commit es `legacy-tempo`.
 
 ## 0.8
 
+Copihue sube de v0.34.1 a v0.42.4 (commit
+`795252ce322f12d1b14274f5b9bec7cb3a6ac2c9`). Sin cambios de código salvo
+`src/user/ataque.lap`: los ataques 3 y 4 ya no necesitan la dirección en un
+`*u8` local, porque v0.42.4 emite bien la dirección absoluta de 64 bits.
+Los errores nuevos del compilador no se dispararon en ningún archivo.
+
 RD-03: TCP endurecido (`tcp.lap`). **Bloques:** 8 TCB (eran 6, 64 KiB de
 `.bss`); sin bloque libre se recicla el TIME_WAIT más viejo y, si no hay, el
 SYN recibe RST\|ACK sin reservar nada (`full`); `listen`/`connect` dan `-24`

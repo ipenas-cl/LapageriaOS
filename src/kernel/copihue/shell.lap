@@ -246,7 +246,7 @@ fn run_command() -> i64 {
     }
     if (cmd_is("clear")) { con_clear(); return 0; }
     if (cmd_is("version")) {
-        puts("LapageriaOS 0.8 - kernel written in Copihue v0.34.1\n");
+        puts("LapageriaOS 0.8 - kernel written in Copihue v0.42.4\n");
         return 0;
     }
     if (cmd_is("ticks")) {

@@ -34,9 +34,9 @@
 // calculation of an empty image only when it is empty; a global would
 // move _start off the first byte. Constants live in `data`.
 //
-// Copihue v0.34.1. lodsb y rep_stosd usan el índice tal como está DF,
+// Copihue v0.42.4. lodsb y rep_stosd usan el índice tal como está DF,
 // así que clear_df lo deja en claro con cld(). El token de INT 15h
-// vive en ebx. v0.34.1 preserva ebx y edx: cada operador binario, cada
+// vive en ebx. v0.42.4 preserva ebx y edx: cada operador binario, cada
 // comparación y cada store por registro compila a push ebx / push eax /
 // push edx ... pop edx / pop eax / pop ebx alrededor del cálculo, en
 // 16 bits también. Se verificó desensamblando build/stage2.bin con
