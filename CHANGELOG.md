@@ -8,6 +8,29 @@ para ese commit es `legacy-tempo`.
 
 ## 0.8
 
+RD-01 (parte 2): UDP completo. **recv bloqueante:** `recv(fd, buf, max,
+src, plazo)` duerme al proceso (estado 4) hasta que llega un datagrama a
+su socket (`udp_rx` lo pasa a listo) o vence el plazo (`udp_tick` en el
+PIT, `-110`). Para dormir se reescribe el marco de retorno y la
+instrucción `syscall` se ejecuta de nuevo al despertar; si no hay otro
+proceso listo se duerme dentro de la syscall con `sti; hlt`. `yield`
+conserva `rbp`. **Varios sockets y procesos:** tabla de 8 sockets con cola
+de hasta 64 sobre un pool de 96 slots, hasta 4 fd por proceso (`bind` devuelve el fd; las syscalls 13..15
+toman el fd primero; `sys_user` pasa a 5 argumentos), y `exec2 a b` corre
+dos programas a la vez. **ICMP port-unreachable** para puertos sin socket
+(tope de 20 por 100 ticks). **Anillo de recepción** de 8 a 32 descriptores
+y drenaje completo por interrupción; contadores `rxo` y `mpc` en `net
+stat`, y `net hold N` para llenarlo a propósito. Programas nuevos
+`udpdos` y `udpwait`; `udpeco` pasa a la ABI nueva. **Pruebas** (en
+`tests/qemu_udp_test.sh`): dos procesos con tres sockets haciendo eco a la
+vez, plazo de 50 ticks, despertar por llegada, ráfaga de 64 en orden con
+conteo exacto, port-unreachable visto en el pcap, y anillo lleno con
+`nosock + mpc == 40`. **Hallazgo:** con el anillo lleno QEMU pierde
+tramas (8 de 40 en la corrida de esta parte): se cuentan en `mpc`, no se
+evitan; la ráfaga de 64 con interrupciones armadas no perdió ninguna.
+Quedan fuera: `select`, espera infinita, más de dos procesos, `exec2` en
+una zona.
+
 RD-01 (parte 1): red por interrupciones y UDP. **(1) IRQ.** El e1000 deja
 de sondearse: la línea PCI (`0x3C`; fue la IRQ 11 en QEMU 11.1.3) se abre
 en el PIC, `IMS = 0xD4`, y `irq_net` (`net.lap`) lee `ICR`, vacía el anillo

@@ -70,6 +70,7 @@ fn cmd_help() -> i64 {
     puts("  disk            data disk checksum\n");
     puts("  fs              archivos y snapshots\n");
     puts("  exec <nombre>   programa del disco en anillo 3\n");
+    puts("  exec2 <a> <b>   dos programas del disco a la vez\n");
     puts("  zone            zonas: create, ls, exec\n");
     puts("  net             ARP, ping, IRQ y descarte; up, down, stat\n");
     puts("  udp             sockets UDP: test, plant, stat\n");
@@ -292,6 +293,7 @@ fn run_command() -> i64 {
     if (cmd_is("disk")) { disk_test(); return 0; }
     if (cmd_is("fs")) { cmd_fs(); return 0; }
     if (cmd_is("exec")) { cmd_exec(); return 0; }
+    if (cmd_is("exec2")) { cmd_exec2(); return 0; }
     if (cmd_is("zone")) { cmd_zone(); return 0; }
     if (cmd_is("net")) { cmd_net(); return 0; }
     if (cmd_is("udp")) { cmd_udp(); return 0; }

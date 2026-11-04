@@ -7,6 +7,7 @@
 
 let exec_buf: [u8; 4096];
 let exec_code: [u8; 4096];
+let exec_code2: [u8; 4096];
 let exec_sz: i64 = 0;
 
 // Cabecera de 16 bytes. docs/exec.md. El código empieza después.
@@ -136,6 +137,52 @@ fn exec_run() -> i64 {
     build_zone = 0;
     puts("exec ok\n");
     return 0;
+}
+
+// `exec2 a b`: dos programas del disco a la vez, uno por ranura del
+// planificador (RD-01 parte 2). Los dos corren en la zona 0 y los reparte
+// el PIT; el que duerme en recv de UDP cede la CPU al otro.
+fn exec2_run(pos: i64) -> i64 {
+    let p = fs_scan(pos, fs_name2);
+    if (p < 0 || fs_name2[0] == 0) { return exec_fail(11); }
+    build_zone = zone_for_new(0 - 1);
+    charge_zone = 0;
+    let ea = exec_prepare();
+    if (ea == 0) { return 0; }
+    let sza = exec_sz;
+    let i = 0;
+    while (i < sza) {
+        exec_code2[i] = exec_code[i];
+        i = i + 1;
+    }
+    fs_copy(fs_name, fs_name2, 16);
+    let eb = exec_prepare();
+    if (eb == 0) { return 0; }
+    cli();
+    if (shared_init() == 0) {
+        sti();
+        return exec_fail(6);
+    }
+    if (build_proc(0, exec_code2 as i64, sza, 0) == 0 || build_proc(1, exec_code as i64, exec_sz, 0) == 0) {
+        write_cr3(0x1000);
+        release_proc(0);
+        release_proc(1);
+        sti();
+        build_zone = 0;
+        return exec_fail(6);
+    }
+    forge(0, ea, 0x402000, 0x202);
+    forge(1, eb, 0x402000, 0x202);
+    sched_go();
+    build_zone = 0;
+    puts("exec2 ok\n");
+    return 0;
+}
+
+fn cmd_exec2() -> i64 {
+    let pos = fs_scan(5, fs_name);
+    if (pos < 0 || fs_name[0] == 0) { return exec_fail(11); }
+    return exec2_run(pos);
 }
 
 fn cmd_exec() -> i64 {

@@ -124,6 +124,18 @@ fn other_runnable(me: i64) -> i64 {
     return -1;
 }
 
+// Como other_runnable, pero cuenta también al proceso dormido en recv
+// (estado 4): sigue vivo y tiene marco forjado. exit_current lo usa para
+// no dejar a un dormido sin CPU cuando el otro termina.
+fn other_alive(me: i64) -> i64 {
+    let i = 0;
+    while (i < 2) {
+        if (i != me && (proc_state[i] == 1 || proc_state[i] == 2 || proc_state[i] == 4)) { return i; }
+        i = i + 1;
+    }
+    return -1;
+}
+
 // rsp0 is the empty kernel stack. The interrupt epilogue pops 15 GPRs
 // and iretq's, which is 160 bytes below that top.
 fn forge(pi: i64, rip: i64, rsp: i64, rfl: i64) -> i64 {
@@ -178,12 +190,24 @@ fn read_user_ctx() -> i64 {
     return 0;
 }
 
+// rbp del usuario: el prólogo de la syscall lo empuja justo después de
+// rsp, rcx y r11 (32 bytes bajo la pila de syscall).
+fn user_rbp() -> i64 {
+    let p = __syscall_rsp;
+    return *(p - 32);
+}
+
 fn yield_current() -> i64 {
     let n = other_runnable(cur_i);
     if (n < 0 || proc_ksp[n] == 0) { return 0; }
     read_user_ctx();
     uctx_rfl = uctx_rfl | 0x202;
+    let urbp = user_rbp();
     forge(cur_i, uctx_rip, uctx_rsp, uctx_rfl);
+    // forge deja todos los GPR en 0; rbp es el marco de la función de
+    // usuario (el código de Copihue lo usa), así que se conserva.
+    let fr: *u64 = proc_ksp[cur_i] as *u64;
+    fr[10] = urbp;
     switch_to(n);
     nswitch_yield = nswitch_yield + 1;
     resume_frame();
@@ -231,7 +255,7 @@ fn exit_log(me: i64) -> i64 {
 fn exit_current() -> i64 {
     let me = cur_i;
     proc_state[me] = 3;
-    let n = other_runnable(me);
+    let n = other_alive(me);
     if (n >= 0 && proc_ksp[n] != 0) {
         proc_state[n] = 2;
         cur_i = n;
@@ -413,6 +437,7 @@ fn build_proc(pi: i64, src: i64, n: i64, secret: i64) -> i64 {
     }
     proc_uva[pi] = 0;
     proc_held[pi] = 0;
+    udp_release(pi);
     proc_zone[pi] = build_zone;
     if (zone_acquire(build_zone) != 0) { return 0; }
     proc_held[pi] = 1;

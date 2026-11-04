@@ -8,7 +8,12 @@ ese commit para `refs/tags/v0.34.1`, y `git -C build/copihue rev-parse
 HEAD` después del `make` también. No se comprobó `HEAD` ni
 `refs/heads/main` del remoto, ni la salida de `copihue --version`.
 Sin pedidos nuevos al subir desde v0.31.0: el kernel compila sin
-cambios de código.
+cambios de código. RD-01 parte 2 (UDP completo, recv bloqueante) tampoco
+pidió nada: `syscall fn` con 6 parámetros, `syscall(n, a1..a5)` en anillo
+3, `sti()` / `hlt()` / `cli()` y las constantes de 64 bits alcanzaron.
+Sin `asm()` nuevo. Una función de 7 parámetros (`udp_recv`; el séptimo es
+el plazo) compila y la prueba de plazo la ejerce; `udp_park` usa globales
+por prudencia, no porque haya fallado algo.
 
 ## Cerrado en v0.27.0 y v0.27.1
 

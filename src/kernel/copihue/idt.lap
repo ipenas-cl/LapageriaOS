@@ -219,6 +219,8 @@ interrupt fn irq_timer(frame: *InterruptFrame) {
     // pit: una muestra por tick mientras está prendida.
     if (tr_en[4] != 0) { trace_hit(4, proc_pid[cur_i], ticks, 0); }
     if (sched_on != 0) {
+        // Despierta a quien duerme en recv con el plazo vencido.
+        udp_tick();
         saved_cs = frame.cs;
         saved_ksp = frame as i64 - 120;
         if (timer_should_switch() != 0) {

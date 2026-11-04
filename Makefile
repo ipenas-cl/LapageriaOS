@@ -114,6 +114,8 @@ COPIHUE_KERNEL_SRC = $(KERNEL_SRC)/copihue/console.lap \
                      $(KERNEL_SRC)/copihue/zone.lap \
                      $(KERNEL_SRC)/copihue/net.lap \
                      $(KERNEL_SRC)/copihue/udpeco_img.lap \
+                     $(KERNEL_SRC)/copihue/udpdos_img.lap \
+                     $(KERNEL_SRC)/copihue/udpwait_img.lap \
                      $(KERNEL_SRC)/copihue/udp.lap \
                      $(KERNEL_SRC)/copihue/trace.lap \
                      $(KERNEL_SRC)/copihue/shell.lap \
@@ -245,6 +247,24 @@ $(UDPECO_IMG): src/user/udpeco.lap scripts/mkaxe.sh $(COPIHUE) | $(BUILD_DIR)
 	$(abspath $(COPIHUE)) --flat 0x400000 -o $(UDPECO_BIN) src/user/udpeco.lap
 	scripts/mkaxe.sh $(UDPECO_BIN) $(UDPECO_AXE) $@ udpeco_fill
 
+# Eco con dos sockets y prueba de recv con plazo y ráfaga (RD-01 parte 2).
+# `udp plant` los escribe como udpdos y udpwait.
+UDPDOS_BIN = $(BUILD_DIR)/udpdos.bin
+UDPDOS_AXE = $(BUILD_DIR)/udpdos.axe
+UDPDOS_IMG = $(KERNEL_SRC)/copihue/udpdos_img.lap
+
+$(UDPDOS_IMG): src/user/udpdos.lap scripts/mkaxe.sh $(COPIHUE) | $(BUILD_DIR)
+	$(abspath $(COPIHUE)) --flat 0x400000 -o $(UDPDOS_BIN) src/user/udpdos.lap
+	scripts/mkaxe.sh $(UDPDOS_BIN) $(UDPDOS_AXE) $@ udpdos_fill
+
+UDPWAIT_BIN = $(BUILD_DIR)/udpwait.bin
+UDPWAIT_AXE = $(BUILD_DIR)/udpwait.axe
+UDPWAIT_IMG = $(KERNEL_SRC)/copihue/udpwait_img.lap
+
+$(UDPWAIT_IMG): src/user/udpwait.lap scripts/mkaxe.sh $(COPIHUE) | $(BUILD_DIR)
+	$(abspath $(COPIHUE)) --flat 0x400000 -o $(UDPWAIT_BIN) src/user/udpwait.lap
+	scripts/mkaxe.sh $(UDPWAIT_BIN) $(UDPWAIT_AXE) $@ udpwait_fill
+
 # Consola curses: QEMU entrega el teclado al controlador PS/2 que lee el shell.
 qemu: $(OS_IMAGE) $(DATA_IMG)
 	qemu-system-$(ARCH) $(QEMU_CPU) $(QEMU_DRIVES) -display curses
@@ -268,7 +288,7 @@ debug: $(OS_IMAGE) $(DATA_IMG)
 
 clean:
 	rm -rf $(BUILD_DIR)
-	rm -f $(KERNEL_SRC)/copihue/exec_img.lap $(KERNEL_SRC)/copihue/zone_img.lap $(KERNEL_SRC)/copihue/atk_img.lap $(KERNEL_SRC)/copihue/udpeco_img.lap
+	rm -f $(KERNEL_SRC)/copihue/exec_img.lap $(KERNEL_SRC)/copihue/zone_img.lap $(KERNEL_SRC)/copihue/atk_img.lap $(KERNEL_SRC)/copihue/udpeco_img.lap $(KERNEL_SRC)/copihue/udpdos_img.lap $(KERNEL_SRC)/copihue/udpwait_img.lap
 
 help:
 	@echo "LapageriaOS $(VERSION) — kernel y arranque en Copihue $(COPIHUE_COMMIT)"
@@ -281,7 +301,8 @@ help:
 	@echo "                  Incluye el disco de datos (ata, bloques, CRC, fs, exec)"
 	@echo "                  la red de usuario con e1000 (arp, ping, descarte)"
 	@echo "                  y trace (sondas, anillo, perdidos)."
-	@echo "                  Y la red por IRQ con UDP (eco con socat y hostfwd, zonas)."
+	@echo "                  Y la red por IRQ con UDP (eco con socat y hostfwd, zonas,"
+	@echo "                  recv bloqueante, dos procesos, ráfaga, ICMP unreachable)."
 	@echo "  make qemu-udp-test  Solo esa prueba de red (tests/qemu_udp_test.sh)."
 	@echo "  make debug      Igual que qemu, esperando gdb en tcp::1234."
 	@echo "  make clean      Borra build/."
