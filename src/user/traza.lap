@@ -8,8 +8,8 @@
 //
 // Usa la syscall 23 (trace_ctl) y la 24 (trace_read); ver docs/trace.md.
 // `ptr` prueba que punteros malos den -14 y argumentos malos -22.
-// Registros de la syscall 24: 6 i64 (tick, sonda, pid, zona, a, b) en
-// 0x401000 (hasta 32, 1536 bytes). El nombre de una sonda va a 0x401700.
+// Registros de la syscall 24: 7 i64 (tick, sonda, pid, zona, a, b, tsc) en
+// 0x401000 (hasta 32, 1792 bytes). El nombre de una sonda va a 0x401700.
 // Sin cadenas: cada palabra es una constante de hasta 8 bytes.
 
 naked fn emit(c: i64) {
@@ -101,7 +101,7 @@ fn do_dump(sel: i64, max: i64) {
     say8(0x0a6e69676562);
     let i: i64 = 0;
     while (i < got) {
-        let b: i64 = 0x401000 + i * 48;
+        let b: i64 = 0x401000 + i * 56;
         say8(0x2074);
         say_num(*(b as *i64));
         emit(32);
@@ -114,6 +114,8 @@ fn do_dump(sel: i64, max: i64) {
         say_num(*((b + 40) as *i64));
         say8(0x207a20);
         say_num(*((b + 24) as *i64));
+        say8(0x206320);
+        say_num(*((b + 48) as *i64));
         emit(10);
         i = i + 1;
     }
@@ -146,25 +148,37 @@ fn do_clear() {
     say8(0x0a7261656c63);
 }
 
+// 1 si la syscall devolvió -e. Dos formas (23 y 24) para no repetir el
+// armado de argumentos en cada intento de do_ptr.
+fn c24(a: i64, m: i64, s: i64, e: i64) -> i64 {
+    if (syscall(24, a, m, s) == 0 - e) { return 1; }
+    return 0;
+}
+
+fn c23(op: i64, a: i64, b: i64, e: i64) -> i64 {
+    if (syscall(23, op, a, b) == 0 - e) { return 1; }
+    return 0;
+}
+
 // Punteros y argumentos malos: -14 (puntero) y -22 (argumento).
 fn do_ptr() {
     let ok: i64 = 1;
-    if (syscall(24, 0xFFFFFFFF80400000, 1, 0) != 0 - 14) { ok = 0; }
-    if (syscall(24, 0xFFFF800000001000, 1, 0) != 0 - 14) { ok = 0; }
-    if (syscall(24, 1 << 63, 1, 0) != 0 - 14) { ok = 0; }
-    if (syscall(24, 0x7FFFFFFFFFFFFFFF, 1, 0) != 0 - 14) { ok = 0; }
-    if (syscall(24, 0x400000, 1, 0) != 0 - 14) { ok = 0; }
-    if (syscall(24, 0x1000, 1, 0) != 0 - 14) { ok = 0; }
-    if (syscall(24, 0x401FF8, 1, 0) != 0 - 14) { ok = 0; }
-    if (syscall(24, 0x401000, 0, 0) != 0 - 22) { ok = 0; }
-    if (syscall(24, 0x401000, 33, 0) != 0 - 22) { ok = 0; }
-    if (syscall(24, 0x401000, 1, 0 - 1) != 0 - 22) { ok = 0; }
-    if (syscall(23, 5, 0, 0xFFFFFFFF80400000) != 0 - 14) { ok = 0; }
-    if (syscall(23, 5, 0, 0x400000) != 0 - 14) { ok = 0; }
-    if (syscall(23, 5, 0, 0x401FF8) != 0 - 14) { ok = 0; }
-    if (syscall(23, 5, 99, 0x401700) != 0 - 22) { ok = 0; }
-    if (syscall(23, 0, 20, 1) != 0 - 22) { ok = 0; }
-    if (syscall(23, 9, 0, 0) != 0 - 22) { ok = 0; }
+    ok = ok & c24(0xFFFFFFFF80400000, 1, 0, 14);
+    ok = ok & c24(0xFFFF800000001000, 1, 0, 14);
+    ok = ok & c24(1 << 63, 1, 0, 14);
+    ok = ok & c24(0x7FFFFFFFFFFFFFFF, 1, 0, 14);
+    ok = ok & c24(0x400000, 1, 0, 14);
+    ok = ok & c24(0x1000, 1, 0, 14);
+    ok = ok & c24(0x401FF8, 1, 0, 14);
+    ok = ok & c24(0x401000, 0, 0, 22);
+    ok = ok & c24(0x401000, 33, 0, 22);
+    ok = ok & c24(0x401000, 1, 0 - 1, 22);
+    ok = ok & c23(5, 0, 0xFFFFFFFF80400000, 14);
+    ok = ok & c23(5, 0, 0x400000, 14);
+    ok = ok & c23(5, 0, 0x401FF8, 14);
+    ok = ok & c23(5, 99, 0x401700, 22);
+    ok = ok & c23(0, 20, 1, 22);
+    ok = ok & c23(9, 0, 0, 22);
     if (syscall(24, 0x401000, 1, 0) < 0) { ok = 0; }
     if (ok == 1) { say8(0x0a6b6f20727470); }
     else { say8(0x0a64616220727470); }

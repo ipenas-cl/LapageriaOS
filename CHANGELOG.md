@@ -17,6 +17,13 @@ contorno: `irq_save()` / `irq_restore(f)` en las secciones críticas con
 `div_raw` / `rem_raw` en dos ataques nuevos, `r` y `m` (#DE por divisor cero;
 `z` sigue con `INT64_MIN / -1`). Detalle en `docs/PEDIDOS_COPIHUE.md`.
 
+Trazas con `rdtsc()`: cada registro del anillo guarda además la marca de
+ciclos (`TrEv` pasa de 48 a 56 bytes). `trace dump` y `traza dump` agregan
+` c <tsc>` al final de cada línea y la syscall 24 devuelve 7 `i64` por
+registro (hasta 32, 1792 bytes). `traza.lap` compacta `do_ptr` con dos
+ayudas (`c23`, `c24`) para caber en 4080 bytes (3926). Prueba en
+`tests/qemu_trace_test.sh`: la marca es positiva y crece en 32 `pit` seguidos.
+
 Copihue sube de v0.34.1 a v0.42.4 (commit
 `795252ce322f12d1b14274f5b9bec7cb3a6ac2c9`). Sin cambios de código salvo
 `src/user/ataque.lap`: los ataques 3 y 4 ya no necesitan la dirección en un
