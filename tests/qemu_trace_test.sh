@@ -368,7 +368,7 @@ typewait "traza off tcp-rst" 100
 
 # 9. Zonas: zone-deny (máscara, escape, ruta) y zone-switch.
 typewait "fs rm hola" 30
-typewait "zone create a za 12" 50
+typewait "zone create a 12" 50
 typewait "traza on zone-deny" 100
 typewait "traza on zone-switch" 100
 typewait "trace clear" 30
@@ -376,19 +376,19 @@ typewait "zone exec a ztest" 200
 has "zone exec ok" || fail "zone exec a ztest"
 typewait "trace count" 30
 typewait "zone ls" 50
-zl=$(tr -d '\r' < "$SERIAL" | grep '^zone 1 a pre=' | tail -1)
+zl=$(tr -d '\r' < "$SERIAL" | grep '^zone 1 a root=' | tail -1)
 niega=$(printf '%s\n' "$zl" | sed -n 's/.* niega=\([0-9]*\) .*/\1/p')
 fuga=$(printf '%s\n' "$zl" | sed -n 's/.* fuga=\([0-9]*\) .*/\1/p')
 zd=$(pc zone-deny)
 [ -n "${niega:-}" ] && [ "$niega" -ge 1 ] && [ "$fuga" -ge 1 ] || fail "zone ls: niega=[$niega] fuga=[$fuga] ($zl)"
-[ "$zd" -gt "$((niega + fuga))" ] || fail "zone-deny=$zd, esperaba niega $niega + fuga $fuga + denegaciones de ruta (>0)"
+[ "$zd" = "$((niega + fuga))" ] || fail "zone-deny=$zd, esperaba niega $niega (syscalls y rutas) + fuga $fuga"
 typewait "traza dump ev=zone-deny n=32" 100
 l=$(evs 'traza dump ev=zone-deny n=32')
 [ "$(endn 'traza dump ev=zone-deny n=32')" = 32 ] || fail "dump zone-deny n=32"
 [ "$(printf '%s\n' "$l" | grep -vc ' zone-deny pid 1 a -*[0-9]* b [0-9]* z 1 c [0-9]*$')" = 0 ] || fail "zone-deny: eventos que no son de la zona 1 / pid 1: $(printf "%s\n" "$l" | grep -v " zone-deny pid 1 a -*[0-9]* b [0-9]* z 1 c [0-9]*\$" | head -3)"
 typewait "traza dump ev=zone-deny zone=0 n=32" 100
 [ "$(endn 'traza dump ev=zone-deny zone=0 n=32')" = 0 ] || fail "zone-deny con zone=0 debía estar vacío"
-echo "ok   zone-deny: $zd eventos (niega $niega + fuga $fuga + rutas $((zd - niega - fuga))), todos de la zona 1; zone=0 no ve ninguno"
+echo "ok   zone-deny: $zd eventos (niega $niega (syscalls y rutas) + fuga $fuga), todos de la zona 1; zone=0 no ve ninguno"
 typewait "trace clear" 30
 typewait "traza zone 1" 100
 win "traza zone 1" | grep -qx "traza zone 0 deny -1" || fail "traza zone 1: $(win 'traza zone 1' | tr '\n' '|')"

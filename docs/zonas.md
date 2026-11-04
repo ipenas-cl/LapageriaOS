@@ -12,12 +12,44 @@ Hasta 8 zonas, contando la global. Cada una tiene:
 | nombre | hasta 8 letras o dígitos |
 | tope de páginas | cuántos marcos de 4 KiB puede tener |
 | máscara | syscalls permitidas. Lo que no está, se niega |
-| prefijo | se antepone a cada nombre de archivo |
+| raíz | el directorio `/zonas/<nombre>`; la zona lo ve como `/` |
 | tope de procesos | en una zona nueva son 2 |
 
-El programa no elige el prefijo ni la zona. El kernel agrega el
-prefijo y rechaza un nombre que no sea relativo (`/`, `.`, otro
-prefijo, o un archivo que ya existe fuera de la zona).
+## Raíz propia (FS-02)
+
+`zone create nombre paginas` crea `/zonas` (si falta) y `/zonas/<nombre>`
+en el sistema de archivos ([fs.md](fs.md)) y deja la ranura viva. La
+zona global no tiene raíz propia: ve todo el árbol (`root=/` en `zone ls`).
+
+El programa no elige la raíz ni la zona. Las syscalls 6 y 7 reciben un
+nombre relativo (hasta 15 bytes en `0x401800`, con NUL) y el kernel arma
+`/zonas/<nombre>/<relativo>`. El relativo puede tener subdirectorios
+(`d/n`) si el directorio ya existe: la zona no tiene syscall para crearlos
+(`fs mkdir /zonas/a/d` desde el shell). Se niega con **-1**, suma `niega`
+y deja `zone-deny` (sonda 19, `b` = 3):
+
+- cualquier `..`, y cualquier `.`;
+- una ruta absoluta (empieza con `/`), aunque nombre algo que sí existe
+  (`/c`, `/zonas/otra/x`). Dentro de la zona no hay nada que decir con una
+  ruta absoluta: se prefirió negarla a reinterpretarla;
+- componentes vacíos (`x//y`, `x/`, nombre vacío);
+- bytes fuera de 33..126 (espacio, byte alto), o 16 bytes sin NUL.
+
+Un nombre válido que no existe en la raíz de la zona da -7, igual que en
+cualquier lugar: un archivo de la zona 0 (`c`) no existe para la zona
+aunque esté en `/c`. Los chequeos de largo (`rdi` 0, mayor que 64, -1)
+siguen dando -9 antes de leer el nombre y no suman `niega`.
+
+**Compatibilidad.** El mecanismo anterior (un prefijo de nombre,
+`zone create nombre prefijo paginas`) se eliminó. La forma de tres
+argumentos se rechaza con `zone fail 11`. Los archivos que una zona vieja
+dejó en la raíz con su prefijo (`zan`) quedan donde estaban y ya no son
+de nadie.
+
+**Rollback.** `fs rollback` vuelve el árbol entero, también `/zonas`. Si el
+snapshot es anterior a `zone create`, la zona sigue viva pero su
+directorio no existe: escribir da -7 hasta que se vuelva a crear
+(`fs mkdir /zonas/<nombre>`).
 
 ## Syscalls
 
@@ -27,9 +59,11 @@ La máscara de una zona nueva deja pasar solo estas:
 |---|---|
 | 1 | escribe un carácter |
 | 5 | `exit` |
-| 6 | escribe un archivo. El nombre está en `0x401800` y los datos en `0x401C00`. `rdi` es el largo |
+| 6 | escribe un archivo en la raíz de la zona. El nombre está en `0x401800` y los datos en `0x401C00`. `rdi` es el largo |
 | 7 | lee con el mismo convenio |
 | 8 | pide una página. Si pasa el tope, devuelve -1 y no toma el marco |
+
+Además, solo la zona 0 tiene la **27** `zone_destroy` (ver abajo).
 
 Cualquier otra syscall de una zona distinta de 0 devuelve -1 y suma
 `niega`. Cambiar de zona es la syscall 9: desde una zona distinta de
@@ -55,15 +89,45 @@ suelta lo que alcanzó a tomar. Si el tope de procesos está lleno,
 Solo responden en la zona 0. Si no, `zone denied`.
 
 ```
-zone create nombre prefijo paginas
+zone create nombre paginas
+zone destroy nombre
 zone ls
 zone exec zona programa
 zone plant
 ```
 
 `zone plant` escribe el programa de prueba `ztest` con `fs_write`,
-igual que `exec plant`. El directorio cabe 7 nombres; la prueba suelta
-`malo` y `gordo` antes.
+igual que `exec plant`, en la raíz global. El programa de `zone exec` se
+lee de la raíz global, no de la de la zona.
+
+`zone ls` muestra `root=/zonas/<nombre>` (`root=/` en la global), `cap`,
+`proc`, `pag`, `niega`, `fuga` y `max`.
+
+## Destruir una zona
+
+`zone destroy nombre` (solo desde el shell, la zona 0; si no, `zone denied`):
+
+- `zone destroyed N` y la ranura `N` queda libre para otra `zone create`;
+- `zone busy` si la zona tiene procesos vivos; no cambia nada;
+- `zone fail 11` si no existe, o si es `global`.
+
+**Los archivos quedan.** `/zonas/<nombre>` y todo lo que tiene adentro
+siguen en el disco. Una zona nueva con el mismo nombre vuelve a ver esos
+archivos (`zone create` acepta un directorio que ya existe). Para
+borrarlos hay que usar `fs rm` (archivo por archivo, el directorio vacío
+al final).
+
+Desde el shell no hay un proceso de zona vivo que pueda coincidir con el
+comando, porque `zone exec` y `zone pair` bloquean el shell hasta el
+final. Por eso el caso `busy` se prueba desde un proceso de la zona 0
+con la syscall 27: `zone destroy` hecha por un programa de la global
+(`zone pair global dz par`, modo `d` de `par`, con `/g` = `d` y
+`/zonas/dz/q` = `w`; `dz` necesita `zone sched dz` para ceder la CPU),
+mientras otro proceso de `dz` está vivo.
+
+| Syscall | Qué hace | Máscara |
+|---|---|---|
+| 27 `zone_destroy` | el nombre está en `0x401800`. Imprime `zone busy` o `zone destroyed N`. 0, `-16` si tiene procesos vivos, `-11` si no existe o es la global | solo la zona 0 (una zona la niega con -1 y suma `niega`) |
 
 ## Dos zonas a la vez (OB-02)
 
@@ -89,9 +153,9 @@ que sale. La salida de un proceso con el otro vivo no pasa por `switch_to`:
 cuenta como cambio y deja `zone-switch`, pero no `switch`.
 
 `par` en modo `y` (el archivo `q` de la zona, o `y` si no se puede leer)
-cede la CPU 6 veces. Un archivo global con el mismo nombre que el relativo
-del programa le veda ese nombre a la zona (`-12`): por eso la zona global
-no escribe `q`.
+cede la CPU 6 veces. Cada zona lee su modo de `q` en su propia raíz
+(`/zonas/<zona>/q`); la zona global lo lee de `/g`. Modo `d`: la global
+destruye la zona `dz` (ver arriba).
 
 ## Procesos de otras zonas (OB-02, etapa 7)
 
@@ -122,26 +186,28 @@ otro, sin ningún `zone-deny`) y la global contra `za` (ve, lee la traza de
 esa zona y la mata). En los tres `zone pair ok`: no queda una página ni un
 cupo.
 
-`zone ls` muestra `pre`, `cap`, `proc`, `pag`, `niega`, `fuga` y `max`.
-`max` es la marca de agua de `pag`: lo más alto que llegó la zona desde
-que se creó. Nunca pasa de `cap`; si pasara, la cuota falló.
+`max` (en `zone ls`) es la marca de agua de `pag`: lo más alto que llegó
+la zona desde que se creó. Nunca pasa de `cap`; si pasara, la cuota falló.
 
 ## Errores del programa
 
 | Código | Qué pasó |
 |---|---|
-| -1 | syscall fuera de la máscara, o página sobre el tope |
+| -1 | syscall fuera de la máscara, página sobre el tope, o ruta que sale de la raíz de la zona |
 | -2 | quiso cambiar de zona |
-| -12 | el nombre no pertenece a la zona |
+| -7 | el archivo no existe en la raíz de la zona |
+| -9 | largo fuera de 1..64 |
+| -12 | el nombre no termina en NUL, para la zona 0 (una zona recibe -1) |
+| -16 | `zone_destroy`: la zona tiene procesos vivos |
 
 ## Prueba
 
-`make qemu-test` crea las zonas `a` (prefijo `za`, 12 páginas) y `b`
-(prefijo `zb`). `zone exec a ztest` tiene que imprimir, en orden,
+`make qemu-test` crea las zonas `a` (raíz `/zonas/a`, 12 páginas) y `b`
+(`/zonas/b`). `zone exec a ztest` tiene que imprimir, en orden,
 `zone fs ok`, `zone fs denied`, `zone fs denied create`,
 `zone syscall denied`, `zone syscall flood denied`, `zone quota ok`,
-`zone quota hold` y `zone escape denied`. El archivo queda como `zan`
-(el programa pidió `n`). `fs cat n` no lo encuentra. Las dos líneas
+`zone quota hold` y `zone escape denied`. El archivo queda como
+`/zonas/a/n` (el programa pidió `n`). `fs cat n` no lo encuentra. Las dos líneas
 `zone mem` tienen el mismo número: la memoria libre global volvió al
 valor de antes. Si falta una línea, el script termina en 1.
 
@@ -156,28 +222,27 @@ líneas solas no prueban nada.)
 
 | Ataque | Cómo se niega | Lo que revisa el script |
 |---|---|---|
-| (a) leer o escribir el prefijo de otra zona (`zb`, `zbx`) | -12 | `fs ls` antes y después: solo aparece `zan`; `fs cat zbx` y `fs cat x` dan `fs fail 7` |
-| (a) nombres de la zona 0 (`c`, `a`, `m`, `ztest`) | -12 | `fs cat c` sigue vacío |
-| (a) `/c`, `../c`, `.c`, vacío, byte alto, espacio, 9 letras, 16 sin NUL | -12 | igual |
+| (a) `c` (archivo de la zona 0): no existe en `/zonas/a` | -7 | `fs cat c` sigue vacío |
+| (a) `..`, `../`, `../c`, `a/../b`, `.`, `c/`, `x//y`, `/x`, `/zonas/zb/x`, vacío, byte alto, espacio, 16 sin NUL (13 nombres, dos syscalls cada uno) | -1 y `niega` | `niega=91` (64 + 26 + 1); `fs ls` de la raíz antes y después: igual; `fs cat zbx` y `fs cat x` dan `fs fail 7` |
 | (a) largo 0, 65, -1 (escritura) y -1 (lectura) | -9 | igual |
-| (a) `zone create` con prefijo repetido, cabeza o extensión del de otra zona, tope 0, 5000 o -5, nombre repetido | `zone fail 11` | siete `zone fail 11` y solo dos `zone created` |
+| (a) `zone create` con la forma vieja de prefijo (`c za 5`), tope 0, 5000 o -5, nombre repetido | `zone fail 11` | siete `zone fail 11` y solo tres `zone created` |
 | (b) pedir páginas pasado el tope, 40 veces más | -1 | `zone ls`: `max=12` (llegó al tope, no lo pasó), `pag=0` al salir |
 | (b) zona de 1 página: no cabe ni armar el proceso | `zone fail 6` | `max=1`, `pag=0`, `proc=0/`; la memoria libre es la misma antes y después de cada intento (7 líneas `zone mem` iguales) |
 | (b) la zona `b` | no se toca | `pag=0 niega=0 fuga=0 max=0` |
-| (c) las 58 syscalls del 0 al 63 fuera de la máscara, más 64, 1000, 2^32+1, 2^32+2 y -1 | -1 | `niega=64` con el `rax=2` de la prueba vieja; sin `user leak`, `getpid`, `nx ok sched`, `hh ok sched` ni `X` en la salida |
+| (c) las 58 syscalls del 0 al 63 fuera de la máscara (la 27 incluida), más 64, 1000, 2^32+1, 2^32+2 y -1 | -1 | 64 de las 91 de `niega` (con el `rax=2` de la prueba vieja); sin `user leak`, `getpid`, `nx ok sched`, `hh ok sched` ni `X` en la salida |
 | (c) cambiar de zona hacia 0, 1, 2, 7 y -1 | -2 | `fuga=5` |
 
 2^32+1 sirve para ver si el kernel recorta el número a 32 bits: eso
 sería la syscall 1 con `rdi=88` y saldría una `X`.
 
 El archivo de prueba tiene que caber en 4080 bytes (`mkaxe.sh`). `zona`
-pesa 3626; `ataque` pesa 1648.
+pesa 3680 (límite 4080); `ataque` pesa 1648.
 
 ## Pruebas adversarias (SG-01, parte 2)
 
 `src/user/ataque.lap` hace un ataque por corrida, en una zona `k`
-(`zone create k zk 12`). El modo está en el archivo `zkq` de la zona (el
-shell lo escribe con `fs write zkq N`); `zone atk` planta el programa
+(`zone create k 12`). El modo está en el archivo `q` de la zona (el
+shell lo escribe con `fs write /zonas/k/q N`); `zone atk` planta el programa
 como `zatk`. Cada ataque tiene que terminar con la línea
 `user killed pid=1 vec= err= addr=` del kernel, sin `atk survived`, con
 `zone exec ok` (el shell recupera el control), sin `zone leak`, y la zona

@@ -10,8 +10,12 @@
 //       y tracear (23, 24) a la otra, y hace lo permitido con la propia.
 //   's' la misma zona dos veces. El pid 1 ve, lee la traza y mata al pid 2;
 //       el pid 2 solo ve al pid 1.
+//   'd' la global (pid 1) destruye la zona dz mientras vive el pid 2: busy, mata, ok, ya no está.
 //   'g' la zona global contra una zona normal (pid 1 global): ve, lee la
 //       traza de la otra zona y la mata.
+//   'd' la global (pid 1) pide destruir la zona dz (syscall 27) mientras el
+//       pid 2 de dz sigue vivo: -16 (busy). Lo mata (26), la destrucción da
+//       0 y una segunda da -11 (ya no existe). Para `zone pair global dz par`.
 //
 // Cada proceso deja una cadena de '1' (bien) y '0' (mal) en el archivo
 // `r<pid>` de su zona; el shell la lee con `fs cat`. Las zonas son la 1 y la
@@ -119,6 +123,19 @@ fn do_g(s: i64) {
     put_result(1, 7);
 }
 
+fn do_d(s: i64) {
+    ck(0, s >= 0 && ((s >> 4) & 15) == 0);
+    yields(1);
+    *(0x401800 as *u8) = 100;
+    *(0x401801 as *u8) = 122;
+    *(0x401802 as *u8) = 0;
+    ck(1, syscall(27) == 0 - 16);
+    ck(2, syscall(26, 2) == 0);
+    ck(3, syscall(27) == 0);
+    ck(4, syscall(27) == 0 - 11);
+    put_result(1, 5);
+}
+
 fn run() {
     let s: i64 = syscall(25, 0);
     let m: i64 = *(0x401C00 as *u8);
@@ -137,6 +154,7 @@ fn run() {
     if (m == 99) { do_c(s); }
     if (m == 115) { do_s(s); }
     if (m == 103) { do_g(s); }
+    if (m == 100) { do_d(s); }
 }
 
 // El modo por defecto es 'y': un archivo que no se puede leer deja ahí la

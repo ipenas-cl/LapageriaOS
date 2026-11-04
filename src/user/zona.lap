@@ -1,10 +1,10 @@
 // Programa de anillo 3 para la zona. copihue --flat 0x400000.
-// No arma el prefijo: el kernel lo agrega. El nombre va en 0x401800
+// No arma la ruta: el kernel antepone la raíz de la zona. El nombre va en 0x401800
 // (16 bytes) y los datos en 0x401C00. rdi es el largo. Syscall 1
 // escribe un carácter; 5 sale.
 //
 // Además de la historia feliz, intenta romper la zona a propósito
-// (SG-01): nombres fuera del prefijo, números de syscall fuera de la
+// (SG-01): rutas que salen de la raíz de la zona, números de syscall fuera de la
 // máscara, el escape y la cuota. Cada línea "zone ..." se imprime solo
 // si TODOS los intentos de su grupo fueron negados. El kernel cuenta
 // por su lado (niega, fuga, max) y el shell mira el disco después.
@@ -175,12 +175,12 @@ fn nfill(c: i64, n: i64) {
     }
 }
 
-// 1 si escribir y leer el nombre de 0x401800 dan -12. Si un intento
+// 1 si escribir y leer el nombre de 0x401800 dan -1. Si un intento
 // pasara, el archivo quedaría en el disco y el shell lo ve con fs cat.
 fn deny_raw() -> i64 {
     let w: i64 = syscall(6, 1);
     let r: i64 = syscall(7, 8);
-    if (w == 0 - 12 && r == 0 - 12) { return 1; }
+    if (w == 0 - 1 && r == 0 - 1) { return 1; }
     return 0;
 }
 
@@ -189,25 +189,28 @@ fn deny(v: i64) -> i64 {
     return deny_raw();
 }
 
-// Crear o abrir fuera del prefijo: el prefijo de otra zona ("zb",
-// "zbx"), archivos de la zona 0 ("c", "a", "m", "ztest"), rutas con /
-// y .., nombre vacío, byte alto, espacio, 9 letras y 16 sin NUL.
-// Después, largos que el kernel rechaza con -9 antes de ver el nombre.
+// Crear o abrir fuera de la raíz de la zona: "..", "../c", "a/../b",
+// rutas absolutas ("/x", "/zonas/zb/x"), "x//y", "c/", ".", nombre
+// vacío, byte alto, espacio y 16 sin NUL. Los 13 se niegan con -1 (26
+// syscalls). Después, largos que el kernel rechaza con -9 antes de ver
+// el nombre.
 fn fs_attacks() -> i64 {
     let ok: i64 = 1;
-    ok = ok & deny(0x627a);
-    ok = ok & deny(0x78627a);
-    ok = ok & deny(0x63);
-    ok = ok & deny(0x61);
-    ok = ok & deny(0x6d);
-    ok = ok & deny(0x747365747a);
+    ok = ok & deny(0x2e2e);
+    ok = ok & deny(0x2f2e2e);
+    ok = ok & deny(0x782f);
     ok = ok & deny(0x632f);
     ok = ok & deny(0x632f2e2e);
-    ok = ok & deny(0x632e);
+    ok = ok & deny(0x2e);
     ok = ok & deny(0x6100);
     ok = ok & deny(0x61ff);
     ok = ok & deny(0x622061);
-    nfill(97, 9);
+    ok = ok & deny(0x622f2e2e2f61);
+    ok = ok & deny(0x792f2f78);
+    npack(0x7a2f73616e6f7a2f);
+    *(0x401808 as *u8) = 98;
+    *(0x401809 as *u8) = 47;
+    *(0x40180a as *u8) = 120;
     ok = ok & deny_raw();
     nfill(97, 16);
     ok = ok & deny_raw();
@@ -329,18 +332,28 @@ naked fn _start() {
     rax = 7;
     rdi = 8;
     syscall();
-    if (rax == 0 - 12) { *(0x401708 as *u8) = 1; }
+    if (rax == 0 - 7) { *(0x401708 as *u8) = 1; }
 
-    *(0x401800 as *u8) = 122;
-    *(0x401801 as *u8) = 98;
-    *(0x401802 as *u8) = 0;
-    *(0x401803 as *u8) = 0;
+    *(0x401800 as *u8) = 46;
+    *(0x401801 as *u8) = 46;
+    *(0x401802 as *u8) = 47;
+    *(0x401803 as *u8) = 99;
+    *(0x401804 as *u8) = 0;
     rax = 7;
     rdi = 8;
     syscall();
-    if (rax == 0 - 12) {
+    if (rax == 0 - 1) {
         if (*(0x401708 as *u8) == 1) { say_fs_denied(); }
     }
+
+    *(0x401800 as *u8) = 100;
+    *(0x401801 as *u8) = 47;
+    *(0x401802 as *u8) = 110;
+    *(0x401803 as *u8) = 0;
+    *(0x401C00 as *u8) = 89;
+    rax = 6;
+    rdi = 1;
+    syscall();
 
     run_fs_attacks();
 

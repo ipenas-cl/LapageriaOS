@@ -380,15 +380,15 @@ else
 fi
 
 # 5. (d) Zonas.
-typewait "zone create n zn 12" 50
-typewait "zone create m zm 12" 50
+typewait "zone create n 12" 50
+typewait "zone create m 12" 50
 pd0=$(count 'tcp ptr denied')
 zl0=$(count 'tcp listen')
 typewait "zone exec n tcpeco" 150
 waitline "tcp denied" 50
 has "zone exec ok" || fail "zone exec n no terminó"
 typewait "zone ls" 50
-niega=$(tr -d '\r' < "$SERIAL" | grep '^zone [0-9]* n pre=' | tail -1)
+niega=$(tr -d '\r' < "$SERIAL" | grep '^zone [0-9]* n root=' | tail -1)
 echo "$niega" | grep -q "niega=[1-9]" || fail "zone ls: n sin niega ($niega)"
 [ "$(count 'tcp ptr denied')" = "$pd0" ] || fail "la zona sin red llegó a las pruebas de punteros"
 echo "ok   (d) zona sin red: tcp denied y niega>0"

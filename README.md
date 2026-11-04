@@ -156,9 +156,9 @@ src/kernel/copihue/
   hh.lap                      RIP/RSP altos, identidad retirada, comando hh
   ata.lap                     ATA PIO, canal primario, esclavo, LBA28
   blk.lap                     bloques de 512 B con CRC-32 en otro sector
-  fs.lap                      archivos copy-on-write y snapshots
+  fs.lap                      directorios, archivos de hasta 72 KiB, snapshots y scrub (copy-on-write)
   exec.lap                    exec: AXE1 del disco a un PML4 nuevo
-  zone.lap                    zonas: cuota, máscara, prefijo y tope de procesos
+  zone.lap                    zonas: cuota, máscara, raíz propia (/zonas/nombre) y tope de procesos
   net.lap                     e1000, ARP, IPv4 e ICMP
   trace.lap                   sondas estáticas y anillo de eventos
   shell.lap                   editor de línea y comandos
@@ -216,7 +216,7 @@ IDT de 48 entradas. Las excepciones de CPU 0–31 imprimen su nombre; `#PF` tamb
 
 ### 5. Disco y sistema de archivos — parcial, en la imagen
 
-El arranque sigue leyendo la etapa 2 (8 sectores) y el kernel con INT 13h, de a 128 sectores; el conteo total lo calcula `make`. Imagen y `.bss` tienen que caber en la página de 2 MiB de `0x400000` (tope de `make`: 2048 sectores de archivo). El kernel trae ATA PIO del esclavo primario (LBA28: identify, leer y escribir un sector, con timeout) y bloques de 512 B cuyo CRC-32 vive en el sector de al lado. Encima hay un directorio plano copy-on-write, con snapshots y rollback. El layout del disco está en [docs/disco.md](docs/disco.md) y el del sistema de archivos en [docs/fs.md](docs/fs.md). Sigue pendiente otro bus (AHCI, NVMe).
+El arranque sigue leyendo la etapa 2 (8 sectores) y el kernel con INT 13h, de a 128 sectores; el conteo total lo calcula `make`. Imagen y `.bss` tienen que caber en la página de 2 MiB de `0x400000` (tope de `make`: 2048 sectores de archivo). El kernel trae ATA PIO del esclavo primario (LBA28: identify, leer y escribir un sector, con timeout) y bloques de 512 B cuyo CRC-32 vive en el sector de al lado. Encima hay un sistema de archivos copy-on-write con directorios, snapshots, rollback y `fs scrub`. El layout del disco está en [docs/disco.md](docs/disco.md) y el del sistema de archivos en [docs/fs.md](docs/fs.md). Sigue pendiente otro bus (AHCI, NVMe).
 
 ### 6. Red — parcial, en la imagen
 

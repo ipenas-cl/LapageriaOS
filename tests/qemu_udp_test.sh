@@ -188,13 +188,13 @@ nos1=$(nosock_of)
 echo "ok   datagrama a puerto sin socket descartado (nosock $nos0 -> $nos1)"
 
 # 4. Zonas: sin permiso de red, negación; con permiso, eco.
-typewait "zone create n zn 12" 50
-typewait "zone create m zm 12" 50
+typewait "zone create n 12" 50
+typewait "zone create m 12" 50
 typewait "zone exec n udpeco" 150
 waitline "udp denied" 50
 has "zone exec ok" || fail "zone exec n no terminó"
 typewait "zone ls" 50
-niega=$(tr -d '\r' < "$SERIAL" | grep '^zone [0-9]* n pre=' | tail -1)
+niega=$(tr -d '\r' < "$SERIAL" | grep '^zone [0-9]* n root=' | tail -1)
 echo "$niega" | grep -q "niega=[1-9]" || fail "zone ls: n sin niega ($niega)"
 [ "$(count 'udp ptr denied')" = 1 ] || fail "la zona sin red llegó a las pruebas de punteros"
 echo "ok   zona sin red: udp denied y niega>0"

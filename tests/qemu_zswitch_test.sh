@@ -82,7 +82,7 @@ typeline() {
     local s=$1 i c k
     for ((i = 0; i < ${#s}; i++)); do
         c=${s:i:1}
-        case "$c" in " ") k=spc ;; "-") k=minus ;; "=") k=equal ;; *) k=$c ;; esac
+        case "$c" in " ") k=spc ;; "-") k=minus ;; "/") k=slash ;; ".") k=dot ;; "=") k=equal ;; *) k=$c ;; esac
         mon "sendkey $k"
     done
     mon "sendkey ret"
@@ -123,13 +123,13 @@ grep -q "lapageria> " "$SERIAL" || fail "no shell prompt"
 typewait "fs format" 50
 typewait "zone par" 50
 has "zone par plant ok" || fail "zone par"
-typewait "zone create za ia 12" 30
-typewait "zone create zb ib 12" 30
+typewait "zone create za 12" 30
+typewait "zone create zb 12" 30
 typewait "zone sched za" 30
 typewait "zone sched zb" 30
 has "zone sched ok" || fail "zone sched"
-typewait "fs write iaq y" 30
-typewait "fs write ibq y" 30
+typewait "fs write /zonas/za/q y" 30
+typewait "fs write /zonas/zb/q y" 30
 typewait "trace on switch" 30
 typewait "trace on zone-switch" 30
 
@@ -219,8 +219,8 @@ win "trace dump" | grep -qE ' zone-switch pid 2 a 2 b 0 z 2 c [0-9]*$' || fail "
 echo "ok   global/zb: $n de $n cambios cambian la zona (0 -> 2 ... 2 -> 0; yield=$y timer=$t), registrados con a 0 y b 0"
 
 typewait "zone ls" 30
-win "zone ls" | grep -q '^zone 1 za pre=ia .* proc=0/2 pag=0 ' || fail "zona za quedó con procesos o páginas: $(win 'zone ls' | tr '\n' '|')"
-win "zone ls" | grep -q '^zone 2 zb pre=ib .* proc=0/2 pag=0 ' || fail "zona zb quedó con procesos o páginas"
+win "zone ls" | grep -q '^zone 1 za root=/zonas/za .* proc=0/2 pag=0 ' || fail "zona za quedó con procesos o páginas: $(win 'zone ls' | tr '\n' '|')"
+win "zone ls" | grep -q '^zone 2 zb root=/zonas/zb .* proc=0/2 pag=0 ' || fail "zona zb quedó con procesos o páginas"
 typewait "echo vivo" 30
 has "vivo" || fail "el shell no respondió"
 echo "ok   zonas sin procesos ni páginas al terminar, shell vivo"

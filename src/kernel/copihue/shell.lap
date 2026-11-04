@@ -68,7 +68,7 @@ fn cmd_help() -> i64 {
     puts("  user            enter ring 3 and syscall\n");
     puts("  sched           two processes, separate pages\n");
     puts("  disk            data disk checksum\n");
-    puts("  fs              archivos y snapshots\n");
+    puts("  fs              archivos, directorios, snapshots, scrub\n");
     puts("  exec <nombre>   programa del disco en anillo 3\n");
     puts("  exec2 <a> <b>   dos programas del disco a la vez\n");
     puts("  zone            zonas: create, ls, exec\n");
@@ -104,7 +104,25 @@ fn fs_is(s: *u8) -> i64 {
     return fs_sub[i] == 0;
 }
 
+// Como fs_scan, pero para rutas: hasta 63 bytes en un buffer de 64.
+fn fs_scanp(pos: i64, dst: *u8) -> i64 {
+    while (pos < line_len && line[pos] == ' ') { pos = pos + 1; }
+    fs_zero(dst, 64);
+    let i = 0;
+    while (pos < line_len && line[pos] != ' ') {
+        if (i >= 63) { return 0 - 1; }
+        dst[i] = line[pos];
+        i = i + 1;
+        pos = pos + 1;
+    }
+    return pos;
+}
+
 fn fs_fail(r: i64) -> i64 {
+    if (r == 12) {
+        puts("fs old version\n");
+        return r;
+    }
     puts("fs fail ");
     put_int(r);
     putc('\n');
@@ -133,6 +151,13 @@ fn fs_show(prefix: *u8, n: i64) -> i64 {
     return 0;
 }
 
+fn fs_code(r: i64) -> i64 {
+    if (r != 0) { return fs_fail(r); }
+    return 0;
+}
+
+// fs <sub> ...: las rutas son /a/b/c (la barra inicial es opcional) y miden
+// hasta 63 bytes; cada nombre, hasta 15. Ver docs/fs.md.
 fn cmd_fs() -> i64 {
     let pos = fs_scan(2, fs_sub);
     if (pos < 0) { return fs_fail(11); }
@@ -143,15 +168,23 @@ fn cmd_fs() -> i64 {
         return 0;
     }
     if (fs_is("create")) {
-        pos = fs_scan(pos, fs_name);
+        pos = fs_scanp(pos, fs_path);
         if (pos < 0) { return fs_fail(11); }
-        let r = fs_create(fs_name);
+        let r = fs_create(fs_path);
         if (r != 0) { return fs_fail(r); }
         puts("fs create ok\n");
         return 0;
     }
+    if (fs_is("mkdir")) {
+        pos = fs_scanp(pos, fs_path);
+        if (pos < 0) { return fs_fail(11); }
+        let r = fs_mkdir(fs_path);
+        if (r != 0) { return fs_fail(r); }
+        puts("fs mkdir ok\n");
+        return 0;
+    }
     if (fs_is("write")) {
-        pos = fs_scan(pos, fs_name);
+        pos = fs_scanp(pos, fs_path);
         if (pos < 0) { return fs_fail(11); }
         if (pos < line_len && line[pos] == ' ') { pos = pos + 1; }
         let n = 0;
@@ -160,20 +193,25 @@ fn cmd_fs() -> i64 {
             n = n + 1;
             pos = pos + 1;
         }
-        let r = fs_write(fs_name, fs_buf, n);
+        let r = fs_write(fs_path, fs_buf, n);
         if (r != 0) { return fs_fail(r); }
         puts("fs write ok\n");
         return 0;
     }
     if (fs_is("cat")) {
-        pos = fs_scan(pos, fs_name);
+        pos = fs_scanp(pos, fs_path);
         if (pos < 0) { return fs_fail(11); }
-        return fs_show("fs live ", fs_read(fs_name, fs_buf, 1024));
+        return fs_show("fs live ", fs_read(fs_path, fs_buf, 1024));
     }
     if (fs_is("ls")) {
-        let r = fs_list();
-        if (r != 0) { return fs_fail(r); }
-        return 0;
+        pos = fs_scanp(pos, fs_path);
+        if (pos < 0) { return fs_fail(11); }
+        return fs_code(fs_list(fs_path));
+    }
+    if (fs_is("stat")) {
+        pos = fs_scanp(pos, fs_path);
+        if (pos < 0) { return fs_fail(11); }
+        return fs_code(fs_stat(fs_path));
     }
     if (fs_is("snap")) {
         pos = fs_scan(pos, fs_name);
@@ -181,9 +219,9 @@ fn cmd_fs() -> i64 {
         let look = pos;
         while (look < line_len && line[look] == ' ') { look = look + 1; }
         if (look < line_len) {
-            pos = fs_scan(pos, fs_name2);
+            pos = fs_scanp(pos, fs_path2);
             if (pos < 0) { return fs_fail(11); }
-            return fs_show("fs snap ", fs_read_snap(fs_name, fs_name2, fs_buf, 1024));
+            return fs_show("fs snap ", fs_read_snap(fs_name, fs_path2, fs_buf, 1024));
         }
         let r = fs_snapshot(fs_name);
         if (r != 0) { return fs_fail(r); }
@@ -199,30 +237,47 @@ fn cmd_fs() -> i64 {
         return 0;
     }
     if (fs_is("corrupt")) {
-        pos = fs_scan(pos, fs_name);
+        pos = fs_scanp(pos, fs_path);
         if (pos < 0) { return fs_fail(11); }
-        let r = fs_corrupt(fs_name);
+        let r = fs_corrupt(fs_path);
         if (r != 0) { return fs_fail(r); }
         puts("fs corrupt armed\n");
         return 0;
     }
-    if (fs_is("blocks")) {
-        let r = fs_blocks_test();
-        if (r != 0) { return fs_fail(r); }
-        return 0;
-    }
-    if (fs_is("check")) {
-        let r = fs_blocks_check();
-        if (r != 0) { return fs_fail(r); }
-        return 0;
-    }
+    if (fs_is("blocks")) { return fs_code(fs_blocks_test()); }
+    if (fs_is("check")) { return fs_code(fs_blocks_check()); }
     if (fs_is("rm")) {
-        pos = fs_scan(pos, fs_name);
+        pos = fs_scanp(pos, fs_path);
         if (pos < 0) { return fs_fail(11); }
-        let r = fs_remove(fs_name);
+        let r = fs_remove(fs_path);
         if (r != 0) { return fs_fail(r); }
         puts("fs rm ok\n");
         return 0;
+    }
+    if (fs_is("scrub")) { return fs_code(fs_scrub()); }
+    if (fs_is("leak")) { return fs_code(fs_leak()); }
+    if (fs_is("unmark")) {
+        parse_pos = pos;
+        let n = parse_int();
+        let r = fs_unmark(n);
+        if (r != 0) { return fs_fail(r); }
+        puts("fs unmark ok\n");
+        return 0;
+    }
+    if (fs_is("bigw")) {
+        pos = fs_scanp(pos, fs_path);
+        if (pos < 0) { return fs_fail(11); }
+        parse_pos = pos;
+        let kib = parse_int();
+        let seed = parse_int();
+        return fs_code(fs_big_write(fs_path, kib, seed));
+    }
+    if (fs_is("bigr")) {
+        pos = fs_scanp(pos, fs_path);
+        if (pos < 0) { return fs_fail(11); }
+        parse_pos = pos;
+        let seed = parse_int();
+        return fs_code(fs_big_read(fs_path, seed));
     }
     return fs_fail(11);
 }

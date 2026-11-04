@@ -74,9 +74,28 @@ Sin `build/data.img`, en QEMU 8.2.2 el mismo comando imprime `ata fail 1`
 y vuelve al prompt. El estado no es 0xFF: la espera se agota y devuelve
 timeout.
 
-## Qué falta
+## Qué hay encima
 
 El sistema de archivos copy-on-write está en [docs/fs.md](fs.md): el
 bloque lógico sigue siendo el de esta capa, y un snapshot se queda con
-los bloques que ya no apunta la raíz nueva. Sigue sin otro bus (AHCI,
-NVMe).
+los bloques que ya no apunta la raíz nueva. Desde FS-02 el formato del
+fs es la versión 2 (directorios jerárquicos, inodos con un bloque
+indirecto, archivos de hasta 72 KiB); la capa de bloques no cambió: ni
+el layout de dos sectores por bloque ni el CRC.
+
+`fs scrub` ([fs.md](fs.md#scrub)) usa esta capa como verificador: lee
+con `blk_read` cada bloque alcanzable, así que un sector de datos o de
+metadatos pisado desde afuera sale como `fs scrub bad bloque=N` (el
+`blk_read` devuelve 5). Para pisar un byte sin pasar por `blk`:
+sector de datos del bloque `n` = LBA `2n`, byte `k` = offset
+`2n * 512 + k` en `build/data.img`.
+
+El disco de 2048 sectores deja 1024 bloques lógicos (0..1023). Los
+bloques 0 y 1 son del comando `disk`; el fs usa del 2 al 1023: los dos
+superbloques y, de ahí, inodos, bloques indirectos, bloques de
+directorio y de datos. Un archivo de 64 KiB gasta 130 bloques con su
+inodo y su indirecto.
+
+## Qué falta
+
+Sigue sin otro bus (AHCI, NVMe) ni DMA: todo es PIO.

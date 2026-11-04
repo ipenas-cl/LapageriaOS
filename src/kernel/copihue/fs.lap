@@ -1,22 +1,33 @@
-// Sistema de archivos copy-on-write sobre blk_read / blk_write.
+// Sistema de archivos copy-on-write sobre blk_read / blk_write (versión 2).
 // El mapa de bytes está en docs/fs.md. Los bloques 0 y 1 los usa
 // `disk`. Los superbloques viven en 2 y 3. El primer bloque libre es 4.
 //
-// El sector sigue siendo [u8; 512]. Encima se lee con structs packed:
-// la entrada útil mide 56 y el hueco del directorio mide 64. fs_layout
-// lo chequea con sizeof y offsetof. La copia al disco sigue siendo 512
-// bytes; el formato no cambia.
+// Todo nodo (archivo o directorio) es un bloque "inodo" que apunta a sus
+// bloques de datos: 16 directos y uno indirecto simple con 128 más. Un
+// directorio guarda sus entradas (32 bytes cada una) en esos bloques de
+// datos, igual que un archivo guarda bytes. Cambiar un archivo profundo
+// escribe bloques nuevos de abajo hacia arriba, hasta la raíz, y publica
+// un superbloque nuevo. Lo que quedó sin dueño lo libera un barrido de
+// alcanzabilidad desde la raíz viva y desde cada snapshot (fs_gc).
+//
+// El sector sigue siendo [u8; 512]. Encima se lee con structs packed;
+// fs_layout los chequea con sizeof y offsetof.
 
-packed struct FsEnt {
-    name: [u8; 16],
+packed struct FsIno {
+    magic: [u8; 4],
+    kind: u32,
     size: u32,
     nblocks: u32,
-    blocks: [u32; 8]
+    direct: [u32; 16],
+    indirect: u32
 }
 
-packed struct FsSlot {
-    file: FsEnt,
-    pad: [u8; 8]
+packed struct FsDe {
+    name: [u8; 16],
+    kind: u32,
+    ino: u32,
+    size: u32,
+    pad: u32
 }
 
 packed struct FsSnap {
@@ -39,31 +50,44 @@ packed struct FsSuper {
     snaps: [FsSnap; 8]
 }
 
-packed struct FsDir {
-    magic: [u8; 4],
-    count: u32,
-    slots: [FsSlot; 7]
-}
-
 let fs_super: [u8; 512];
-let fs_dir: [u8; 512];
-let fs_scratch: [u8; 512];
+let fs_ib: [u8; 512];
+let fs_dt: [u8; 2048];
+let fs_dn: i64;
 let fs_buf: [u8; 1024];
+let fs_big: [u8; 73728];
 let fs_sub: [u8; 16];
 let fs_name: [u8; 16];
 let fs_name2: [u8; 16];
+let fs_path: [u8; 64];
+let fs_path2: [u8; 64];
+let fs_leaf: [u8; 16];
 let fs_slot: i64;
-let fs_oldb: [i64; 8];
-let fs_newb: [i64; 8];
+let fs_bl: [i64; 144];
+let fs_ch_ino: [i64; 10];
+let fs_ch_idx: [i64; 10];
+let fs_depth: i64;
+let fs_haveleaf: i64;
+let fs_rootsel: i64;
+let fs_errblk: i64;
+let fs_reach: [u8; 128];
+let fs_nreach: i64;
+let fs_stk: [i64; 1100];
+let fs_sp: i64;
+let fs_bad: i64;
+let fs_vflag: i64;
 
 fn fs_layout() -> i64 {
-    if (sizeof(FsEnt) != 56) { return 0; }
-    if (offsetof(FsEnt, name) != 0) { return 0; }
-    if (offsetof(FsEnt, size) != 16) { return 0; }
-    if (offsetof(FsEnt, nblocks) != 20) { return 0; }
-    if (offsetof(FsEnt, blocks) != 24) { return 0; }
-    if (sizeof(FsSlot) != 64) { return 0; }
-    if (offsetof(FsSlot, pad) != 56) { return 0; }
+    if (sizeof(FsIno) != 84) { return 0; }
+    if (offsetof(FsIno, kind) != 4) { return 0; }
+    if (offsetof(FsIno, size) != 8) { return 0; }
+    if (offsetof(FsIno, nblocks) != 12) { return 0; }
+    if (offsetof(FsIno, direct) != 16) { return 0; }
+    if (offsetof(FsIno, indirect) != 80) { return 0; }
+    if (sizeof(FsDe) != 32) { return 0; }
+    if (offsetof(FsDe, kind) != 16) { return 0; }
+    if (offsetof(FsDe, ino) != 20) { return 0; }
+    if (offsetof(FsDe, size) != 24) { return 0; }
     if (sizeof(FsSnap) != 24) { return 0; }
     if (offsetof(FsSnap, root) != 12) { return 0; }
     if (offsetof(FsSnap, gen) != 16) { return 0; }
@@ -78,9 +102,6 @@ fn fs_layout() -> i64 {
     if (offsetof(FsSuper, bitmap) != 32) { return 0; }
     if (offsetof(FsSuper, snaps) != 160) { return 0; }
     if (sizeof(FsSuper) != 352) { return 0; }
-    if (offsetof(FsDir, count) != 4) { return 0; }
-    if (offsetof(FsDir, slots) != 8) { return 0; }
-    if (sizeof(FsDir) != 456) { return 0; }
     return 1;
 }
 
@@ -88,12 +109,12 @@ fn fs_sb(p: *u8) -> *FsSuper {
     return p as *FsSuper;
 }
 
-fn fs_db(p: *u8) -> *FsDir {
-    return p as *FsDir;
+fn fs_ip(p: *u8) -> *FsIno {
+    return p as *FsIno;
 }
 
-fn fs_ent(p: *u8, i: i64) -> *FsEnt {
-    return (p as i64 + offsetof(FsDir, slots) + i * sizeof(FsSlot)) as *FsEnt;
+fn fs_de(p: *u8, i: i64) -> *FsDe {
+    return (p as i64 + i * sizeof(FsDe)) as *FsDe;
 }
 
 fn fs_snap(p: *u8, i: i64) -> *FsSnap {
@@ -127,19 +148,14 @@ fn fs_copy(d: *u8, s: *u8, n: i64) -> i64 {
     return 0;
 }
 
+// 0 no es un superbloque nuestro, 1 sí (versión 2), 2 versión vieja.
 fn fs_magic(p: *u8) -> i64 {
     let s: *FsSuper = fs_sb(p);
     if (s.magic[0] != 0x41 || s.magic[1] != 0x46) { return 0; }
     if (s.magic[2] != 0x53 || s.magic[3] != 0x31) { return 0; }
-    if (s.version != 1) { return 0; }
-    return 1;
-}
-
-fn fs_dir_magic(p: *u8) -> i64 {
-    let d: *FsDir = fs_db(p);
-    if (d.magic[0] != 0x41 || d.magic[1] != 0x44) { return 0; }
-    if (d.magic[2] != 0x49 || d.magic[3] != 0x52) { return 0; }
-    return 1;
+    if (s.version == 2) { return 1; }
+    if (s.version == 1) { return 2; }
+    return 0;
 }
 
 fn fs_name_ok(name: *u8, max: i64) -> i64 {
@@ -194,6 +210,19 @@ fn fs_puts_name(p: *u8) -> i64 {
     return 0;
 }
 
+fn fs_limit() -> i64 {
+    let s: *FsSuper = fs_sb(fs_super);
+    let lim = s.limit;
+    if (lim > 1024) { lim = 1024; }
+    return lim;
+}
+
+fn fs_range(n: i64) -> i64 {
+    if (n < 4) { return 0; }
+    if (n >= fs_limit()) { return 0; }
+    return 1;
+}
+
 fn fs_mark(n: i64, v: i64) -> i64 {
     if (n < 0 || n >= 1024) { return 0; }
     let s: *FsSuper = fs_sb(fs_super);
@@ -217,9 +246,8 @@ fn fs_taken(n: i64) -> i64 {
 fn fs_alloc() -> i64 {
     let s: *FsSuper = fs_sb(fs_super);
     let n = s.first;
-    let lim = s.limit;
+    let lim = fs_limit();
     if (n < 4) { n = 4; }
-    if (lim > 1024) { lim = 1024; }
     while (n < lim) {
         if (fs_taken(n) == 0) {
             fs_mark(n, 1);
@@ -228,11 +256,6 @@ fn fs_alloc() -> i64 {
         n = n + 1;
     }
     return 0 - 1;
-}
-
-fn fs_put_dir(block: i64) -> i64 {
-    fs_copy(blk_data, fs_dir, 512);
-    return blk_write(block);
 }
 
 fn fs_write_super(dest: i64) -> i64 {
@@ -255,6 +278,8 @@ fn fs_commit() -> i64 {
     return 0;
 }
 
+// Monta: lee las dos copias y se queda con la generación mayor cuyo magic,
+// versión 2 y CRC calzan. 12 si lo único que hay es un disco versión 1.
 fn fs_reload() -> i64 {
     if (fs_layout() == 0) {
         puts("fs layout\n");
@@ -267,137 +292,469 @@ fn fs_reload() -> i64 {
     let b: *FsSuper = fs_sb(blk_data);
     let g2 = 0 - 1;
     let g3 = 0 - 1;
+    let old = 0;
     let r = blk_read(2);
-    if (r == 0 && fs_magic(blk_data) != 0) {
-        g2 = b.gen;
-        fs_copy(fs_scratch, blk_data, 512);
+    if (r == 0) {
+        let m2 = fs_magic(blk_data);
+        if (m2 == 1) {
+            g2 = b.gen;
+            fs_copy(fs_ib, blk_data, 512);
+        }
+        if (m2 == 2) { old = 1; }
     }
     r = blk_read(3);
-    if (r == 0 && fs_magic(blk_data) != 0) {
-        g3 = b.gen;
+    if (r == 0) {
+        let m3 = fs_magic(blk_data);
+        if (m3 == 1) { g3 = b.gen; }
+        if (m3 == 2) { old = 1; }
     }
-    if (g2 < 0 && g3 < 0) { return 8; }
+    if (g2 < 0 && g3 < 0) {
+        if (old != 0) { return 12; }
+        return 8;
+    }
     if (g3 > g2) {
         fs_copy(fs_super, blk_data, 512);
         fs_slot = 3;
     } else {
-        fs_copy(fs_super, fs_scratch, 512);
+        fs_copy(fs_super, fs_ib, 512);
         fs_slot = 2;
     }
-    return 0;
-}
-
-fn fs_load_dir(block: i64) -> i64 {
-    let r = blk_read(block);
-    if (r != 0) { return r; }
-    if (fs_dir_magic(blk_data) == 0) { return 8; }
-    fs_copy(fs_dir, blk_data, 512);
+    let s: *FsSuper = fs_sb(fs_super);
+    fs_rootsel = s.root;
     return 0;
 }
 
 fn fs_open() -> i64 {
-    let r = fs_reload();
-    if (r != 0) { return r; }
-    let s: *FsSuper = fs_sb(fs_super);
-    return fs_load_dir(s.root);
+    return fs_reload();
 }
 
-fn fs_find(name: *u8) -> i64 {
-    let d: *FsDir = fs_db(fs_dir);
-    let n = d.count;
+// ---- inodos y directorios ----
+
+// Lee el inodo `ino` a fs_ib. 0, o el código de blk, o 8 si no es un inodo.
+fn fs_ino_load(ino: i64) -> i64 {
+    if (fs_range(ino) == 0) {
+        fs_errblk = ino;
+        return 8;
+    }
+    let r = blk_read(ino);
+    if (r != 0) {
+        fs_errblk = ino;
+        return r;
+    }
+    let h: *FsIno = fs_ip(blk_data);
+    let ok = 1;
+    if (h.magic[0] != 0x41 || h.magic[1] != 0x49) { ok = 0; }
+    if (h.magic[2] != 0x4E || h.magic[3] != 0x4F) { ok = 0; }
+    let kind = h.kind;
+    let nb = h.nblocks;
+    let size = h.size;
+    if (kind != 1 && kind != 2) { ok = 0; }
+    if (nb > 144) { ok = 0; }
+    if (kind == 2 && nb > 4) { ok = 0; }
+    if (size > nb * 512) { ok = 0; }
+    if (ok == 0) {
+        fs_errblk = ino;
+        return 8;
+    }
+    fs_copy(fs_ib, blk_data, 512);
+    return 0;
+}
+
+// Los números de bloque de datos del inodo de fs_ib, a fs_bl. Lee el
+// indirecto si hace falta.
+fn fs_ino_blocks() -> i64 {
+    let h: *FsIno = fs_ip(fs_ib);
+    let nb = h.nblocks;
+    let k = 0;
+    while (k < nb && k < 16) {
+        fs_bl[k] = h.direct[k];
+        k = k + 1;
+    }
+    if (nb > 16) {
+        let ind = h.indirect;
+        fs_errblk = ind;
+        if (fs_range(ind) == 0) { return 8; }
+        let r = blk_read(ind);
+        if (r != 0) { return r; }
+        let p: *u32 = blk_data as *u32;
+        while (k < nb) {
+            fs_bl[k] = p[k - 16];
+            k = k + 1;
+        }
+    }
+    return 0;
+}
+
+// Carga el directorio `ino` en fs_dt / fs_dn.
+fn fs_dt_load(ino: i64) -> i64 {
+    let r = fs_ino_load(ino);
+    if (r != 0) { return r; }
+    let h: *FsIno = fs_ip(fs_ib);
+    if (h.kind != 2) { return 13; }
+    let nb = h.nblocks;
+    let size = h.size;
+    if (size % 32 != 0 || size > 2048) { return 8; }
+    fs_zero(fs_dt, 2048);
+    let k = 0;
+    while (k < nb) {
+        let b = h.direct[k];
+        if (fs_range(b) == 0) { return 8; }
+        r = blk_read(b);
+        if (r != 0) { return r; }
+        fs_copy((fs_dt as i64 + k * 512) as *u8, blk_data, 512);
+        k = k + 1;
+    }
+    fs_dn = size / 32;
+    return 0;
+}
+
+fn fs_dt_find(name: *u8) -> i64 {
     let i = 0;
-    while (i < n && i < 7) {
-        let e: *FsEnt = fs_ent(fs_dir, i);
+    while (i < fs_dn) {
+        let e: *FsDe = fs_de(fs_dt, i);
         if (fs_name_eq(e as *u8, name, 16) != 0) { return i; }
         i = i + 1;
     }
     return 0 - 1;
 }
 
-fn fs_add(name: *u8) -> i64 {
-    let d: *FsDir = fs_db(fs_dir);
-    let n = d.count;
-    if (n >= 7) { return 0 - 1; }
-    fs_zero_at(fs_dir, offsetof(FsDir, slots) + n * sizeof(FsSlot), sizeof(FsSlot));
-    let e: *FsEnt = fs_ent(fs_dir, n);
+fn fs_dt_add(name: *u8, kind: i64, ino: i64, size: i64) -> i64 {
+    if (fs_dn >= 64) { return 0 - 1; }
+    let n = fs_dn;
+    fs_zero_at(fs_dt, n * 32, 32);
+    let e: *FsDe = fs_de(fs_dt, n);
     fs_name_put(e as *u8, name, 16);
-    d.count = (n + 1) as u32;
+    e.kind = kind as u32;
+    e.ino = ino as u32;
+    e.size = size as u32;
+    fs_dn = n + 1;
     return n;
 }
 
-fn fs_dir_has(block: i64) -> i64 {
-    let d: *FsDir = fs_db(fs_dir);
-    let n = d.count;
-    let i = 0;
-    while (i < n && i < 7) {
-        let e: *FsEnt = fs_ent(fs_dir, i);
-        let nb = e.nblocks;
-        let k = 0;
-        while (k < nb && k < 8) {
-            if (e.blocks[k] == block) { return 1; }
+fn fs_dt_del(i: i64) -> i64 {
+    let j = i;
+    while (j < fs_dn - 1) {
+        let d = (fs_dt as i64 + j * 32) as *u8;
+        let s = (fs_dt as i64 + (j + 1) * 32) as *u8;
+        fs_copy(d, s, 32);
+        j = j + 1;
+    }
+    fs_zero_at(fs_dt, (fs_dn - 1) * 32, 32);
+    fs_dn = fs_dn - 1;
+    return 0;
+}
+
+// Escribe el inodo de fs_ib con los bloques de fs_bl[0..nb). Devuelve el
+// número del inodo nuevo, o un código negativo.
+fn fs_ino_store(kind: i64, size: i64, nb: i64) -> i64 {
+    let ind = 0;
+    if (nb > 16) {
+        ind = fs_alloc();
+        if (ind < 0) { return 0 - 6; }
+        fs_zero(blk_data, 512);
+        let p: *u32 = blk_data as *u32;
+        let k = 16;
+        while (k < nb) {
+            p[k - 16] = fs_bl[k] as u32;
             k = k + 1;
         }
-        i = i + 1;
+        let rw = blk_write(ind);
+        if (rw != 0) { return 0 - rw; }
+    }
+    fs_zero(fs_ib, 512);
+    let h: *FsIno = fs_ip(fs_ib);
+    h.magic[0] = 0x41;
+    h.magic[1] = 0x49;
+    h.magic[2] = 0x4E;
+    h.magic[3] = 0x4F;
+    h.kind = kind as u32;
+    h.size = size as u32;
+    h.nblocks = nb as u32;
+    let j = 0;
+    while (j < nb && j < 16) {
+        h.direct[j] = fs_bl[j] as u32;
+        j = j + 1;
+    }
+    h.indirect = ind as u32;
+    let ino = fs_alloc();
+    if (ino < 0) { return 0 - 6; }
+    fs_copy(blk_data, fs_ib, 512);
+    let r = blk_write(ino);
+    if (r != 0) { return 0 - r; }
+    return ino;
+}
+
+// Guarda fs_dt / fs_dn como directorio nuevo. Devuelve su inodo.
+fn fs_dir_store() -> i64 {
+    let nb = (fs_dn * 32 + 511) / 512;
+    let k = 0;
+    while (k < nb) {
+        let b = fs_alloc();
+        if (b < 0) { return 0 - 6; }
+        fs_bl[k] = b;
+        fs_copy(blk_data, (fs_dt as i64 + k * 512) as *u8, 512);
+        let r = blk_write(b);
+        if (r != 0) { return 0 - r; }
+        k = k + 1;
+    }
+    return fs_ino_store(2, fs_dn * 32, nb);
+}
+
+// Guarda `len` bytes de src como archivo nuevo. Devuelve su inodo.
+fn fs_file_store(src: *u8, len: i64) -> i64 {
+    let nb = (len + 511) / 512;
+    if (nb > 144) { return 0 - 9; }
+    let k = 0;
+    while (k < nb) {
+        let b = fs_alloc();
+        if (b < 0) { return 0 - 6; }
+        fs_bl[k] = b;
+        fs_zero(blk_data, 512);
+        let base = k * 512;
+        let ncopy = len - base;
+        if (ncopy > 512) { ncopy = 512; }
+        let j = 0;
+        while (j < ncopy) {
+            blk_data[j] = src[base + j];
+            j = j + 1;
+        }
+        let r = blk_write(b);
+        if (r != 0) { return 0 - r; }
+        k = k + 1;
+    }
+    return fs_ino_store(1, len, nb);
+}
+
+// ---- rutas ----
+
+// Copia el componente que empieza en path[pos] a fs_leaf y devuelve la
+// posición que sigue (después de un '/' si lo hay). -1 si el componente
+// está vacío, es "." o "..", mide más de 15 o trae bytes raros.
+fn fs_comp(path: *u8, pos: i64) -> i64 {
+    fs_zero(fs_leaf, 16);
+    let n = 0;
+    let p = pos;
+    while (1) {
+        let c = path[p] & 255;
+        if (c == 0 || c == 47) {
+            if (n == 0) { return 0 - 1; }
+            if (n == 1 && (fs_leaf[0] & 255) == 46) { return 0 - 1; }
+            if (n == 2 && (fs_leaf[0] & 255) == 46 && (fs_leaf[1] & 255) == 46) { return 0 - 1; }
+            if (c == 47) { p = p + 1; }
+            return p;
+        }
+        if (c < 33 || c > 126) { return 0 - 1; }
+        if (n >= 15) { return 0 - 1; }
+        fs_leaf[n] = c as u8;
+        n = n + 1;
+        p = p + 1;
+    }
+    return 0 - 1;
+}
+
+// Recorre `path` desde fs_rootsel. Deja la cadena de directorios en
+// fs_ch_ino / fs_ch_idx (fs_depth es el padre del último componente), el
+// padre cargado en fs_dt y el último componente en fs_leaf. Si la ruta no
+// tiene componentes ("" o "/"), fs_haveleaf queda en 0 y fs_dt es la raíz.
+fn fs_walk(path: *u8) -> i64 {
+    let pos = 0;
+    if ((path[0] & 255) == 47) { pos = 1; }
+    fs_depth = 0;
+    fs_ch_ino[0] = fs_rootsel;
+    fs_ch_idx[0] = 0 - 1;
+    fs_haveleaf = 0;
+    fs_zero(fs_leaf, 16);
+    while ((path[pos] & 255) != 0) {
+        let nxt = fs_comp(path, pos);
+        if (nxt < 0) { return 11; }
+        if ((path[nxt] & 255) == 0) {
+            fs_haveleaf = 1;
+            return fs_dt_load(fs_ch_ino[fs_depth]);
+        }
+        let r = fs_dt_load(fs_ch_ino[fs_depth]);
+        if (r != 0) { return r; }
+        let i = fs_dt_find(fs_leaf);
+        if (i < 0) { return 7; }
+        let e: *FsDe = fs_de(fs_dt, i);
+        if (e.kind != 2) { return 13; }
+        if (fs_depth >= 8) { return 11; }
+        fs_depth = fs_depth + 1;
+        fs_ch_ino[fs_depth] = e.ino;
+        fs_ch_idx[fs_depth] = i;
+        pos = nxt;
+    }
+    return fs_dt_load(fs_ch_ino[fs_depth]);
+}
+
+// ---- alcanzabilidad: barrido para liberar y para el scrub ----
+
+fn fs_rclear() -> i64 {
+    fs_zero(fs_reach, 128);
+    fs_nreach = 0;
+    fs_sp = 0;
+    fs_bad = 0;
+    return 0;
+}
+
+fn fs_rhas(n: i64) -> i64 {
+    if (n < 0 || n >= 1024) { return 0; }
+    if ((fs_reach[n / 8] & (1 << (n % 8))) != 0) { return 1; }
+    return 0;
+}
+
+// 1 si el bloque no estaba marcado.
+fn fs_rmark(n: i64) -> i64 {
+    if (n < 0 || n >= 1024) { return 0; }
+    if (fs_rhas(n) != 0) { return 0; }
+    let cur = fs_reach[n / 8] & 255;
+    fs_reach[n / 8] = (cur | (1 << (n % 8))) as u8;
+    fs_nreach = fs_nreach + 1;
+    return 1;
+}
+
+fn fs_note_bad(n: i64) -> i64 {
+    fs_bad = fs_bad + 1;
+    if (fs_vflag != 0 && fs_bad <= 16) {
+        puts("fs scrub bad bloque=");
+        put_int(n);
+        putc('\n');
     }
     return 0;
 }
 
-fn fs_tree_has(root: i64, block: i64) -> i64 {
-    if (root == block) { return 1; }
-    if (root < 4) { return 0; }
-    let r = blk_read(root);
-    if (r != 0) { return 1; }
-    if (fs_dir_magic(blk_data) == 0) { return 1; }
-    let d: *FsDir = fs_db(blk_data);
-    let n = d.count;
-    let i = 0;
-    while (i < n && i < 7) {
-        let e: *FsEnt = fs_ent(blk_data, i);
-        let nb = e.nblocks;
-        let k = 0;
-        while (k < nb && k < 8) {
-            if (e.blocks[k] == block) { return 1; }
-            k = k + 1;
+fn fs_push(n: i64) -> i64 {
+    if (fs_range(n) == 0) {
+        fs_note_bad(n);
+        return 0;
+    }
+    if (fs_rmark(n) != 0) {
+        if (fs_sp >= 1100) {
+            fs_note_bad(n);
+            return 0;
         }
-        i = i + 1;
+        fs_stk[fs_sp] = n;
+        fs_sp = fs_sp + 1;
     }
     return 0;
 }
 
-fn fs_any_snap(block: i64) -> i64 {
+// Visita un inodo ya marcado: marca sus bloques y, si fs_vflag, verifica
+// el CRC de cada uno. Los hijos de un directorio quedan en la pila.
+fn fs_visit(ino: i64) -> i64 {
+    let r = fs_ino_load(ino);
+    if (r != 0) {
+        fs_note_bad(fs_errblk);
+        return 0;
+    }
+    let h: *FsIno = fs_ip(fs_ib);
+    let kind = h.kind;
+    let nb = h.nblocks;
+    let size = h.size;
+    let ind = h.indirect;
+    r = fs_ino_blocks();
+    if (nb > 16) {
+        if (fs_range(ind) != 0) { fs_rmark(ind); }
+    }
+    if (r != 0) {
+        fs_note_bad(fs_errblk);
+        return 0;
+    }
+    let k = 0;
+    while (k < nb) {
+        let b = fs_bl[k];
+        if (fs_range(b) == 0) {
+            fs_note_bad(b);
+        } else {
+            fs_rmark(b);
+            if (kind == 1) {
+                if (fs_vflag != 0) {
+                    r = blk_read(b);
+                    if (r != 0) { fs_note_bad(b); }
+                }
+            } else {
+                r = blk_read(b);
+                if (r != 0) {
+                    fs_note_bad(b);
+                } else {
+                    let cnt = size / 32 - k * 16;
+                    if (cnt > 16) { cnt = 16; }
+                    let j = 0;
+                    while (j < cnt) {
+                        let e: *FsDe = fs_de(blk_data, j);
+                        let ek = e.kind;
+                        let ei = e.ino;
+                        if (ek != 1 && ek != 2) { fs_note_bad(b); }
+                        else { fs_push(ei); }
+                        j = j + 1;
+                    }
+                }
+            }
+        }
+        k = k + 1;
+    }
+    return 0;
+}
+
+// Marca todo lo alcanzable desde la raíz viva y desde cada snapshot.
+// Devuelve la cantidad de bloques malos (0 si todo bien).
+fn fs_reach_run(vflag: i64) -> i64 {
+    fs_rclear();
+    fs_vflag = vflag;
+    fs_rmark(2);
+    fs_rmark(3);
     let s: *FsSuper = fs_sb(fs_super);
+    fs_push(s.root);
     let n = s.nsnaps;
     let i = 0;
     while (i < n && i < 8) {
         let snap: *FsSnap = fs_snap(fs_super, i);
-        if (fs_tree_has(snap.root, block) != 0) { return 1; }
+        fs_push(snap.root);
         i = i + 1;
     }
-    return 0;
-}
-
-fn fs_release(block: i64) -> i64 {
-    if (block < 4) { return 0; }
-    if (fs_dir_has(block) != 0) { return 0; }
-    if (fs_any_snap(block) != 0) { return 0; }
-    fs_mark(block, 0);
-    return 0;
-}
-
-fn fs_publish(oldn: i64) -> i64 {
-    let s: *FsSuper = fs_sb(fs_super);
-    let oldroot = s.root;
-    let nb = fs_alloc();
-    if (nb < 0) { return 6; }
-    let r = fs_put_dir(nb);
-    if (r != 0) { return r; }
-    s.root = nb as u32;
-    let k = 0;
-    while (k < oldn && k < 8) {
-        fs_release(fs_oldb[k]);
-        k = k + 1;
+    while (fs_sp > 0) {
+        fs_sp = fs_sp - 1;
+        fs_visit(fs_stk[fs_sp]);
     }
-    fs_release(oldroot);
+    return fs_bad;
+}
+
+// Libera lo que ya no cuelga de la raíz viva ni de un snapshot. Si el
+// barrido encuentra algo roto no libera nada.
+fn fs_gc() -> i64 {
+    if (fs_reach_run(0) != 0) { return 0; }
+    let lim = fs_limit();
+    let n = 4;
+    while (n < lim) {
+        if (fs_taken(n) != 0 && fs_rhas(n) == 0) { fs_mark(n, 0); }
+        if (fs_taken(n) == 0 && fs_rhas(n) != 0) { fs_mark(n, 1); }
+        n = n + 1;
+    }
+    return 0;
+}
+
+// ---- escritura: sube la cadena de directorios hasta la raíz ----
+
+// fs_dt es el directorio padre (fs_depth) ya modificado. Lo guarda, sube
+// reescribiendo cada ancestro con el hijo nuevo, publica la raíz, libera y
+// cierra con el superbloque.
+fn fs_publish() -> i64 {
+    let s: *FsSuper = fs_sb(fs_super);
+    let ino = fs_dir_store();
+    if (ino < 0) { return 0 - ino; }
+    let d = fs_depth;
+    while (d > 0) {
+        let sz = fs_dn * 32;
+        let r = fs_dt_load(fs_ch_ino[d - 1]);
+        if (r != 0) { return r; }
+        let e: *FsDe = fs_de(fs_dt, fs_ch_idx[d]);
+        e.ino = ino as u32;
+        e.size = sz as u32;
+        ino = fs_dir_store();
+        if (ino < 0) { return 0 - ino; }
+        d = d - 1;
+    }
+    s.root = ino as u32;
+    fs_gc();
     return fs_commit();
 }
 
@@ -417,7 +774,7 @@ fn fs_format() -> i64 {
     s.magic[1] = 0x46;
     s.magic[2] = 0x53;
     s.magic[3] = 0x31;
-    s.version = 1;
+    s.version = 2;
     s.gen = 1;
     let count = (ata_sectors - 2) / 2 + 1;
     if (count > 1024) { count = 1024; }
@@ -427,98 +784,133 @@ fn fs_format() -> i64 {
     fs_mark(1, 1);
     fs_mark(2, 1);
     fs_mark(3, 1);
-    fs_zero(fs_dir, 512);
-    let d: *FsDir = fs_db(fs_dir);
-    d.magic[0] = 0x41;
-    d.magic[1] = 0x44;
-    d.magic[2] = 0x49;
-    d.magic[3] = 0x52;
-    let root = fs_alloc();
-    if (root < 0) { return 6; }
-    let r = fs_put_dir(root);
-    if (r != 0) { return r; }
+    let root = fs_ino_store(2, 0, 0);
+    if (root < 0) { return 0 - root; }
     s.root = root as u32;
-    r = fs_write_super(2);
+    let r = fs_write_super(2);
     if (r != 0) { return r; }
     s.gen = 0;
     r = fs_write_super(3);
     if (r != 0) { return r; }
     s.gen = 1;
     fs_slot = 2;
+    fs_rootsel = root;
     return 0;
 }
 
-fn fs_create(name: *u8) -> i64 {
-    if (fs_name_ok(name, 15) == 0) { return 11; }
+// Prepara una escritura en `path`: monta, recorre y exige un último
+// componente. 0 o un código.
+fn fs_prep(path: *u8) -> i64 {
     let r = fs_open();
     if (r != 0) { return r; }
-    if (fs_find(name) >= 0) { return 11; }
-    if (fs_add(name) < 0) { return 6; }
-    return fs_publish(0);
+    r = fs_walk(path);
+    if (r != 0) { return r; }
+    if (fs_haveleaf == 0) { return 11; }
+    return 0;
 }
 
-fn fs_write(name: *u8, src: *u8, len: i64) -> i64 {
-    if (fs_name_ok(name, 15) == 0) { return 11; }
-    if (len < 0 || len > 4096) { return 9; }
-    let r = fs_open();
+fn fs_create(path: *u8) -> i64 {
+    let r = fs_prep(path);
     if (r != 0) { return r; }
-    let idx = fs_find(name);
-    if (idx < 0) {
-        idx = fs_add(name);
-        if (idx < 0) { return 6; }
+    if (fs_dt_find(fs_leaf) >= 0) { return 11; }
+    if (fs_dn >= 64) { return 6; }
+    let ino = fs_file_store(fs_buf, 0);
+    if (ino < 0) { return 0 - ino; }
+    fs_dt_add(fs_leaf, 1, ino, 0);
+    return fs_publish();
+}
+
+fn fs_mkdir(path: *u8) -> i64 {
+    let r = fs_prep(path);
+    if (r != 0) { return r; }
+    if (fs_dt_find(fs_leaf) >= 0) { return 11; }
+    if (fs_dn >= 64) { return 6; }
+    let ino = fs_ino_store(2, 0, 0);
+    if (ino < 0) { return 0 - ino; }
+    fs_dt_add(fs_leaf, 2, ino, 0);
+    return fs_publish();
+}
+
+fn fs_write(path: *u8, src: *u8, len: i64) -> i64 {
+    if (len < 0 || len > 73728) { return 9; }
+    let r = fs_prep(path);
+    if (r != 0) { return r; }
+    let idx = fs_dt_find(fs_leaf);
+    if (idx < 0 && fs_dn >= 64) { return 6; }
+    if (idx >= 0) {
+        let e0: *FsDe = fs_de(fs_dt, idx);
+        if (e0.kind != 1) { return 13; }
     }
-    let e: *FsEnt = fs_ent(fs_dir, idx);
-    let oldn = e.nblocks;
-    let k = 0;
-    while (k < oldn && k < 8) {
-        fs_oldb[k] = e.blocks[k];
-        k = k + 1;
+    let ino = fs_file_store(src, len);
+    if (ino < 0) { return 0 - ino; }
+    if (idx >= 0) {
+        let e: *FsDe = fs_de(fs_dt, idx);
+        e.ino = ino as u32;
+        e.size = len as u32;
+    } else {
+        fs_dt_add(fs_leaf, 1, ino, len);
     }
-    let need = 0;
-    if (len > 0) { need = (len + 511) / 512; }
-    k = 0;
-    while (k < need) {
-        let b = fs_alloc();
-        if (b < 0) { return 6; }
-        fs_newb[k] = b;
-        fs_zero(blk_data, 512);
-        let base = k * 512;
-        let ncopy = len - base;
-        if (ncopy > 512) { ncopy = 512; }
-        let j = 0;
-        while (j < ncopy) {
-            blk_data[j] = src[base + j];
-            j = j + 1;
-        }
-        r = blk_write(b);
+    return fs_publish();
+}
+
+// 1 si `path` es un directorio ("/" lo es).
+fn fs_isdir(path: *u8) -> i64 {
+    let r = fs_open();
+    if (r != 0) { return 0; }
+    r = fs_walk(path);
+    if (r != 0) { return 0; }
+    if (fs_haveleaf == 0) { return 1; }
+    let idx = fs_dt_find(fs_leaf);
+    if (idx < 0) { return 0; }
+    let e: *FsDe = fs_de(fs_dt, idx);
+    if (e.kind == 2) { return 1; }
+    return 0;
+}
+
+// mkdir que acepta un directorio que ya existe.
+fn fs_ensure_dir(path: *u8) -> i64 {
+    if (fs_isdir(path) != 0) { return 0; }
+    return fs_mkdir(path);
+}
+
+// Saca un archivo o un directorio vacío. Los bloques que sigue un
+// snapshot no se liberan (fs_gc los cuenta).
+fn fs_remove(path: *u8) -> i64 {
+    let r = fs_prep(path);
+    if (r != 0) { return r; }
+    let idx = fs_dt_find(fs_leaf);
+    if (idx < 0) { return 7; }
+    let e: *FsDe = fs_de(fs_dt, idx);
+    if (e.kind == 2) {
+        r = fs_ino_load(e.ino);
         if (r != 0) { return r; }
-        k = k + 1;
+        let h: *FsIno = fs_ip(fs_ib);
+        if (h.size != 0) { return 14; }
     }
-    e.size = len as u32;
-    e.nblocks = need as u32;
-    k = 0;
-    while (k < 8) {
-        let v = 0;
-        if (k < need) { v = fs_newb[k]; }
-        e.blocks[k] = v;
-        k = k + 1;
-    }
-    return fs_publish(oldn);
+    fs_dt_del(idx);
+    return fs_publish();
 }
 
-fn fs_read_dir(name: *u8, buf: *u8, max: i64) -> i64 {
-    let idx = fs_find(name);
-    if (idx < 0) { return 0 - 7; }
-    let e: *FsEnt = fs_ent(fs_dir, idx);
-    let size = e.size;
-    let nb = e.nblocks;
+// ---- lectura ----
+
+// Bytes del archivo `ino` a buf (hasta max), o un código negativo.
+fn fs_read_ino(ino: i64, buf: *u8, max: i64) -> i64 {
+    let r = fs_ino_load(ino);
+    if (r != 0) { return 0 - r; }
+    let h: *FsIno = fs_ip(fs_ib);
+    if (h.kind != 1) { return 0 - 13; }
+    let size = h.size;
+    let nb = h.nblocks;
+    r = fs_ino_blocks();
+    if (r != 0) { return 0 - r; }
     let want = size;
     if (want > max) { want = max; }
     let filled = 0;
     let k = 0;
     while (k < nb && filled < want) {
-        let b = e.blocks[k];
-        let r = blk_read(b);
+        let b = fs_bl[k];
+        if (fs_range(b) == 0) { return 0 - 8; }
+        r = blk_read(b);
         if (r != 0) { return 0 - r; }
         let j = 0;
         while (j < 512 && filled < want) {
@@ -531,10 +923,21 @@ fn fs_read_dir(name: *u8, buf: *u8, max: i64) -> i64 {
     return filled;
 }
 
-fn fs_read(name: *u8, buf: *u8, max: i64) -> i64 {
+// Lee `path` desde la raíz en fs_rootsel.
+fn fs_read_from(path: *u8, buf: *u8, max: i64) -> i64 {
+    let r = fs_walk(path);
+    if (r != 0) { return 0 - r; }
+    if (fs_haveleaf == 0) { return 0 - 13; }
+    let idx = fs_dt_find(fs_leaf);
+    if (idx < 0) { return 0 - 7; }
+    let e: *FsDe = fs_de(fs_dt, idx);
+    return fs_read_ino(e.ino, buf, max);
+}
+
+fn fs_read(path: *u8, buf: *u8, max: i64) -> i64 {
     let r = fs_open();
     if (r != 0) { return 0 - r; }
-    return fs_read_dir(name, buf, max);
+    return fs_read_from(path, buf, max);
 }
 
 fn fs_snap_find(name: *u8) -> i64 {
@@ -549,32 +952,71 @@ fn fs_snap_find(name: *u8) -> i64 {
     return 0 - 1;
 }
 
-fn fs_read_snap(snap: *u8, name: *u8, buf: *u8, max: i64) -> i64 {
+fn fs_read_snap(snap: *u8, path: *u8, buf: *u8, max: i64) -> i64 {
     let r = fs_reload();
     if (r != 0) { return 0 - r; }
     let i = fs_snap_find(snap);
     if (i < 0) { return 0 - 7; }
     let shot: *FsSnap = fs_snap(fs_super, i);
-    r = fs_load_dir(shot.root);
-    if (r != 0) { return 0 - r; }
-    return fs_read_dir(name, buf, max);
+    fs_rootsel = shot.root;
+    return fs_read_from(path, buf, max);
 }
 
-fn fs_list() -> i64 {
+// Imprime las entradas del directorio `path` ("" o "/" es la raíz):
+// `fs file <nombre>` o `fs dir <nombre>`, en el orden en que se crearon.
+fn fs_list(path: *u8) -> i64 {
     let r = fs_open();
     if (r != 0) { return r; }
-    let d: *FsDir = fs_db(fs_dir);
-    let n = d.count;
+    r = fs_walk(path);
+    if (r != 0) { return r; }
+    if (fs_haveleaf != 0) {
+        let idx = fs_dt_find(fs_leaf);
+        if (idx < 0) { return 7; }
+        let e0: *FsDe = fs_de(fs_dt, idx);
+        if (e0.kind != 2) { return 13; }
+        r = fs_dt_load(e0.ino);
+        if (r != 0) { return r; }
+    }
     let i = 0;
-    while (i < n && i < 7) {
-        puts("fs file ");
-        let e: *FsEnt = fs_ent(fs_dir, i);
+    while (i < fs_dn) {
+        let e: *FsDe = fs_de(fs_dt, i);
+        if (e.kind == 2) { puts("fs dir "); }
+        else { puts("fs file "); }
         fs_puts_name(e as *u8);
         putc('\n');
         i = i + 1;
     }
     return 0;
 }
+
+// `fs stat ruta`: tipo, tamaño, inodo y primer bloque de datos.
+fn fs_stat(path: *u8) -> i64 {
+    let r = fs_prep(path);
+    if (r != 0) { return r; }
+    let idx = fs_dt_find(fs_leaf);
+    if (idx < 0) { return 7; }
+    let e: *FsDe = fs_de(fs_dt, idx);
+    let ino = e.ino;
+    r = fs_ino_load(ino);
+    if (r != 0) { return r; }
+    let h: *FsIno = fs_ip(fs_ib);
+    let first = 0;
+    if (h.nblocks > 0) { first = h.direct[0]; }
+    puts("fs stat ");
+    if (h.kind == 2) { puts("dir"); } else { puts("file"); }
+    puts(" size=");
+    put_int(h.size);
+    puts(" blocks=");
+    put_int(h.nblocks);
+    puts(" ino=");
+    put_int(ino);
+    puts(" first=");
+    put_int(first);
+    putc('\n');
+    return 0;
+}
+
+// ---- snapshots ----
 
 fn fs_snapshot(name: *u8) -> i64 {
     if (fs_name_ok(name, 11) == 0) { return 11; }
@@ -593,26 +1035,6 @@ fn fs_snapshot(name: *u8) -> i64 {
     return fs_commit();
 }
 
-fn fs_drop_old() -> i64 {
-    let s: *FsSuper = fs_sb(fs_super);
-    let oldroot = s.root;
-    fs_release(oldroot);
-    let d: *FsDir = fs_db(fs_scratch);
-    let n = d.count;
-    let i = 0;
-    while (i < n && i < 7) {
-        let e: *FsEnt = fs_ent(fs_scratch, i);
-        let nb = e.nblocks;
-        let k = 0;
-        while (k < nb && k < 8) {
-            fs_release(e.blocks[k]);
-            k = k + 1;
-        }
-        i = i + 1;
-    }
-    return 0;
-}
-
 fn fs_rollback(name: *u8) -> i64 {
     let r = fs_open();
     if (r != 0) { return r; }
@@ -622,71 +1044,110 @@ fn fs_rollback(name: *u8) -> i64 {
     let snap: *FsSnap = fs_snap(fs_super, i);
     let newroot = snap.root;
     if (newroot == s.root) { return 0; }
-    fs_copy(fs_scratch, fs_dir, 512);
-    r = fs_load_dir(newroot);
-    if (r != 0) { return r; }
-    fs_drop_old();
     s.root = newroot as u32;
+    fs_gc();
     return fs_commit();
 }
 
-fn fs_slide(d: i64, s: i64) -> i64 {
-    let i = 0;
-    let dd = fs_dir as i64 + offsetof(FsDir, slots) + d * sizeof(FsSlot);
-    let ss = fs_dir as i64 + offsetof(FsDir, slots) + s * sizeof(FsSlot);
-    let dst: *u8 = dd as *u8;
-    let src: *u8 = ss as *u8;
-    while (i < sizeof(FsSlot)) {
-        dst[i] = src[i];
-        i = i + 1;
-    }
-    return 0;
-}
-
-// Saca la entrada del directorio vivo. Los bloques que sigue un
-// snapshot no se marcan libres. El hueco sigue siendo FsSlot (64):
-// la parte útil es FsEnt.
-fn fs_remove(name: *u8) -> i64 {
-    if (fs_name_ok(name, 15) == 0) { return 11; }
-    let r = fs_open();
-    if (r != 0) { return r; }
-    let idx = fs_find(name);
-    if (idx < 0) { return 7; }
-    let e: *FsEnt = fs_ent(fs_dir, idx);
-    let oldn = e.nblocks;
-    let k = 0;
-    while (k < oldn && k < 8) {
-        fs_oldb[k] = e.blocks[k];
-        k = k + 1;
-    }
-    let d: *FsDir = fs_db(fs_dir);
-    let n = d.count;
-    let j = idx;
-    while (j < n - 1) {
-        fs_slide(j, j + 1);
-        j = j + 1;
-    }
-    let last = n - 1;
-    fs_zero_at(fs_dir, offsetof(FsDir, slots) + last * sizeof(FsSlot), sizeof(FsSlot));
-    d.count = last as u32;
-    return fs_publish(oldn);
-}
-
 // Pisa un byte del primer bloque de datos y deja el CRC viejo.
-fn fs_corrupt(name: *u8) -> i64 {
-    let r = fs_open();
+fn fs_corrupt(path: *u8) -> i64 {
+    let r = fs_prep(path);
     if (r != 0) { return r; }
-    let idx = fs_find(name);
+    let idx = fs_dt_find(fs_leaf);
     if (idx < 0) { return 7; }
-    let e: *FsEnt = fs_ent(fs_dir, idx);
-    if (e.nblocks < 1) { return 7; }
-    let b = e.blocks[0];
-    if (b < 4) { return 8; }
+    let e: *FsDe = fs_de(fs_dt, idx);
+    r = fs_ino_load(e.ino);
+    if (r != 0) { return r; }
+    let h: *FsIno = fs_ip(fs_ib);
+    if (h.kind != 1 || h.nblocks < 1) { return 7; }
+    let b = h.direct[0];
+    if (fs_range(b) == 0) { return 8; }
     r = blk_read(b);
     if (r != 0) { return r; }
     blk_data[0] = (blk_data[0] ^ 0xFF) & 255;
     return ata_write(b * 2, blk_data);
 }
+
+// ---- scrub ----
+
+// Recorre todo lo alcanzable desde la raíz viva y desde cada snapshot,
+// verifica el CRC de cada bloque (los dos superbloques también) y cruza
+// el resultado con el bitmap.
+//   fs scrub bad bloque=N   CRC, estructura o puntero malo; o un bloque
+//                           usado que el bitmap da por libre
+//   fs scrub leak N         bloque marcado usado que nadie apunta
+//   fs scrub ok bloques=N   sin problemas (N = bloques distintos verificados)
+//   fs scrub fail problemas=K bloques=N   al menos un problema
+fn fs_scrub() -> i64 {
+    let r = fs_reload();
+    if (r != 0) { return r; }
+    let bad = 0;
+    let sb2 = blk_read(2);
+    if (sb2 != 0 || fs_magic(blk_data) != 1) { bad = bad + 1; puts("fs scrub bad bloque=2\n"); }
+    let sb3 = blk_read(3);
+    if (sb3 != 0 || fs_magic(blk_data) != 1) { bad = bad + 1; puts("fs scrub bad bloque=3\n"); }
+    bad = bad + fs_reach_run(1);
+    let lim = fs_limit();
+    let leaks = 0;
+    let n = 4;
+    while (n < lim) {
+        if (fs_taken(n) != 0 && fs_rhas(n) == 0) {
+            leaks = leaks + 1;
+            if (leaks <= 16) {
+                puts("fs scrub leak ");
+                put_int(n);
+                putc('\n');
+            }
+        }
+        if (fs_taken(n) == 0 && fs_rhas(n) != 0) {
+            bad = bad + 1;
+            if (bad <= 16) {
+                puts("fs scrub bad bloque=");
+                put_int(n);
+                putc('\n');
+            }
+        }
+        n = n + 1;
+    }
+    let total = bad + leaks;
+    if (total == 0) {
+        puts("fs scrub ok bloques=");
+        put_int(fs_nreach);
+        putc('\n');
+        return 0;
+    }
+    puts("fs scrub fail problemas=");
+    put_int(total);
+    puts(" bloques=");
+    put_int(fs_nreach);
+    putc('\n');
+    return 0;
+}
+
+// Pruebas de scrub: `fs leak` marca un bloque libre sin colgarlo de
+// nada; `fs unmark N` da por libre un bloque que está en uso.
+fn fs_leak() -> i64 {
+    let r = fs_open();
+    if (r != 0) { return r; }
+    let b = fs_alloc();
+    if (b < 0) { return 6; }
+    r = fs_commit();
+    if (r != 0) { return r; }
+    puts("fs leak ");
+    put_int(b);
+    putc('\n');
+    return 0;
+}
+
+fn fs_unmark(n: i64) -> i64 {
+    let r = fs_open();
+    if (r != 0) { return r; }
+    if (fs_range(n) == 0) { return 4; }
+    fs_mark(n, 0);
+    return fs_commit();
+}
+
+// ---- pruebas ----
 
 fn fs_pat(i: i64) -> i64 {
     return (i + 0x5A) & 255;
@@ -715,4 +1176,49 @@ fn fs_blocks_test() -> i64 {
     let r = fs_write("m", fs_buf, 600);
     if (r != 0) { return r; }
     return fs_blocks_check();
+}
+
+// Patrón de los archivos grandes: cambia en cada bloque, así que un
+// bloque cambiado de lugar no pasa inadvertido.
+fn fs_bigpat(i: i64, seed: i64) -> i64 {
+    return (i * 31 + (i / 512) * 7 + 5 + seed * 91) & 255;
+}
+
+// `fs bigw ruta kib [semilla]`: escribe kib KiB (1..72) con el patrón.
+fn fs_big_write(path: *u8, kib: i64, seed: i64) -> i64 {
+    if (kib < 1 || kib > 72) { return 9; }
+    let n = kib * 1024;
+    let i = 0;
+    while (i < n) {
+        fs_big[i] = fs_bigpat(i, seed) as u8;
+        i = i + 1;
+    }
+    let r = fs_write(path, fs_big, n);
+    if (r != 0) { return r; }
+    puts("fs big w size=");
+    put_int(n);
+    puts(" crc=");
+    put_hex(crc32(fs_big, n));
+    putc('\n');
+    return 0;
+}
+
+// `fs bigr ruta [semilla]`: lee el archivo y compara con el patrón.
+fn fs_big_read(path: *u8, seed: i64) -> i64 {
+    fs_zero(fs_big, 73728);
+    let n = fs_read(path, fs_big, 73728);
+    if (n < 0) { return 0 - n; }
+    let ok = 1;
+    let i = 0;
+    while (i < n) {
+        if ((fs_big[i] & 255) != fs_bigpat(i, seed)) { ok = 0; }
+        i = i + 1;
+    }
+    puts("fs big r size=");
+    put_int(n);
+    puts(" crc=");
+    put_hex(crc32(fs_big, n));
+    if (ok != 0) { puts(" ok\n"); }
+    else { puts(" bad\n"); }
+    return 0;
 }
