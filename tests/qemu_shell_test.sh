@@ -742,7 +742,8 @@ printf '%s\n' "$win" | grep -q 'X' && fail "a syscall with rdi=88 printed X (nr 
 # Las creaciones inválidas: siete `zone fail 11`, ninguna zona de más.
 f11=$(printf '%s\n' "$clean" | grep -cx 'zone fail 11')
 [ "$f11" = 7 ] || fail "want 7 'zone fail 11' (bad zone creates), got $f11"
-[ "$(printf '%s\n' "$clean" | grep -c '^zone created ')" = 2 ] || fail "a bad zone create was accepted"
+# Dos zonas válidas (a, b) más la zona t de 1 página creada después: 3.
+[ "$(printf '%s\n' "$clean" | grep -c '^zone created ')" = 3 ] || fail "a bad zone create was accepted"
 f6=$(printf '%s\n' "$clean" | grep -cx 'zone fail 6')
 [ "$f6" = 2 ] || fail "want 2 'zone fail 6' (1-page zone), got $f6"
 printf '%s\n' "$clean" | grep -q '^zone fail' && {
