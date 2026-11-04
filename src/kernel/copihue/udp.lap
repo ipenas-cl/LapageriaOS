@@ -324,6 +324,7 @@ fn udp_rx(p: *u8, ihl: i64, total: i64) -> i64 {
     udp_qsrc[q] = (a << 16) | sport;
     udp_count[s] = udp_count[s] + 1;
     udp_rx_ok = udp_rx_ok + 1;
+    if (tr_en[13] != 0) { trace_hit(13, proc_pid[cur_i], dport, n); }
     // Despierta al dueño si está dormido en recv de este socket.
     let o = udp_owner[s];
     if (o >= 0 && o < 2) {
@@ -436,6 +437,7 @@ fn udp_tx(sport: i64, dip: i64, dport: i64, src: *u8, len: i64) -> i64 {
     net_cr3_out(old);
     if (rc != 0) { return 0 - 5; }
     udp_tx_n = udp_tx_n + 1;
+    if (tr_en[14] != 0) { trace_hit(14, proc_pid[cur_i], dport, len); }
     return 0;
 }
 

@@ -1,11 +1,12 @@
-// Trazas mínimas, al estilo de una sonda estática.
+// Trazas (OB-01), al estilo de una sonda estática.
 //
 // Cada sonda tiene id, nombre, contador e indicador. Apagada, el
-// llamador solo compara el indicador: no entra a trace_hit.
+// llamador solo compara el indicador: no entra a trace_hit. Cada una
+// se prende y se apaga sola.
 //
-// El anillo es fijo, 32 registros (potencia de 2), sin asignación.
-// Cada registro guarda tick, id de sonda, proceso y dos argumentos.
-// Al llenarse pisa el más viejo y sube `tr_lost`.
+// El anillo es fijo, 64 registros (potencia de 2), sin asignación.
+// Cada registro guarda tick, id de sonda, proceso, zona y dos
+// argumentos. Al llenarse pisa el más viejo y sube `tr_lost`.
 //
 // Dentro de una interrupción no se puede hacer sti() a ciegas: el
 // syscall llega con IF en 0 (SFMASK) y el PIT también. trace_save_if
@@ -14,24 +15,30 @@
 // medio del registro) deja los flags en una pila corta y, si el
 // anillo ya está tomado, cuenta el evento como perdido y sale. No
 // hay espera: no se cuelga. El registro es TrEv; trace_layout exige
-// 40 bytes y los campos en 0, 8, 16, 24 y 32.
+// 48 bytes y los campos en 0, 8, 16, 24, 32 y 40.
+//
+// Desde anillo 3: syscall 23 (trace_ctl) y 24 (trace_read). Ver
+// docs/trace.md. El programa `traza` (src/user/traza.lap) las usa.
 
-// 0 sys-enter  1 sys-exit  2 switch  3 pf       4 pit
-// 5 pg-alloc   6 pg-free   7 blk-read 8 blk-write
-// 9 net-rx    10 net-tx
+//  0 sys-enter   1 sys-exit    2 switch      3 pf          4 pit
+//  5 pg-alloc    6 pg-free     7 blk-read    8 blk-write   9 net-rx
+// 10 net-tx     11 irq-kbd    12 irq-net    13 udp-rx     14 udp-tx
+// 15 tcp-state  16 tcp-retx   17 tcp-rst    18 zone-switch 19 zone-deny
 struct TrEv {
     time: i64,
     id: i64,
     pid: i64,
+    zone: i64,
     a0: i64,
     a1: i64
 }
 
-let tr_ring: [TrEv; 32];
-let tr_en: [i64; 11];
-let tr_count: [i64; 11];
-let tr_show: [i64; 160];
+let tr_ring: [TrEv; 64];
+let tr_en: [i64; 20];
+let tr_count: [i64; 20];
+let tr_show: [i64; 384];
 let tr_word: [u8; 16];
+let tr_req: [u8; 8];
 let tr_fl_stk: [i64; 4];
 let volatile tr_fl_tmp: i64 = 0;
 let volatile tr_fl_sp: i64 = 0;
@@ -87,31 +94,41 @@ fn trace_unlock() -> i64 {
 }
 
 fn trace_layout() -> i64 {
-    if (sizeof(TrEv) != 40) { return 0; }
+    if (sizeof(TrEv) != 48) { return 0; }
     if (offsetof(TrEv, time) != 0) { return 0; }
     if (offsetof(TrEv, id) != 8) { return 0; }
     if (offsetof(TrEv, pid) != 16) { return 0; }
-    if (offsetof(TrEv, a0) != 24) { return 0; }
-    if (offsetof(TrEv, a1) != 32) { return 0; }
+    if (offsetof(TrEv, zone) != 24) { return 0; }
+    if (offsetof(TrEv, a0) != 32) { return 0; }
+    if (offsetof(TrEv, a1) != 40) { return 0; }
     return 1;
 }
 
-fn trace_hit(id: i64, pid: i64, a0: i64, a1: i64) -> i64 {
-    if (id < 0 || id >= 11) { return 0; }
+// La zona se pasa explícita (switch_to: la del proceso que sale).
+fn trace_hit_z(id: i64, pid: i64, zone: i64, a0: i64, a1: i64) -> i64 {
+    if (id < 0 || id >= 20) { return 0; }
     if (tr_en[id] == 0) { return 0; }
     if (trace_lock() == 0) { return 0; }
     tr_count[id] = tr_count[id] + 1;
-    let slot = tr_head & 31;
+    let slot = tr_head & 63;
     tr_ring[slot].time = ticks;
     tr_ring[slot].id = id;
     tr_ring[slot].pid = pid;
+    tr_ring[slot].zone = zone;
     tr_ring[slot].a0 = a0;
     tr_ring[slot].a1 = a1;
-    tr_head = (slot + 1) & 31;
-    if (tr_used < 32) { tr_used = tr_used + 1; }
+    tr_head = (slot + 1) & 63;
+    if (tr_used < 64) { tr_used = tr_used + 1; }
     else { tr_lost = tr_lost + 1; }
     trace_unlock();
     return 0;
+}
+
+// Zona y pid son los del proceso que corre; 0 y 0 si el planificador está apagado
+// (shell, o IRQ entre dos `exec`).
+fn trace_hit(id: i64, pid: i64, a0: i64, a1: i64) -> i64 {
+    if (sched_on == 0) { return trace_hit_z(id, 0, 0, a0, a1); }
+    return trace_hit_z(id, pid, proc_zone[cur_i], a0, a1);
 }
 
 fn tr_name(id: i64) -> *u8 {
@@ -126,25 +143,43 @@ fn tr_name(id: i64) -> *u8 {
     if (id == 8) { return "blk-write"; }
     if (id == 9) { return "net-rx"; }
     if (id == 10) { return "net-tx"; }
+    if (id == 11) { return "irq-kbd"; }
+    if (id == 12) { return "irq-net"; }
+    if (id == 13) { return "udp-rx"; }
+    if (id == 14) { return "udp-tx"; }
+    if (id == 15) { return "tcp-state"; }
+    if (id == 16) { return "tcp-retx"; }
+    if (id == 17) { return "tcp-rst"; }
+    if (id == 18) { return "zone-switch"; }
+    if (id == 19) { return "zone-deny"; }
     return "?";
 }
 
-fn tr_is(s: *u8) -> i64 {
+// tr_word[off..] es igual a s.
+fn tr_is_at(s: *u8, off: i64) -> i64 {
     let i = 0;
     while (s[i] != 0) {
-        if (tr_word[i] != s[i]) { return 0; }
+        if (tr_word[off + i] != s[i]) { return 0; }
         i = i + 1;
     }
-    return tr_word[i] == 0;
+    return tr_word[off + i] == 0;
 }
 
-fn tr_find() -> i64 {
+fn tr_is(s: *u8) -> i64 {
+    return tr_is_at(s, 0);
+}
+
+fn tr_find_at(off: i64) -> i64 {
     let id = 0;
-    while (id < 11) {
-        if (tr_is(tr_name(id)) != 0) { return id; }
+    while (id < 20) {
+        if (tr_is_at(tr_name(id), off) != 0) { return id; }
         id = id + 1;
     }
     return 0 - 1;
+}
+
+fn tr_find() -> i64 {
+    return tr_find_at(0);
 }
 
 fn tr_word_at(pos: i64) -> i64 {
@@ -160,20 +195,26 @@ fn tr_word_at(pos: i64) -> i64 {
     return pos;
 }
 
-fn trace_clear() -> i64 {
-    if (trace_lock() == 0) {
-        puts("trace busy\n");
-        return 0;
-    }
+// Vacía el anillo, los perdidos y los contadores. 0 si lo hizo.
+fn trace_reset() -> i64 {
+    if (trace_lock() == 0) { return 0 - 16; }
     tr_head = 0;
     tr_used = 0;
     tr_lost = 0;
     let i = 0;
-    while (i < 11) {
+    while (i < 20) {
         tr_count[i] = 0;
         i = i + 1;
     }
     trace_unlock();
+    return 0;
+}
+
+fn trace_clear() -> i64 {
+    if (trace_reset() != 0) {
+        puts("trace busy\n");
+        return 0;
+    }
     puts("trace clear\n");
     return 0;
 }
@@ -185,19 +226,19 @@ fn trace_ls() -> i64 {
     }
     let lost = tr_lost;
     let i = 0;
-    while (i < 11) {
+    while (i < 20) {
         tr_show[i] = tr_count[i];
-        tr_show[i + 11] = tr_en[i];
+        tr_show[i + 20] = tr_en[i];
         i = i + 1;
     }
     trace_unlock();
     i = 0;
-    while (i < 11) {
+    while (i < 20) {
         put_int(i);
         putc(32);
         puts(tr_name(i));
         putc(32);
-        if (tr_show[i + 11] != 0) { puts("on"); } else { puts("off"); }
+        if (tr_show[i + 20] != 0) { puts("on"); } else { puts("off"); }
         putc(32);
         put_int(tr_show[i]);
         putc(10);
@@ -216,7 +257,7 @@ fn trace_count() -> i64 {
     }
     let lost = tr_lost;
     let i = 0;
-    while (i < 11) {
+    while (i < 20) {
         tr_show[i] = tr_count[i];
         i = i + 1;
     }
@@ -225,7 +266,7 @@ fn trace_count() -> i64 {
     put_int(lost);
     putc(10);
     i = 0;
-    while (i < 11) {
+    while (i < 20) {
         puts("probe ");
         puts(tr_name(i));
         putc(32);
@@ -244,24 +285,25 @@ fn trace_dump(n: i64) -> i64 {
     let used = tr_used;
     let lost = tr_lost;
     if (used < 0) { used = 0; }
-    if (used > 32) { used = 32; }
+    if (used > 64) { used = 64; }
     if (n <= 0 || n > used) { n = used; }
     let idx = 0;
-    if (used == 32) { idx = tr_head & 31; }
+    if (used == 64) { idx = tr_head & 63; }
     let skip = used - n;
     let s = 0;
     while (s < skip) {
-        idx = (idx + 1) & 31;
+        idx = (idx + 1) & 63;
         s = s + 1;
     }
     let k = 0;
     while (k < n) {
-        tr_show[k * 5] = tr_ring[idx].time;
-        tr_show[k * 5 + 1] = tr_ring[idx].id;
-        tr_show[k * 5 + 2] = tr_ring[idx].pid;
-        tr_show[k * 5 + 3] = tr_ring[idx].a0;
-        tr_show[k * 5 + 4] = tr_ring[idx].a1;
-        idx = (idx + 1) & 31;
+        tr_show[k * 6] = tr_ring[idx].time;
+        tr_show[k * 6 + 1] = tr_ring[idx].id;
+        tr_show[k * 6 + 2] = tr_ring[idx].pid;
+        tr_show[k * 6 + 3] = tr_ring[idx].a0;
+        tr_show[k * 6 + 4] = tr_ring[idx].a1;
+        tr_show[k * 6 + 5] = tr_ring[idx].zone;
+        idx = (idx + 1) & 63;
         k = k + 1;
     }
     trace_unlock();
@@ -269,15 +311,17 @@ fn trace_dump(n: i64) -> i64 {
     k = 0;
     while (k < n) {
         puts("t ");
-        put_int(tr_show[k * 5]);
+        put_int(tr_show[k * 6]);
         putc(32);
-        puts(tr_name(tr_show[k * 5 + 1]));
+        puts(tr_name(tr_show[k * 6 + 1]));
         puts(" pid ");
-        put_int(tr_show[k * 5 + 2]);
+        put_int(tr_show[k * 6 + 2]);
         puts(" a ");
-        put_int(tr_show[k * 5 + 3]);
+        put_int(tr_show[k * 6 + 3]);
         puts(" b ");
-        put_int(tr_show[k * 5 + 4]);
+        put_int(tr_show[k * 6 + 4]);
+        puts(" z ");
+        put_int(tr_show[k * 6 + 5]);
         putc(10);
         k = k + 1;
     }
@@ -301,6 +345,124 @@ fn trace_set(on: i64) -> i64 {
     puts(tr_name(id));
     putc(10);
     return 0;
+}
+
+// ---- Syscalls 23 y 24 (anillo 3) ----------------------------------
+
+// 23 trace_ctl(op, a, b)
+//   0 set    a = sonda (255 = todas), b = 0/1       -> 0
+//   1 get    a = sonda                              -> (contador << 1) | encendida
+//   2 clear                                         -> 0
+//   3 info                                          -> usados | (perdidos << 8)
+//   4 nprobes                                       -> 20
+//   5 name   a = sonda, b = puntero de escritura de 16 bytes -> largo
+// Errores: -22 argumento, -14 puntero, -16 anillo tomado.
+fn trace_sys_ctl(op: i64, a: i64, b: i64) -> i64 {
+    if (op == 0) {
+        if (a == 255) {
+            let i = 0;
+            while (i < 20) {
+                if (b != 0) { tr_en[i] = 1; } else { tr_en[i] = 0; }
+                i = i + 1;
+            }
+            return 0;
+        }
+        if (a < 0 || a >= 20) { return 0 - 22; }
+        if (b != 0) { tr_en[a] = 1; } else { tr_en[a] = 0; }
+        return 0;
+    }
+    if (op == 1) {
+        if (a < 0 || a >= 20) { return 0 - 22; }
+        return (tr_count[a] << 1) | tr_en[a];
+    }
+    if (op == 2) { return trace_reset(); }
+    if (op == 3) {
+        if (trace_lock() == 0) { return 0 - 16; }
+        let r = tr_used | (tr_lost << 8);
+        trace_unlock();
+        return r;
+    }
+    if (op == 4) { return 20; }
+    if (op == 5) {
+        if (a < 0 || a >= 20) { return 0 - 22; }
+        if (uptr_range_ok(b, 16, 1) == 0) { return 0 - 14; }
+        let s: *u8 = tr_name(a);
+        let d: *u8 = b as *u8;
+        let n = 0;
+        while (s[n] != 0 && n < 15) {
+            d[n] = s[n];
+            n = n + 1;
+        }
+        d[n] = 0;
+        return n;
+    }
+    return 0 - 22;
+}
+
+// El registro slot pasa el filtro sel: bits 0..7 sonda + 1, bits 8..15
+// zona + 1, bits 16..39 pid + 1. Un campo en 0 no filtra.
+fn tr_match(slot: i64, sel: i64) -> i64 {
+    let e = sel & 255;
+    if (e != 0 && tr_ring[slot].id != e - 1) { return 0; }
+    let z = (sel >> 8) & 255;
+    if (z != 0 && tr_ring[slot].zone != z - 1) { return 0; }
+    let p = (sel >> 16) & 0xFFFFFF;
+    if (p != 0 && tr_ring[slot].pid != p - 1) { return 0; }
+    return 1;
+}
+
+// 24 trace_read(buf, max, sel): copia a buf hasta max (1..32) registros
+// que pasan el filtro sel, los más nuevos, del más viejo al más nuevo.
+// Cada registro son 6 i64: tick, sonda, pid, zona, a, b (48 bytes).
+// Devuelve cuántos. buf tiene que caer en las páginas de escritura del
+// proceso (como UDP y TCP). -22 argumento, -14 puntero, -16 tomado.
+fn trace_sys_read(buf: i64, max: i64, sel: i64) -> i64 {
+    if (max < 1 || max > 32) { return 0 - 22; }
+    if (sel < 0) { return 0 - 22; }
+    if (uptr_range_ok(buf, max * 48, 1) == 0) { return 0 - 14; }
+    if (trace_lock() == 0) { return 0 - 16; }
+    let used = tr_used;
+    if (used > 64) { used = 64; }
+    let first = 0;
+    if (used == 64) { first = tr_head & 63; }
+    let m = 0;
+    let i = 0;
+    let k = first;
+    while (i < used) {
+        m = m + tr_match(k, sel);
+        k = (k + 1) & 63;
+        i = i + 1;
+    }
+    let skip = m - max;
+    if (skip < 0) { skip = 0; }
+    let out = 0;
+    let seen = 0;
+    i = 0;
+    k = first;
+    while (i < used) {
+        if (tr_match(k, sel) != 0) {
+            if (seen >= skip) {
+                tr_show[out * 6] = tr_ring[k].time;
+                tr_show[out * 6 + 1] = tr_ring[k].id;
+                tr_show[out * 6 + 2] = tr_ring[k].pid;
+                tr_show[out * 6 + 3] = tr_ring[k].zone;
+                tr_show[out * 6 + 4] = tr_ring[k].a0;
+                tr_show[out * 6 + 5] = tr_ring[k].a1;
+                out = out + 1;
+            }
+            seen = seen + 1;
+        }
+        k = (k + 1) & 63;
+        i = i + 1;
+    }
+    trace_unlock();
+    let dst: *i64 = buf as *i64;
+    let j = 0;
+    while (j < out * 6) {
+        dst[j] = tr_show[j];
+        j = j + 1;
+    }
+    return out;
 }
 
 fn cmd_trace() -> i64 {

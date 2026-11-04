@@ -247,17 +247,21 @@ fn zone_gate(nr: i64) -> i64 {
     if (sched_on == 0) { return 0; }
     let z = proc_zone[cur_i];
     if (z <= 0) { return 0; }
+    // Sonda 19: a = número de syscall, b = motivo (1 máscara, 2 escape de zona).
     if (nr == 9) {
         zone_fuga[z] = zone_fuga[z] + 1;
+        if (tr_en[19] != 0) { trace_hit(19, proc_pid[cur_i], nr, 2); }
         return 0 - 2;
     }
     if (nr <= 0 || nr >= 62) {
         zone_niega[z] = zone_niega[z] + 1;
+        if (tr_en[19] != 0) { trace_hit(19, proc_pid[cur_i], nr, 1); }
         return 0 - 1;
     }
     let bit = 1 << nr;
     if ((zone_mask[z] & bit) == 0) {
         zone_niega[z] = zone_niega[z] + 1;
+        if (tr_en[19] != 0) { trace_hit(19, proc_pid[cur_i], nr, 1); }
         return 0 - 1;
     }
     return 0;
@@ -334,7 +338,7 @@ fn zone_join(z: i64) -> i64 {
     return 0;
 }
 
-fn zone_resolve(z: i64) -> i64 {
+fn zone_resolve_in(z: i64) -> i64 {
     if (z <= 0) {
         let i = 0;
         while (i < 16) {
@@ -351,6 +355,13 @@ fn zone_resolve(z: i64) -> i64 {
     if (zone_join(z) != 0) { return 0 - 12; }
     if (zone_has_prefix(z, zone_path) == 0) { return 0 - 12; }
     return 0;
+}
+
+// Negación de ruta: la sonda 19 lleva el código 3 (ruta) y el errno.
+fn zone_resolve(z: i64) -> i64 {
+    let r = zone_resolve_in(z);
+    if (r != 0 && tr_en[19] != 0) { trace_hit(19, proc_pid[cur_i], 3, 0 - r); }
+    return r;
 }
 
 fn zone_read_data(n: i64) -> i64 {
@@ -438,7 +449,9 @@ fn zone_sys_set(target: i64) -> i64 {
     if (proc_zone[cur_i] != 0) { return 0 - 2; }
     if (target < 0 || target >= 8) { return 0 - 11; }
     if (target != 0 && zone_live[target] == 0) { return 0 - 11; }
+    let old = proc_zone[cur_i];
     proc_zone[cur_i] = target;
+    if (tr_en[18] != 0) { trace_hit(18, proc_pid[cur_i], old, target); }
     return 0;
 }
 
