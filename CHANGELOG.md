@@ -8,6 +8,47 @@ para ese commit es `legacy-tempo`.
 
 ## 0.8
 
+Copihue sube de v0.42.4 a v0.42.5 (commit
+`ea898c6c2be6f1a1686cf06c5050c31e726ef177`). Se usa lo nuevo donde había
+contorno: `irq_save()` / `irq_restore(f)` en las secciones críticas con
+`cli()` / `sti()` (`ata`, `net`, `tcp`, `nx`, `hh`, `usermode`, `sched`,
+`exec`, `zone`) y en `trace_save_if` / `trace_restore_if`;
+`cx = n * 256;` en `stage2.lap`; `0 - *(… as *u8)` directo en `ataque.lap`;
+`div_raw` / `rem_raw` en dos ataques nuevos, `r` y `m` (#DE por divisor cero;
+`z` sigue con `INT64_MIN / -1`). Detalle en `docs/PEDIDOS_COPIHUE.md`.
+
+El ISN de TCP (y el puerto efímero) se mezcla con `rdtsc()` en lugar del
+contador del PIT y el segundero del CMOS; la MAC y los ticks siguen. No es
+criptográfico.
+
+OB-02, etapa 7, aislamiento entre zonas: un proceso de una zona no ve, no
+señala ni traza a los de otra. Syscalls nuevas 25 `proc_stat` y 26
+`proc_kill` (`zone sched` las da junto con `yield`); `trace_read` (24) fuera de
+la zona global filtra siempre por la propia zona y niega pedir otra (`-1`);
+`trace_ctl` (23) solo contesta las operaciones 4 y 5 (`zone trace` da 23 y
+24). Un pid de otra zona da `-3`, igual que uno que no existe, y deja
+`zone-deny` con `b` = 4. Prueba `tests/qemu_iso_test.sh` (`make
+qemu-iso-test`, en `make qemu-test`): 14 intentos negados, los permitidos,
+la misma zona y la global. `par` crece (3265 bytes): el kernel pasa de 722 a
+770 sectores y `tests/stage2_big_test.sh` compara desde `0x4A0000` (antes
+`0x490000`; la `.bss` llega a `0x487745`).
+
+OB-02, cambio de zona en `switch_to`: `zone sched` (da `yield` a una zona),
+`zone par` y `zone pair za zb programa` (dos copias del programa `par` a la
+vez, una por zona), con los contadores `zsw_n` / `zsw_chg` y
+`zone_note_switch`, que también registra la salida de un proceso con el otro
+vivo. Prueba determinista `tests/qemu_zswitch_test.sh` (`make
+qemu-zswitch-test`, en `make qemu-test`): 12 cesiones, 13 cambios de
+contexto, todos cambian la zona y cada uno deja su `zone-switch`; misma zona
+no deja ninguno; global contra zona sí.
+
+Trazas con `rdtsc()`: cada registro del anillo guarda además la marca de
+ciclos (`TrEv` pasa de 48 a 56 bytes). `trace dump` y `traza dump` agregan
+` c <tsc>` al final de cada línea y la syscall 24 devuelve 7 `i64` por
+registro (hasta 32, 1792 bytes). `traza.lap` compacta `do_ptr` con dos
+ayudas (`c23`, `c24`) para caber en 4080 bytes (3926). Prueba en
+`tests/qemu_trace_test.sh`: la marca es positiva y crece en 32 `pit` seguidos.
+
 Copihue sube de v0.34.1 a v0.42.4 (commit
 `795252ce322f12d1b14274f5b9bec7cb3a6ac2c9`). Sin cambios de código salvo
 `src/user/ataque.lap`: los ataques 3 y 4 ya no necesitan la dirección en un

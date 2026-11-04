@@ -881,6 +881,8 @@ exc_run() {
 }
 exc_run u 6 0x00000000 '0f0b'
 exc_run z 0 0x00000000 '(48)?f7'
+exc_run r 0 0x00000000 '(48)?f7'
+exc_run m 0 0x00000000 '(48)?f7'
 exc_run i 13 0x0000001a 'cd03'
 typefs "zone ls"
 zk=$(tr -d '\r' < "$SERIAL" | grep '^zone 4 k pre=zk ' | tail -1)
@@ -963,7 +965,7 @@ cap && /^trace end n / { endline=$0; cnt=n; if (n>0) ev0=ev[0]; cap=0 }
 END {
     if (cnt != 1) bad("overflow dump count " cnt " [" endline "]")
     if (endline !~ /^trace end n 1 lost [1-9][0-9]*$/) bad("overflow dump end: [" endline "]")
-    if (ev0 !~ /^t [0-9]+ pit pid [0-9]+ a [0-9]+ b 0 z [0-9]+$/) bad("overflow event: " ev0)
+    if (ev0 !~ /^t [0-9]+ pit pid [0-9]+ a [0-9]+ b 0 z [0-9]+ c [0-9]+$/) bad("overflow event: " ev0)
 }
 ' || fail "ring not readable after overflow"
 typefs "echo vivo"

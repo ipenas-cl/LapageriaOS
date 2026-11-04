@@ -5,7 +5,7 @@
 # aleatorios hasta 2048 sectores, con la etapa 2 recompilada para pedir
 # 2048. El kernel arranca igual (lo que está después de su .bss no lo
 # toca). Con el monitor de QEMU se vuelca la memoria física
-# 0x490000..0x500000 (la parte alta del archivo, 7 trozos de 64 KiB
+# 0x4A0000..0x500000 (la parte alta del archivo, 6 trozos de 64 KiB
 # después de la copia por INT 15h AH=87h) y se compara con los bytes del
 # archivo. Si un trozo no se copió, o cayó en otra dirección, difiere.
 # Uso: tests/stage2_big_test.sh [dir_build]
@@ -14,7 +14,7 @@ set -u
 B=${1:-build}
 COP=${COPIHUE:-$B/copihue/copihue}
 SECT=2048
-OFF=$((0x90000))
+OFF=$((0xA0000))
 LEN=$((SECT * 512 - OFF))
 TMP=$(mktemp -d)
 QPID=""

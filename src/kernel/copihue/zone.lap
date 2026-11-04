@@ -577,16 +577,16 @@ fn zone_run(z: i64) -> i64 {
     if (entry == 0) { return 0; }
     if (proc_state[0] != 0) { return zone_fail(4); }
     zone_errno = 0;
-    cli();
+    let iflags: u64 = irq_save();
     if (shared_init() == 0) {
-        sti();
+        irq_restore(iflags);
         return zone_fail(6);
     }
     build_zone = z;
     if (build_proc(0, exec_code as i64, exec_sz, 0) == 0) {
         write_cr3(0x1000);
         release_proc(0);
-        sti();
+        irq_restore(iflags);
         build_zone = 0;
         return zone_fail(zone_errno);
     }
@@ -596,6 +596,7 @@ fn zone_run(z: i64) -> i64 {
     putc('\n');
     forge(0, entry, 0x402000, 0x202);
     sched_go();
+    irq_restore(iflags);
     let after = pmm_free;
     puts("zone mem ");
     put_int(after);
@@ -636,6 +637,186 @@ fn zone_net(pos: i64) -> i64 {
     return 0;
 }
 
+// Visibilidad entre procesos (etapa 7). Un proceso de una zona distinta de
+// 0 solo ve, y solo puede señalar, a los procesos de su propia zona; la
+// zona global ve a todos. Un proceso de otra zona se ve igual que uno que
+// no existe (-3): no hay forma de distinguir los dos casos desde la zona.
+// El intento deja zone-deny (sonda 19) con b = 4.
+
+// Ranura del proceso vivo con ese pid (listo, corriendo o dormido), o -1.
+// pid 0 es el que llama.
+fn proc_find(pid: i64) -> i64 {
+    if (pid == 0) { return cur_i; }
+    let i = 0;
+    while (i < 2) {
+        let st = proc_state[i];
+        if (proc_pid[i] == pid && (st == 1 || st == 2 || st == 4)) { return i; }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+// Zona del proceso que llama (0 con el planificador apagado).
+fn zone_caller() -> i64 {
+    if (sched_on == 0) { return 0; }
+    return proc_zone[cur_i];
+}
+
+// Registra un acceso a otra zona (nr = syscall) y devuelve -1.
+fn zone_other_denied(nr: i64) -> i64 {
+    if (tr_en[19] != 0) { trace_hit(19, proc_pid[cur_i], nr, 4); }
+    return 0 - 1;
+}
+
+// Ranura que el que llama puede ver con ese pid, o -1 (no existe o es de
+// otra zona; en el segundo caso queda el zone-deny).
+fn proc_visible(pid: i64, nr: i64) -> i64 {
+    let s = proc_find(pid);
+    if (s < 0) { return 0 - 1; }
+    let zc = zone_caller();
+    if (zc != 0 && proc_zone[s] != zc) {
+        zone_other_denied(nr);
+        return 0 - 1;
+    }
+    return s;
+}
+
+// 25 proc_stat(pid): (pid << 8) | (zona << 4) | estado (1 listo, 2
+// corriendo, 4 dormido). pid 0 es el propio. -3 si no lo ve.
+fn zone_sys_pstat(pid: i64) -> i64 {
+    let s = proc_visible(pid, 25);
+    if (s < 0) { return 0 - 3; }
+    return (proc_pid[s] << 8) | (proc_zone[s] << 4) | proc_state[s];
+}
+
+// 26 proc_kill(pid): da de baja a otro proceso (sus páginas y su cupo de
+// zona vuelven). -22 si es el propio (para eso está exit), -3 si no lo ve.
+fn zone_sys_pkill(pid: i64) -> i64 {
+    let s = proc_visible(pid, 26);
+    if (s < 0) { return 0 - 3; }
+    if (s == cur_i) { return 0 - 22; }
+    putc('\n');
+    puts("kill pid=");
+    put_int(proc_pid[s]);
+    puts(" by pid=");
+    put_int(proc_pid[cur_i]);
+    puts("\n");
+    release_proc(s);
+    return 0;
+}
+
+// `zone sched nombre`: agrega a la máscara de la zona la syscall 4 (yield)
+// y las de procesos, 25 (proc_stat) y 26 (proc_kill). Una zona nueva no
+// cede la CPU ni ve procesos; `zone pair` lo necesita para que dos procesos
+// de zonas distintas se alternen.
+fn zone_sched(pos: i64) -> i64 {
+    let p = fs_scan(pos, fs_name);
+    if (p < 0) { return zone_fail(11); }
+    let z = zone_by_name(fs_name);
+    if (z <= 0) { return zone_fail(11); }
+    zone_mask[z] = zone_mask[z] | (1 << 4) | (1 << 25) | (1 << 26);
+    puts("zone sched ok\n");
+    return 0;
+}
+
+// `zone trace nombre`: agrega las syscalls 23 y 24 (trace_ctl, trace_read).
+// Aun con ellas la zona solo lee sus propios eventos (trace.lap).
+fn zone_trace(pos: i64) -> i64 {
+    let p = fs_scan(pos, fs_name);
+    if (p < 0) { return zone_fail(11); }
+    let z = zone_by_name(fs_name);
+    if (z <= 0) { return zone_fail(11); }
+    zone_mask[z] = zone_mask[z] | (1 << 23) | (1 << 24);
+    puts("zone trace ok\n");
+    return 0;
+}
+
+// `zone par`: escribe `par` (src/user/par.lap) en el disco.
+fn zone_plant_par() -> i64 {
+    let n = par_fill(exec_buf);
+    if (n < 16 || n > 4096) { return exec_fail(9); }
+    let r = fs_write("par", exec_buf, n);
+    if (r != 0) { return exec_fail(r); }
+    puts("zone par plant ok\n");
+    return 0;
+}
+
+// `zone pair za zb programa`: el mismo programa del disco dos veces a la
+// vez, la copia 1 (pid 1) en la zona za y la 2 (pid 2) en la zb. Las
+// reparte el planificador (yield y PIT). Imprime los contadores de
+// cambios de contexto de esa corrida. za y zb pueden ser la misma zona,
+// o la global ("global").
+fn zone_pair_run(pos: i64) -> i64 {
+    let p = fs_scan(pos, fs_name);
+    if (p < 0) { return zone_fail(11); }
+    let za = zone_by_name(fs_name);
+    if (za < 0) { return zone_fail(11); }
+    p = fs_scan(p, fs_name);
+    if (p < 0) { return zone_fail(11); }
+    let zb = zone_by_name(fs_name);
+    if (zb < 0) { return zone_fail(11); }
+    p = fs_scan(p, fs_name);
+    if (p < 0) { return zone_fail(11); }
+    let entry = exec_prepare();
+    if (entry == 0) { return 0; }
+    if (proc_state[0] != 0 || proc_state[1] != 0) { return zone_fail(4); }
+    let sz = exec_sz;
+    let i = 0;
+    while (i < sz) {
+        exec_code2[i] = exec_code[i];
+        i = i + 1;
+    }
+    zone_errno = 0;
+    let iflags: u64 = irq_save();
+    if (shared_init() == 0) {
+        irq_restore(iflags);
+        return zone_fail(6);
+    }
+    // Después de shared_init: la primera vez toma dos páginas que se quedan.
+    let before = pmm_free;
+    build_zone = za;
+    if (build_proc(0, exec_code as i64, sz, 0) == 0) {
+        write_cr3(0x1000);
+        release_proc(0);
+        irq_restore(iflags);
+        build_zone = 0;
+        return zone_fail(zone_errno);
+    }
+    build_zone = zb;
+    if (build_proc(1, exec_code2 as i64, sz, 0) == 0) {
+        write_cr3(0x1000);
+        release_proc(0);
+        release_proc(1);
+        irq_restore(iflags);
+        build_zone = 0;
+        return zone_fail(zone_errno);
+    }
+    build_zone = 0;
+    forge(0, entry, 0x402000, 0x202);
+    forge(1, entry, 0x402000, 0x202);
+    zsw_n = 0;
+    zsw_chg = 0;
+    nswitch_timer = 0;
+    nswitch_yield = 0;
+    sched_go();
+    irq_restore(iflags);
+    puts("zone pair sw n=");
+    put_int(zsw_n);
+    puts(" chg=");
+    put_int(zsw_chg);
+    puts(" yield=");
+    put_int(nswitch_yield);
+    puts(" timer=");
+    put_int(nswitch_timer);
+    putc('\n');
+    if (pmm_free != before || zone_pages[za] != 0 || zone_pages[zb] != 0) {
+        puts("zone leak\n");
+        return 0;
+    }
+    puts("zone pair ok\n");
+    return 0;
+}
+
 fn cmd_zone() -> i64 {
     if (zone_shell() == 0) {
         puts("zone denied\n");
@@ -649,5 +830,9 @@ fn cmd_zone() -> i64 {
     if (fs_is("net")) { return zone_net(pos); }
     if (fs_is("plant")) { return zone_plant(); }
     if (fs_is("atk")) { return zone_plant_atk(); }
+    if (fs_is("par")) { return zone_plant_par(); }
+    if (fs_is("sched")) { return zone_sched(pos); }
+    if (fs_is("trace")) { return zone_trace(pos); }
+    if (fs_is("pair")) { return zone_pair_run(pos); }
     return zone_fail(11);
 }

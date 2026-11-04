@@ -65,6 +65,63 @@ zone plant
 igual que `exec plant`. El directorio cabe 7 nombres; la prueba suelta
 `malo` y `gordo` antes.
 
+## Dos zonas a la vez (OB-02)
+
+```
+zone sched nombre            agrega la syscall 4 (yield) a la máscara
+zone par                     escribe el programa par (src/user/par.lap)
+zone pair za zb programa     dos copias del programa, a la vez
+```
+
+`zone pair` pone la copia 1 (pid 1) en la zona `za` y la 2 (pid 2) en la
+`zb`; pueden ser la misma zona o la global (`global`). Las reparte el
+planificador, por `yield` y por el PIT. Al terminar imprime
+`zone pair sw n=… chg=… yield=… timer=…`: `n` son los cambios de contexto
+(los de `switch_to` más la salida del primer proceso con el otro vivo),
+`chg` cuántos cambiaron la zona activa, `yield` y `timer` los motivos de
+los de `switch_to`. También comprueba que no quedó ni una página ni una
+zona con cupo (`zone pair ok`, o `zone leak`).
+
+Cada cambio de contexto pasa por `zone_note_switch` (`sched.lap`): cuenta, y
+si la zona activa (la del proceso que corre) cambia deja `zone-switch`
+(sonda 18) con la zona que sale en `a` y la que entra en `b`, y el pid del
+que sale. La salida de un proceso con el otro vivo no pasa por `switch_to`:
+cuenta como cambio y deja `zone-switch`, pero no `switch`.
+
+`par` en modo `y` (el archivo `q` de la zona, o `y` si no se puede leer)
+cede la CPU 6 veces. Un archivo global con el mismo nombre que el relativo
+del programa le veda ese nombre a la zona (`-12`): por eso la zona global
+no escribe `q`.
+
+## Procesos de otras zonas (OB-02, etapa 7)
+
+Un proceso de una zona distinta de 0 no ve, no señala y no traza a los
+procesos de otra zona. La zona global lo ve todo. Hay dos syscalls nuevas y
+las de trazas se acotan:
+
+| Syscall | Qué hace | Máscara |
+|---|---|---|
+| 25 `proc_stat(pid)` | `(pid << 8) \| (zona << 4) \| estado` (1 listo, 2 corriendo, 4 dormido); `pid` 0 es el propio | `zone sched` |
+| 26 `proc_kill(pid)` | da de baja a otro proceso: sus páginas y su cupo de zona vuelven. `-22` si es el propio | `zone sched` |
+| 23 `trace_ctl` | fuera de la global solo las operaciones 4 (cuántas sondas) y 5 (nombre); las demás (prender, apagar, leer contador, vaciar, estado) dan `-1` | `zone trace` |
+| 24 `trace_read` | fuera de la global el filtro de zona es siempre el propio; pedir otra zona da `-1`, y un pid de otra zona no encuentra nada (0 registros) | `zone trace` |
+
+`zone sched nombre` agrega 4, 25 y 26; `zone trace nombre` agrega 23 y 24. Una
+zona nueva no tiene ninguna.
+
+Un pid que existe en otra zona y uno que no existe dan lo mismo: `-3`, sin
+distinguirse. Si existe, el intento deja `zone-deny` (sonda 19) con `a` =
+syscall (25, 26, 23 o 24) y `b` = 4, con el pid y la zona de quien lo
+intentó; no suma `niega` ni `fuga`.
+
+La prueba es `tests/qemu_iso_test.sh` (`make qemu-iso-test`, también en
+`make qemu-test`), con dos copias del programa `par` (`zone pair`, modos
+`c`, `s` y `g`): 14 intentos negados entre `za` y `zb` (7 por proceso), los
+permitidos con la propia zona, la misma zona dos veces (se ven y uno mata al
+otro, sin ningún `zone-deny`) y la global contra `za` (ve, lee la traza de
+esa zona y la mata). En los tres `zone pair ok`: no queda una página ni un
+cupo.
+
 `zone ls` muestra `pre`, `cap`, `proc`, `pag`, `niega`, `fuga` y `max`.
 `max` es la marca de agua de `pag`: lo más alto que llegó la zona desde
 que se creó. Nunca pasa de `cap`; si pasara, la cuota falló.
@@ -138,7 +195,9 @@ queda con `pag=0` y `proc=0/`.
 | a | leer una dirección no canónica | #GP (vec 13) |
 | b | leer una página de usuario inexistente (`0x500000`) | #PF `0x4` |
 | u | `ud2` | #UD, vec 6, sin código de error, addr = RIP de `ud2` |
-| z | `INT64_MIN / -1` (Copihue define `x / 0` como 0) | #DE, vec 0, addr = RIP del `idiv` |
+| z | `INT64_MIN / -1` (`/` tiene guarda para `x / 0`) | #DE, vec 0, addr = RIP del `idiv` |
+| r | `div_raw(1, 0)` (divisor cero sin guarda) | #DE, vec 0, addr = RIP del `idiv` |
+| m | `rem_raw(1, 0)` (divisor cero sin guarda) | #DE, vec 0, addr = RIP del `idiv` |
 | i | `int 3` | #GP vec 13 `err=0x1a` (3·8+2): la puerta 3 es DPL 0, no #BP |
 
 **Bug encontrado y arreglado.** Antes de este cambio, el modo 1 (y todos

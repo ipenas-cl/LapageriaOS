@@ -25,6 +25,7 @@ import "exec_img.lap";
 import "exec.lap";
 import "zone_img.lap";
 import "atk_img.lap";
+import "par_img.lap";
 import "zone.lap";
 import "net.lap";
 import "udpeco_img.lap";

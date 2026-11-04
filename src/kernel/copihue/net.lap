@@ -437,9 +437,9 @@ fn net_bringup() -> i64 {
     // encola lo que llega. 120 ticks cubren ese segundo.
     net_sleep(120);
     net_irq_setup();
-    cli();
+    let iflags: u64 = irq_save();
     net_rx_drain();
-    sti();
+    irq_restore(iflags);
     net_on = 1;
     return 0;
 }
@@ -897,9 +897,9 @@ fn net_rx_drain() -> i64 {
 // Sondeo con IF apagado, para el hilo del shell cuando no hay IRQ:
 // la interrupción comparte el anillo y el buffer de envío.
 fn net_poll() -> i64 {
-    cli();
+    let iflags: u64 = irq_save();
     net_rx_drain();
-    sti();
+    irq_restore(iflags);
     return 0;
 }
 
@@ -984,23 +984,23 @@ fn net_show_rx() -> i64 {
 // Envíos desde el hilo del shell: IF apagado, porque irq_net también
 // usa el buffer de envío.
 fn net_arp_req_locked() -> i64 {
-    cli();
+    let iflags: u64 = irq_save();
     let r = net_send_arp_request();
-    sti();
+    irq_restore(iflags);
     return r;
 }
 
 fn net_ping_locked() -> i64 {
-    cli();
+    let iflags: u64 = irq_save();
     let r = net_send_ping();
-    sti();
+    irq_restore(iflags);
     return r;
 }
 
 fn net_self_locked() -> i64 {
-    cli();
+    let iflags: u64 = irq_save();
     let r = net_self_reply();
-    sti();
+    irq_restore(iflags);
     return r;
 }
 
@@ -1036,9 +1036,9 @@ fn net_stat() -> i64 {
     // MPC se borra al leerlo: se acumula aquí. Con IF en 0 para que la
     // interrupción no toque el chip a la vez.
     if (net_on != 0) {
-        cli();
+        let iflags: u64 = irq_save();
         net_mpc = net_mpc + e_rd(0x4010);
-        sti();
+        irq_restore(iflags);
     }
     puts("net ring 32 rxo ");
     put_int(net_rxo);
@@ -1103,12 +1103,12 @@ fn net_hold_cmd(pos: i64) -> i64 {
         puts("net hold fail arg\n");
         return 0;
     }
-    cli();
+    let iflags: u64 = irq_save();
     e_wr(0xD8, 0xFFFFFFFF);
-    sti();
+    irq_restore(iflags);
     puts("net hold go\n");
     net_sleep(n);
-    cli();
+    let iflags2: u64 = irq_save();
     let ready = 0;
     let i = 0;
     while (i < 32) {
@@ -1123,7 +1123,7 @@ fn net_hold_cmd(pos: i64) -> i64 {
     net_rx_drain();
     net_in_isr = 0;
     net_mpc = net_mpc + e_rd(0x4010);
-    sti();
+    irq_restore(iflags2);
     puts("net hold ring ");
     put_int(ready);
     puts(" drained ");

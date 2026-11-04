@@ -120,20 +120,21 @@ fn exec_run() -> i64 {
     charge_zone = 0;
     let entry = exec_prepare();
     if (entry == 0) { return 0; }
-    cli();
+    let iflags: u64 = irq_save();
     if (shared_init() == 0) {
-        sti();
+        irq_restore(iflags);
         return exec_fail(6);
     }
     if (build_proc(0, exec_code as i64, exec_sz, 0) == 0) {
         write_cr3(0x1000);
         release_proc(0);
-        sti();
+        irq_restore(iflags);
         build_zone = 0;
         return exec_fail(6);
     }
     forge(0, entry, 0x402000, 0x202);
     sched_go();
+    irq_restore(iflags);
     build_zone = 0;
     puts("exec ok\n");
     return 0;
@@ -158,22 +159,23 @@ fn exec2_run(pos: i64) -> i64 {
     fs_copy(fs_name, fs_name2, 16);
     let eb = exec_prepare();
     if (eb == 0) { return 0; }
-    cli();
+    let iflags: u64 = irq_save();
     if (shared_init() == 0) {
-        sti();
+        irq_restore(iflags);
         return exec_fail(6);
     }
     if (build_proc(0, exec_code2 as i64, sza, 0) == 0 || build_proc(1, exec_code as i64, exec_sz, 0) == 0) {
         write_cr3(0x1000);
         release_proc(0);
         release_proc(1);
-        sti();
+        irq_restore(iflags);
         build_zone = 0;
         return exec_fail(6);
     }
     forge(0, ea, 0x402000, 0x202);
     forge(1, eb, 0x402000, 0x202);
     sched_go();
+    irq_restore(iflags);
     build_zone = 0;
     puts("exec2 ok\n");
     return 0;

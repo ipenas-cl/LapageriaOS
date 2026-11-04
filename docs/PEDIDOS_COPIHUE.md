@@ -2,10 +2,11 @@
 
 Lapageria rosea es el nombre científico del copihue; antes AtomicOS.
 
-Compilador fijado en el Makefile: v0.42.4, commit
-`795252ce322f12d1b14274f5b9bec7cb3a6ac2c9`. `git ls-remote` devuelve
-ese commit para `refs/tags/v0.42.4`, y `git -C build/copihue rev-parse
-HEAD` después del `make` también. No se comprobó `HEAD` ni
+Compilador fijado en el Makefile: v0.42.5, commit
+`ea898c6c2be6f1a1686cf06c5050c31e726ef177`. `git ls-remote` devuelve
+ese commit para `refs/tags/v0.42.5^{}` (el objeto de la etiqueta es
+`d0d5b4239ee524336d7b6ff2c0a32553483afc46`), y `git -C build/copihue
+rev-parse HEAD` después del `make` también. No se comprobó `HEAD` ni
 `refs/heads/main` del remoto, ni la salida de `copihue --version`.
 Sin pedidos nuevos al subir desde v0.31.0: el kernel compila sin
 cambios de código. RD-01 parte 2 (UDP completo, recv bloqueante) tampoco
@@ -564,6 +565,21 @@ que corregir.
    da -1. Contorno en `src/user/ataque.lap`. Pedido: promover a `i64`
    el resultado de una resta cuyo destino es `i64`, o avisar del recorte.
 
+**Resuelto en v0.42.5** (los tres):
+
+1. `div_raw(a, b)` y `rem_raw(a, b)`. `/` y `%` siguen con guarda. El
+   ataque `r` (`div_raw(1, z)`) y el `m` (`rem_raw(1, z)`) de
+   `src/user/ataque.lap` dan #DE por divisor cero, con `z` leído de
+   memoria; `tests/qemu_shell_test.sh` exige vec 0, sin código de error
+   y el `idiv` en el RIP, igual que `z`.
+2. `cx = n * 256;` compila en `bits 16`. `stage2.lap` ya no usa `ecx`
+   en la copia con INT 15h AH=87h (sí en `get_e820` y en los bucles,
+   donde nunca fue contorno).
+3. `let d: i64 = 0 - *(0x401C20 as *u8);` da -1. El `ataque` `z` lo usa
+   directo y se quitó el local intermedio. El changelog de v0.42.5 dice
+   que en campos y arreglos el recorte sigue; en este árbol no hay
+   ningún `0 - *u8` ni `0 - p[i]` en esas posiciones.
+
 ## Leer RFLAGS.IF (RD-01)
 
 Código que corre tanto en el hilo del shell (IF en 1) como dentro de una
@@ -574,6 +590,19 @@ de Copihue lista `pushfd`/`popfd`; no los probé en este kernel). En `net.lap` s
 (`net_*_locked` para el hilo; las otras sin cli/sti) y con que `net_tx`
 no duerma nunca. Pedido: `read_rflags()` o un par `irq_save()` /
 `irq_restore(flags)` en `--flat` de 64 bits.
+
+**Resuelto en v0.42.5.** `irq_save()` devuelve RFLAGS (`u64`) y hace `cli`;
+`irq_restore(f)` es `popfq`. Se usan en las secciones críticas con `cli()`
+/ `sti()` de `ata`, `net`, `tcp` (`tcp test`), `nx`, `hh`, `usermode`,
+`sched`, `exec` y `zone`, y en `trace_save_if` / `trace_restore_if`, que
+dejan de ser `naked` con `pushfd` / `popfd`. Dos cosas que ahí cambian
+por el anidamiento: `sched_go` restaura los flags que encontró, así que
+`exec`, `exec2`, `zone exec` y `sched` (que ya hacen `irq_save` antes de
+llamarlo) restauran después de `sched_go()`. Quedan con `sti()` /
+`cli()` a mano, porque no son una sección crítica sino una espera con
+`hlt`: `udp_recv` (`udp.lap`) y `tcp_sleep` (`tcp.lap`); y los de
+arranque o de excepción (`idt_init`, `cpu_fault`, `kmain`, `boot.lap`,
+`stage2.lap`), donde IF ya se sabe.
 
 ## OB-01 (trazas), con Copihue v0.42.4
 
@@ -596,3 +625,28 @@ trabajo. Dos notas, ninguna con contorno:
 
        fn emit(c: i64) { syscall(1, c); }
        fn _start() { let s: *u8 = "ok\n"; emit(s[0]); syscall(5); }
+
+## OB-02 (marcas rdtsc, cambio de zona, aislamiento), con Copihue v0.42.5
+
+Sin `asm()` nuevo y sin contornos nuevos. Lo de v0.42.5 que el kernel usa y
+que **corrió en QEMU 8.2.2** (`make qemu-test`): `irq_save()` /
+`irq_restore(f)` (en las secciones críticas y en las trazas), `div_raw` y
+`rem_raw` (los ataques `r` y `m` dan #DE por divisor cero, con el `idiv`
+en el RIP), `cx = n * 256` en `bits 16` (la etapa 2 carga el kernel de
+1 MiB de la prueba grande), `0 - *(… as *u8)` en un `let` de `i64` (el
+ataque `z` sigue dando #DE, o sea el divisor es -1 y no 255) y `rdtsc()`
+(las marcas crecen en los 32 `pit` seguidos). No se probó `read_rflags()`
+ni `rdrand` / `rdseed`: `qemu64` no tiene `rdrand`. El ISN de TCP (RD-02,
+pedido 1) ya usa `rdtsc()` en lugar del PIT y el CMOS (OB-02b); sigue
+sin `rdrand`.
+
+Dos notas, ninguna con contorno:
+
+1. `tr_ring[slot].tsc = rdtsc() as i64;` y `irq_restore(tr_fl_tmp as u64)`
+   piden el `as`: `rdtsc()` e `irq_save()` devuelven `u64` y el campo y la
+   variable de las trazas son `i64`. Es coherente con el resto; se anota
+   porque el mensaje no sugiere el cast.
+2. Un programa de anillo 3 de unos 3 KB (`par.lap`, 3265 bytes) hace crecer
+   el kernel unos 24 KB al embeberse (`par_img.lap`, 4 bytes por asignación;
+   ver RD-02, pedido 2). No bloquea nada, pero el kernel pasó de 714 a 770
+   sectores en este cambio entre el pin nuevo, `par` y las rutas nuevas.

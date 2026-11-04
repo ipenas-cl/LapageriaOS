@@ -215,7 +215,7 @@ n4=$(endn "traza dump ev=sys-enter zone=0 n=32")
 [ "$n4" = 26 ] || fail "dump ev=sys-enter zone=0: $n4, esperaba 26"
 l=$(evs 'traza dump ev=sys-enter zone=0 n=32')
 [ "$(printf '%s\n' "$l" | grep -c ' pid 1 ')" = 13 ] && [ "$(printf '%s\n' "$l" | grep -c ' pid 2 ')" = 13 ] || fail "13 entradas por pid"
-[ "$(printf '%s\n' "$l" | grep -vc ' z 0$')" = 0 ] || fail "zone=0 trajo otra zona"
+[ "$(printf '%s\n' "$l" | grep -vc ' z 0 c [0-9]*$')" = 0 ] || fail "zone=0 trajo otra zona"
 typewait "traza dump zone=1 n=32" 100
 [ "$(endn 'traza dump zone=1 n=32')" = 0 ] || fail "dump zone=1 debía estar vacío"
 typewait "traza dump n=3" 100
@@ -232,8 +232,8 @@ k=$(win "trace count" | awk '$1 == "probe" && $2 == "irq-kbd" { print $3 }')
 [ -n "${k:-}" ] && [ "$k" -ge 22 ] && [ "$k" -le 26 ] || fail "irq-kbd=$k tras teclear 'trace count' (12 teclas, esperaba 22..26)"
 typewait "traza dump ev=irq-kbd n=32" 100
 l=$(evs 'traza dump ev=irq-kbd n=32')
-printf '%s\n' "$l" | grep -q ' irq-kbd pid 0 a 37 b 0 z 0$' || fail "falta el make de 'k' (scancode 37)"
-printf '%s\n' "$l" | grep -q ' irq-kbd pid 0 a 165 b 0 z 0$' || fail "falta el break de 'k' (scancode 165)"
+printf '%s\n' "$l" | grep -q ' irq-kbd pid 0 a 37 b 0 z 0 c [0-9]*$' || fail "falta el make de 'k' (scancode 37)"
+printf '%s\n' "$l" | grep -q ' irq-kbd pid 0 a 165 b 0 z 0 c [0-9]*$' || fail "falta el break de 'k' (scancode 165)"
 echo "ok   irq-kbd: $k IRQ al teclear 'trace count' (11 teclas y ret, make y break), scancodes 37 y 165 de la 'k' de 'trace off irq-kbd'"
 
 # 6. El anillo (64) da la vuelta: ticks consecutivos y lost > 0.
@@ -258,6 +258,22 @@ printf '%s\n' "$l" | awk '
       prev = t }
     END { exit bad }' || fail "ticks no consecutivos tras dar la vuelta el anillo"
 echo "ok   anillo de 64: dio la vuelta (lost $lost) y los últimos 32 pit son ticks consecutivos"
+
+# 6b. Marca de ciclos (rdtsc): cada evento trae `c <tsc>`. En los 32 pit
+# consecutivos crece de un evento al siguiente y siempre es positiva.
+tsc=$(printf '%s\n' "$l" | awk '
+    { c = $13 + 0
+      if ($12 != "c" || c <= 0) { print "falta c o c <= 0 en " $0 > "/dev/stderr"; bad = 1 }
+      if (NR > 1 && c <= prev) { print "c no crece en " $0 > "/dev/stderr"; bad = 1 }
+      if (NR == 1) first = c
+      prev = c }
+    END { if (bad) exit 1; print first, prev }') || fail "marcas rdtsc de pit no crecen"
+tsc0=${tsc% *}; tsc1=${tsc#* }
+[ "$tsc1" -gt "$tsc0" ] || fail "rdtsc: último ($tsc1) no mayor que el primero ($tsc0)"
+typewait "trace dump 8" 60
+l8=$(evs 'trace dump 8')
+[ "$(printf '%s\n' "$l8" | grep -c ' c [0-9][0-9]*$')" = 8 ] || fail "trace dump: falta c en alguna de las 8 líneas"
+echo "ok   rdtsc: c positiva y creciente en los 32 pit (de $tsc0 a $tsc1, $((tsc1 - tsc0)) ciclos en 31 ticks), y trace dump también lo imprime"
 
 # 7. UDP: las sondas cuentan lo mismo que `udp stat`.
 typewait "net up" 150
@@ -340,11 +356,11 @@ l=$(evs 'traza dump ev=tcp-state n=32')
 nest=$(printf '%s\n' "$l" | awk '{ if ($9 % 256 == 4) n++ } END { print n + 0 }')
 [ "$nest" = "$((est1 - est0))" ] || fail "tcp-state: $nest transiciones a ESTABLISHED, tcp stat est +$((est1 - est0))"
 # SYN_RCVD (3) -> ESTABLISHED (4) = (3 << 8) | 4 = 772; el oyente pasa de 0 a LISTEN (1): b 1.
-printf '%s\n' "$l" | grep -q ' b 772 z 0$' || fail "falta SYN_RCVD -> ESTABLISHED (b 772)"
-printf '%s\n' "$l" | grep -q ' tcp-state pid [0-9]* a [0-9]* b 1 z 0$' || fail "falta la transición a LISTEN (b 1)"
+printf '%s\n' "$l" | grep -q ' b 772 z 0 c [0-9]*$' || fail "falta SYN_RCVD -> ESTABLISHED (b 772)"
+printf '%s\n' "$l" | grep -q ' tcp-state pid [0-9]* a [0-9]* b 1 z 0 c [0-9]*$' || fail "falta la transición a LISTEN (b 1)"
 typewait "traza dump ev=tcp-rst n=8" 100
 l=$(evs 'traza dump ev=tcp-rst n=8')
-printf '%s\n' "$l" | grep -q " tcp-rst pid [0-9]* a 0 b [0-9]* z 0\$" || fail "falta un RST enviado (a 0)"
+printf '%s\n' "$l" | grep -q " tcp-rst pid [0-9]* a 0 b [0-9]* z 0 c [0-9]*\$" || fail "falta un RST enviado (a 0)"
 echo "ok   TCP: tcp-state $tst (ESTABLISHED $nest == est +$((est1 - est0)), 772 y LISTEN vistos), tcp-retx $trt == retx +$((retx1 - retx0)), tcp-rst $trs == rstout +$((rso1 - rso0)) y rstin +$((rsi1 - rsi0)); lost 0"
 typewait "traza off tcp-state" 100
 typewait "traza off tcp-retx" 100
@@ -369,7 +385,7 @@ zd=$(pc zone-deny)
 typewait "traza dump ev=zone-deny n=32" 100
 l=$(evs 'traza dump ev=zone-deny n=32')
 [ "$(endn 'traza dump ev=zone-deny n=32')" = 32 ] || fail "dump zone-deny n=32"
-[ "$(printf '%s\n' "$l" | grep -vc ' zone-deny pid 1 a -*[0-9]* b [0-9]* z 1$')" = 0 ] || fail "zone-deny: eventos que no son de la zona 1 / pid 1: $(printf "%s\n" "$l" | grep -v " zone-deny pid 1 a -*[0-9]* b [0-9]* z 1\$" | head -3)"
+[ "$(printf '%s\n' "$l" | grep -vc ' zone-deny pid 1 a -*[0-9]* b [0-9]* z 1 c [0-9]*$')" = 0 ] || fail "zone-deny: eventos que no son de la zona 1 / pid 1: $(printf "%s\n" "$l" | grep -v " zone-deny pid 1 a -*[0-9]* b [0-9]* z 1 c [0-9]*\$" | head -3)"
 typewait "traza dump ev=zone-deny zone=0 n=32" 100
 [ "$(endn 'traza dump ev=zone-deny zone=0 n=32')" = 0 ] || fail "zone-deny con zone=0 debía estar vacío"
 echo "ok   zone-deny: $zd eventos (niega $niega + fuga $fuga + rutas $((zd - niega - fuga))), todos de la zona 1; zone=0 no ve ninguno"
@@ -379,9 +395,9 @@ win "traza zone 1" | grep -qx "traza zone 0 deny -1" || fail "traza zone 1: $(wi
 typewait "traza dump ev=zone-switch n=4" 100
 l=$(evs 'traza dump ev=zone-switch n=4')
 [ "$(printf '%s\n' "$l" | wc -l | tr -d ' ')" = 1 ] || fail "zone-switch: esperaba 1 evento: $l"
-printf '%s\n' "$l" | grep -q ' zone-switch pid 1 a 0 b 1 z 1$' || fail "zone-switch: $l"
+printf '%s\n' "$l" | grep -q ' zone-switch pid 1 a 0 b 1 z 1 c [0-9]*$' || fail "zone-switch: $l"
 typewait "traza dump ev=zone-deny n=4" 100
-evs 'traza dump ev=zone-deny n=4' | grep -q ' zone-deny pid 1 a 23 b 1 z 1$' || fail "zone-deny de la syscall 23 en la zona 1"
+evs 'traza dump ev=zone-deny n=4' | grep -q ' zone-deny pid 1 a 23 b 1 z 1 c [0-9]*$' || fail "zone-deny de la syscall 23 en la zona 1"
 echo "ok   zone-switch: un proceso de la zona 0 pasa a la zona 1 (a 0 b 1) y su syscall 23 queda denegada por la máscara (zone-deny a 23 b 1)"
 
 # 10. Con todo apagado no se graba nada, y las zonas niegan las syscalls 23 y 24.

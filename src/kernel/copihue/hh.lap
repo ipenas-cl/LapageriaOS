@@ -86,7 +86,7 @@ fn hh_probe_low() -> i64 {
     hh_miss = 1;
     hh_last_err = 0 - 1;
     hh_last_cr2 = 0;
-    cli();
+    let iflags: u64 = irq_save();
     if (save_context(&hh_ctx) == 0) {
         hh_ctx.rip = label_addr(after_hh_low);
         hh_probe = 1;
@@ -97,7 +97,7 @@ fn hh_probe_low() -> i64 {
     }
     label after_hh_low;
     hh_probe = 0;
-    sti();
+    irq_restore(iflags);
     if (hh_miss == 0 || hh_last_err != 0 || hh_last_cr2 != 0x10000) {
         puts("hh fail low\n");
         return 0;
@@ -172,7 +172,7 @@ fn hh_user_test() -> i64 {
     }
     nx_clear_if(proc_ksp[0]);
     nx_clear_if(proc_ksp[1]);
-    cli();
+    let iflags: u64 = irq_save();
     if (save_context(&shell_ctx) == 0) {
         shell_ctx.rip = label_addr(after_hh_user);
         cur_i = 0;
@@ -193,7 +193,7 @@ fn hh_user_test() -> i64 {
     write_cr3(0x1000);
     tss.rsp0 = 0x86000;
     set_syscall_stack(0x81000);
-    sti();
+    irq_restore(iflags);
     release_proc(0);
     release_proc(1);
     if (pmm_free != mem) {

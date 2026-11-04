@@ -90,27 +90,27 @@ fn ata_cmd(lba: i64, count: i64, cmd: i64) -> i64 {
 
 fn ata_pio_in(dst: *u8) -> i64 {
     let i = 0;
-    cli();
+    let iflags: u64 = irq_save();
     while (i < 256) {
         let w = inw(0x1F0);
         dst[i * 2] = (w & 255) as u8;
         dst[i * 2 + 1] = ((w >> 8) & 255) as u8;
         i = i + 1;
     }
-    sti();
+    irq_restore(iflags);
     return 0;
 }
 
 fn ata_pio_out(src: *u8) -> i64 {
     let i = 0;
-    cli();
+    let iflags: u64 = irq_save();
     while (i < 256) {
         let lo = src[i * 2] & 255;
         let hi = src[i * 2 + 1] & 255;
         outw(0x1F0, lo | (hi << 8));
         i = i + 1;
     }
-    sti();
+    irq_restore(iflags);
     return 0;
 }
 

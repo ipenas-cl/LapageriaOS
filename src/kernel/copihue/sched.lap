@@ -38,6 +38,11 @@ let proc_npages: [i64; 2];
 let proc_freed: [i64; 2];
 let proc_pages: [i64; 32];
 let user_kills: i64 = 0;
+// Cambios de contexto entre procesos (switch_to y la salida de un proceso
+// con el otro vivo) y cuántos cambiaron la zona activa. `zone pair` los
+// pone en cero antes de correr.
+let volatile zsw_n: i64 = 0;
+let volatile zsw_chg: i64 = 0;
 let proc_rec0: [i64; 2];
 let proc_rec1: [i64; 2];
 let proc_faults: [i64; 2];
@@ -155,6 +160,18 @@ fn forge(pi: i64, rip: i64, rsp: i64, rfl: i64) -> i64 {
     return base;
 }
 
+// La zona activa es la del proceso que corre (0 con el planificador
+// apagado). Cada cambio de contexto pasa por aquí: cuenta, y si la zona
+// activa cambia deja zone-switch (sonda 18) con la zona de salida y la
+// de entrada. pid es el del proceso que deja la CPU.
+fn zone_note_switch(pid: i64, fz: i64, tz: i64) -> i64 {
+    zsw_n = zsw_n + 1;
+    if (fz == tz) { return 0; }
+    zsw_chg = zsw_chg + 1;
+    if (tr_en[18] != 0) { trace_hit_z(18, pid, fz, fz, tz); }
+    return 0;
+}
+
 fn switch_to(n: i64) -> i64 {
     let from = proc_pid[cur_i];
     let to = proc_pid[n];
@@ -168,7 +185,7 @@ fn switch_to(n: i64) -> i64 {
     saved_ksp = proc_ksp[n];
     // switch: el proceso es el que deja la CPU; argumentos, origen y destino.
     if (tr_en[2] != 0) { trace_hit_z(2, from, fz, from, to); }
-    if (tr_en[18] != 0 && fz != proc_zone[n]) { trace_hit_z(18, from, fz, fz, proc_zone[n]); }
+    zone_note_switch(from, fz, proc_zone[n]);
     return 0;
 }
 
@@ -260,6 +277,9 @@ fn exit_current() -> i64 {
     proc_state[me] = 3;
     let n = other_alive(me);
     if (n >= 0 && proc_ksp[n] != 0) {
+        // Salir con el otro vivo también cambia la zona activa; no hay
+        // `switch` (la sonda 2 es de switch_to), solo zone-switch.
+        zone_note_switch(proc_pid[me], proc_zone[me], proc_zone[n]);
         proc_state[n] = 2;
         cur_i = n;
         tss.rsp0 = proc_rsp0[n];
@@ -538,7 +558,7 @@ fn dump_tables() -> i64 {
 }
 
 fn sched_go() -> i64 {
-    cli();
+    let iflags: u64 = irq_save();
     // save_context devuelve 0. Se pisa rip con la etiqueta: resume_shell
     // vuelve ahí, con este marco, y save_context no devuelve 1.
     if (save_context(&shell_ctx) == 0) {
@@ -559,7 +579,7 @@ fn sched_go() -> i64 {
     write_cr3(0x1000);
     tss.rsp0 = 0x86000;
     set_syscall_stack(0x81000);
-    sti();
+    irq_restore(iflags);
     putc('\n');
     puts("run end\n");
     return 0;
@@ -701,13 +721,13 @@ naked fn prog_b_end() {
 }
 
 fn sched_demo() -> i64 {
-    cli();
+    let iflags: u64 = irq_save();
     // `nx` también libera procesos. Esta línea es la de esta corrida.
     released_ok = 0;
     build_zone = 0;
     charge_zone = 0;
     if (shared_init() == 0) {
-        sti();
+        irq_restore(iflags);
         puts("sched fail\n");
         return 0;
     }
@@ -716,7 +736,7 @@ fn sched_demo() -> i64 {
     let nb = &prog_b_end - &prog_b;
     if (build_proc(0, &prog_a, na, 1) == 0 || build_proc(1, &prog_b, nb, 0) == 0) {
         write_cr3(0x1000);
-        sti();
+        irq_restore(iflags);
         puts("sched fail\n");
         return 0;
     }
@@ -725,11 +745,12 @@ fn sched_demo() -> i64 {
     dump_tables();
     if (alias_both() == 0) {
         write_cr3(0x1000);
-        sti();
+        irq_restore(iflags);
         puts("sched fail\n");
         return 0;
     }
     sched_go();
+    irq_restore(iflags);
     sched_summary();
     return 0;
 }
