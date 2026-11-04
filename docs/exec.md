@@ -56,5 +56,5 @@ con `fs_write` tres archivos:
 `fs_read`. Si se pisó un byte del bloque (`fs corrupt hola`), la
 lectura falla por checksum y no hay proceso.
 
-El directorio cabe 7 archivos. `exec plant` va después de `fs blocks`,
-cuando ya existen `c`, `a`, `b` y `m`.
+`exec plant` escribe `hola`, `malo` y `gordo` en la raíz, después de `fs blocks`
+(el directorio de la raíz guarda hasta 64 entradas; ver fs.md).

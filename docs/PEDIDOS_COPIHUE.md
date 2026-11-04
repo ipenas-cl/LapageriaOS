@@ -650,3 +650,38 @@ Dos notas, ninguna con contorno:
    el kernel unos 24 KB al embeberse (`par_img.lap`, 4 bytes por asignación;
    ver RD-02, pedido 2). No bloquea nada, pero el kernel pasó de 714 a 770
    sectores en este cambio entre el pin nuevo, `par` y las rutas nuevas.
+
+## FS-02 (directorios, indirectos, scrub, raíz por zona), con Copihue v0.42.5
+
+Compiló sin cambios en el compilador y sin `asm()` nuevo. Lo que usa el
+kernel nuevo y **corrió en QEMU** (`make qemu-fs2-test`): `packed struct`
+con `[u32; 16]` adentro (`FsIno`, 84 bytes, `fs_layout` lo mide con
+`sizeof` / `offsetof`), un `*u32` sobre `blk_data` para el bloque
+indirecto, `*FsDe` sobre un offset calculado con `as i64`, arreglos
+globales `[i64; N]` como pila y como tabla, y `put_hex` de un CRC de 32 bits.
+
+Lo que **se evitó, sin haberlo probado**, por prudencia (no es un fallo
+comprobado):
+
+1. **Recursión.** El barrido de alcanzabilidad (`fs_visit`, `fs_reach_run`)
+   usa una pila explícita en un arreglo global (`fs_stk`, 1100 entradas)
+   en lugar de llamarse a sí mismo. No se probó si la recursión de
+   `fn` compila ni cuánta pila tiene la syscall (`0x70000`/`0x78000`).
+2. **Arreglos locales.** `console.lap` anota que un índice sobre un arreglo
+   local emite una syscall de host. Todos los buffers del fs son globales
+   (`fs_ib`, `fs_dt`, `fs_bl`, …); ninguno es un `let x: [T; N]` de función.
+
+Dos incomodidades, ninguna con contorno raro:
+
+3. **Los tamaños son literales repetidos.** 73728 (72 KiB), 144 (bloques
+   por archivo), 64 (entradas por directorio), 1100 (pila del barrido) y 1024
+   (bloques del disco) aparecen en el fuente varias veces, a mano. Un
+   `const` global usable en `[T; N]` evitaría desajustes. No se probó si
+   v0.42.5 ya lo acepta (pedido de RD-03, igual de abierto).
+4. **El cast al guardar en un campo `u32` es obligatorio.** `e.ino = x;` con
+   `x: i64` no se probó sin `as u32`; el código lo escribe siempre, como
+   el fs viejo.
+
+Tamaño: el kernel pasó de 394009 a 406754 bytes (770 a 795 sectores, de
+2048 posibles) y la `.bss` de 145 KB a 246 KB (`fs_big` de 72 KiB, `fs_dt`
+de 2 KiB y la pila del barrido).

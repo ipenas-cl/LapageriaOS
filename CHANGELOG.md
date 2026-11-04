@@ -8,6 +8,24 @@ para ese commit es `legacy-tempo`.
 
 ## 0.8
 
+FS-02, sistema de archivos con directorios, archivos grandes, scrub y raíz
+propia por zona (`docs/fs.md`, `docs/zonas.md`, `docs/disco.md`).
+Superbloque versión 2: árbol de directorios (rutas con `/`, `fs mkdir`,
+`fs ls ruta`, `fs rm` de archivo y de directorio vacío), inodos con 16
+bloques directos y uno indirecto (archivos de hasta 72 KiB) y directorios de
+varios bloques (hasta 64 entradas). Un disco versión 1 se rechaza con
+`fs old version` y no se migra. Lo que queda sin dueño lo libera un barrido
+de alcanzabilidad desde la raíz y desde cada snapshot; `fs scrub` verifica el
+CRC de todo lo alcanzable y cruza con el bitmap (`fs scrub ok bloques=N`,
+`bad bloque=N`, `leak N`). Cada zona ve `/zonas/<nombre>` como `/`: `zone
+create nombre paginas` lo crea, el mecanismo de prefijo se eliminó y `..` o una
+ruta absoluta se niegan con -1 y suben `niega`. `zone destroy nombre` y la
+syscall 27 (solo zona 0): `zone busy` con procesos vivos, `zone destroyed N`
+si no; los archivos quedan. Prueba `tests/qemu_fs2_test.sh` (`make
+qemu-fs2-test`, también en `make qemu-test`). Cambian dos formatos de salida
+que las pruebas viejas ya siguen: `zone ls` muestra `root=` en vez de `pre=` y
+`niega` de la zona de prueba pasa de 64 a 91.
+
 Copihue sube de v0.42.4 a v0.42.5 (commit
 `ea898c6c2be6f1a1686cf06c5050c31e726ef177`). Se usa lo nuevo donde había
 contorno: `irq_save()` / `irq_restore(f)` en las secciones críticas con

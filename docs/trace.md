@@ -114,7 +114,7 @@ trace plant         (escribe el programa traza en el disco)
 `traza` corre el programa de anillo 3 (`src/user/traza.lap`, 3981 bytes de 4080, sin
 cadenas). El shell arma una petición de 8 bytes en el archivo `tzq` y el
 programa la lee con la syscall 7. Hace falta `fs format` y `trace plant`
-antes (el directorio cabe 7 archivos: `traza` y `tzq` ocupan 2).
+antes (`traza` y `tzq` quedan en la raíz).
 
 ```
 traza ls                        sondas: id, nombre, on/off, contador
