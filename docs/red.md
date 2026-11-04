@@ -218,8 +218,9 @@ puerta, IP fija, dos ranuras de proceso (8 sockets en total), sin `select`
 
 ## TCP
 
-Código en `tcp.lap` (RD-02). Seis bloques de control (TCB) con 4 KiB de
-envío y 4 KiB de recepción cada uno (48 KiB de `.bss`), compartidos por
+Código en `tcp.lap` (RD-02; endurecido en RD-03, ver «TCP endurecido»). Ocho
+bloques de control (TCB; eran seis) con 4 KiB de
+envío y 4 KiB de recepción cada uno (64 KiB de `.bss`), compartidos por
 todos los procesos y por los huérfanos que quedan cerrando. Los estados son
 los de RFC 793: 1 LISTEN, 2 SYN_SENT, 3 SYN_RCVD, 4 ESTABLISHED, 5..9
 FIN_WAIT_1, FIN_WAIT_2, CLOSE_WAIT, CLOSING, LAST_ACK, 10 TIME_WAIT, y un 11
@@ -229,8 +230,9 @@ error (`-104` reset, `-111` rechazada, `-110` agotó los reintentos).
 **Qué hace.**
 
 - Handshake de 3 vías activo (`connect`) y pasivo (`listen` + `accept`,
-  hasta 3 hijos pendientes por escuchador; un SYN sin TCB libre se descarta
-  y el cliente reintenta).
+  hasta 3 hijos pendientes por escuchador; con la cola llena el SYN se
+  descarta y el cliente reintenta; un SYN sin TCB libre recibe RST|ACK, ver
+  «TCP endurecido»).
 - ISN aleatorio: xorshift64 que se vuelve a mezclar en cada conexión con el
   contador del canal 0 del PIT, los ticks, el segundero del CMOS y la MAC.
   **No es criptográfico**: en una máquina virtual la entropía es poca. El
@@ -239,14 +241,14 @@ error (`-104` reset, `-111` rechazada, `-110` agotó los reintentos).
 - Ventana: se anuncia `4096 - bytes sin leer` en cada segmento; el envío
   respeta la ventana del par. Si el par la cierra con datos pendientes, un
   timer de sondeo manda 1 byte con el mismo backoff.
-- ACK inmediato por cada segmento con datos o FIN. Solo se acepta lo que
-  llega en orden: lo adelantado o repetido se descarta y se contesta con un
-  ACK (contador `dup`).
+- ACK inmediato por cada segmento con datos o FIN. Lo repetido se descarta
+  y se contesta con un ACK (contador `dup`); lo adelantado va a la cola
+  fuera de orden (RD-03).
 - Retransmisión con timer: el PIT llama a `tcp_tick` en cada tick (con o sin
   procesos). RTO inicial 50 ticks, se duplica hasta 400; al vencer se
   vuelve a mandar desde lo no confirmado (go-back-N); 8 intentos (6 para
-  SYN y SYN|ACK) y se abandona con RST y `-110` (`giveup`). Un ACK nuevo
-  devuelve el RTO a 50.
+  SYN y SYN|ACK) y se abandona con RST y `-110` (`giveup`). Desde RD-03 el RTO
+  sale del RTT medido (ver «TCP endurecido»).
 - Cierre FIN en ambos sentidos. `close` manda el FIN después de los datos
   pendientes y el socket queda huérfano hasta que termina: el que cierra
   primero pasa por FIN_WAIT_1/2 y TIME_WAIT (200 ticks; el estándar pide 2
@@ -262,11 +264,12 @@ error (`-104` reset, `-111` rechazada, `-110` agotó los reintentos).
   descarta). Opción MSS en los SYN (anuncia 1460; se respeta la del par,
   tope 1460).
 
-**Qué no hace.** Control de congestión, medición de RTT (el RTO es fijo con
-backoff), ventana escalada, SACK, retransmisión rápida, cola fuera de orden,
-datos urgentes, keepalive, opciones de timestamps, `shutdown` a medias,
-`SO_REUSEADDR`. Un solo vecino (la puerta) e IP fija, como en UDP. Sin
-espera infinita (plazo máximo 6000 ticks).
+**Qué no hace.** Ventana escalada, SACK, reinicio de la ventana de
+congestión tras inactividad, datos urgentes, keepalive, opciones de
+timestamps, `shutdown` a medias, `SO_REUSEADDR`. Un solo vecino (la puerta)
+e IP fija, como en UDP. Sin espera infinita (plazo máximo 6000 ticks). (RD-02
+tampoco tenía congestión, RTT, retransmisión rápida ni cola fuera de orden:
+RD-03 los agregó.)
 
 Syscalls. Los fd de TCP son una tabla aparte de la de UDP (4 por proceso en
 cada una). `dst` es `(ip << 16) | puerto`, como en UDP. Todas pasan por
@@ -291,10 +294,14 @@ es inofensivo porque la llamada mira de nuevo. `connect` además guarda su
 TCB pendiente por proceso, para que la repetición no abra otra conexión. Al
 morir el proceso (`release_proc`) se cierran sus fd como un `close`.
 
-Comandos: `tcp test`, `tcp plant` (escribe `tcpeco` y `tcpcli`), `tcp stat`:
+Comandos: `tcp test`, `tcp plant` (escribe `tcpeco`, `tcpcli`, `tcpmulti` y
+`tcphog`), `tcp fault` (RD-03), `tcp stat`:
 `rx bad tx retx rstout rstin rstdrop est closed dup blk tmo giveup used lst tw
-iss`. `used` es el número de TCB ocupados (la prueba de fugas exige 0 al
-final), `tw` los que están en TIME_WAIT e `iss` el último ISN.
+iss ooo oodrop fast rtos full bklog recyc rtts rtt rto cwmax fdrop peak fswap`.
+`used` es el número de TCB ocupados (la prueba de fugas exige 0 al
+final), `tw` los que están en TIME_WAIT e `iss` el último ISN. Los
+contadores de RD-03 (todos al final de la línea) se explican en «TCP
+endurecido».
 
 Programas de anillo 3 (`src/user/`):
 
@@ -320,6 +327,132 @@ las imágenes se escriben de a 4 bytes (`q[i] = n` con `q: *u32`): el
 contenido de los AXE no cambia y el kernel mide menos que antes de TCP
 (278 189 bytes, 544 sectores, contra 351 250 y 687). La `.bss` sube de 83 764 a 134 580
 bytes (fin de imagen en `0x464C61`, tope `0x600000`).
+
+## TCP endurecido (RD-03)
+
+**Bloques y conexiones simultáneas.** Ocho TCB. Los fd siguen siendo 4 por
+proceso y hay dos ranuras de proceso (`exec2`). Cuatro conexiones a la vez
+más dos escuchadores caben (6 de 8). El tamaño es un literal repetido en
+`tcp.lap` (ver `PEDIDOS_COPIHUE.md`); subirlo cuesta 8 KiB de `.bss` por bloque, y la
+`.bss` tiene que terminar bajo `0x480000` (`stage2_big_test`): hoy termina en
+`0x47726C`, o sea unos 36 KiB de margen.
+
+**Agotar los bloques.** `tcp_free_tcb` busca uno libre; si no hay, recicla el
+TIME_WAIT huérfano más viejo (`recyc`); si tampoco, falla. Entonces:
+
+- un SYN a un escuchador con cola libre recibe RST|ACK (`seq 0`,
+  `ack = seq + 1`) y no se reserva nada (`full`);
+- un SYN a un escuchador con la cola de 3 hijos llena se descarta sin RST y
+  el cliente reintenta (`bklog`);
+- `listen` y `connect` devuelven `-24` sin dejar fd ni TCB a medias.
+
+Cerrar un escuchador manda RST a sus hijos SYN_RCVD y los libera; los fd de un
+proceso muerto se cierran en `release_proc`. `peak` es el máximo de bloques
+ocupados a la vez.
+
+**Cola fuera de orden.** Un segmento adelantado (dentro de la ventana) se copia
+al anillo de recepción en su posición final, `rxh + rxn + (seq - rnxt)`, y se
+anota en una tabla de 4 bloques por conexión (inicio de secuencia y largo). Los
+bloques que se tocan o son contiguos se funden. Cuando llega el hueco, los
+bloques que quedan en el punto de lectura pasan a datos en orden sin volver a
+copiarse (`tcp_oo_absorb`). Cada segmento adelantado provoca un ACK repetido
+(el que cuenta el emisor para la retransmisión rápida). Fuera de la ventana, o
+con la tabla llena, el segmento se descarta (`oodrop`). Un FIN adelantado se
+ignora: el par lo reenvía cuando se llene el hueco. `ooo` cuenta los
+segmentos encolados.
+
+**RTT y RTO (RFC 6298).** Un segmento de datos nuevo por vez lleva
+cronómetro (`rseq`, `rts`); el ACK que lo cubre da la muestra R (en ticks de
+10 ms). Karn: un segmento retransmitido no se mide. También se mide el
+SYN o SYN|ACK si no se retransmitió. Con `srtt` guardado por 8 y `4 * rttvar`:
+la primera muestra da `SRTT = R`, `RTTVAR = R / 2`; después
+`RTTVAR = 3/4 RTTVAR + 1/4 |SRTT - R|` y `SRTT = 7/8 SRTT + 1/8 R`;
+`RTO = SRTT + max(G, 4 * RTTVAR)` con `G = 1` tick. Tres desviaciones de la
+RFC, elegidas por el tamaño de los tiempos de esta red de prueba: RTO inicial
+50 ticks (la RFC pide 1 s), mínimo 20 (pide 1 s) y máximo 400 (pide al menos
+60 s). El timer se duplica en cada vencimiento (se conserva el comportamiento
+de RD-02) y un ACK nuevo recalcula el RTO desde `SRTT`/`RTTVAR` (sin muestra
+todavía, vuelve a 50). Si el SYN o SYN|ACK se retransmitió, el RTO es de 3 s
+al empezar los datos (RFC 6298, 5.7). `rtts` cuenta las muestras, `rtt` y
+`rto` son la última muestra y el último RTO calculado.
+
+**Congestión (RFC 5681 y 6582).** Por conexión: `cwnd`, `ssthresh`. Se
+envía lo que quepa en `min(ventana del par, cwnd)`.
+
+- Ventana inicial: 2 segmentos (SMSS = MSS del par, tope 1460); `ssthresh`
+  muy grande.
+- Arranque lento (`cwnd < ssthresh`): cada ACK nuevo suma `min(bytes
+  confirmados, SMSS)`.
+- Evitación de congestión: cada ACK nuevo suma `SMSS * SMSS / cwnd`.
+- Timeout: `ssthresh = max(en vuelo / 2, 2 * SMSS)`, `cwnd = 1 SMSS`, se
+  vuelve a mandar desde lo no confirmado (go-back-N). `tc_nxt` retrocede pero
+  `tc_max` guarda lo más alto enviado, y un ACK que lo pasa se acepta (el
+  código de RD-02 habría tratado ese ACK como «de datos no enviados»; es
+  lectura del código, no se reprodujo).
+- Retransmisión rápida: al tercer ACK repetido (mismo ack, sin datos, SYN ni
+  FIN, misma ventana, hay datos en vuelo) se reenvía el primer segmento sin
+  confirmar, `ssthresh = max(en vuelo / 2, 2 * SMSS)` y `cwnd = ssthresh + 3 *
+  SMSS`; cada ACK repetido más suma 1 SMSS. Un ACK parcial (RFC 6582) reenvía
+  el siguiente hueco y desinfla la ventana; el ACK completo la deja en
+  `ssthresh`. `fast` cuenta las entradas a la recuperación.
+- Un sondeo de ventana cero no cuenta como congestión. `cwnd` se acota en
+  1 MiB. Sin reinicio tras inactividad (RFC 5681, 4.1): no se hizo.
+
+`rtos` cuenta los vencimientos del timer y `cwmax` la `cwnd` más alta vista.
+`retx` cuenta todas las retransmisiones (timer, rápida y ACK parcial).
+
+**Fallas inyectadas: `tcp fault`.** Para ejercitar lo anterior con tráfico
+real de QEMU sin tocar la red, el propio TCP del invitado puede perder o
+reordenar segmentos *con datos*, contados desde el momento del comando:
+
+| Comando | Efecto |
+|---|---|
+| `tcp fault rxdrop K C` | pierde `C` segmentos seguidos al entrar, desde el K-ésimo |
+| `tcp fault txdrop K C` | idem, antes de entregarlos al chip |
+| `tcp fault swap K` | retiene el K-ésimo que llega y lo procesa después del siguiente (o a los 20 ticks si no llega otro) |
+| `tcp fault off` | desarma todo y entrega lo retenido |
+
+`fdrop` cuenta los perdidos y `fswap` los retenidos. **No es pérdida en la
+red:** el segmento ya pasó por el chip, el checksum y el IP; se pierde dentro
+del TCP. No usé un filtro de QEMU ni un socat para descartar: socat trabaja
+sobre el flujo, no sobre segmentos, y los filtros de QEMU que conozco
+(`filter-buffer`, `-dump`, `-mirror`, `-redirector`, `-rewriter`) no descartan
+paquetes sueltos; un `filter-redirector` con un relevo en shell sí podría, y no
+se intentó. El único corte «de red» de las pruebas sigue siendo `set_link`.
+
+**Programas nuevos** (`src/user/`, `tcp plant` los escribe):
+
+- `tcpmulti`: eco de varias conexiones a la vez con un solo hilo (recv sin
+  plazo sobre cada fd, y un recv de 1 tick si la vuelta no hizo nada). Escucha
+  en el 7001, o en el 7002 si ya está ocupado: `exec2 tcpmulti tcpmulti`
+  levanta dos. Atiende 2 conexiones y termina; imprime `tcp multi listen
+  <p>`, `tcp multi <p> n=<bytes> sum=<suma>` por conexión y `tcp multi done <p>`
+  (3717 bytes de 4080).
+- `tcphog`: abre escuchadores en el 7003, 7004 y 7006, no acepta nunca, y
+  espera 400 ticks en el 7006. Sirve para llenar los 8 bloques con hijos
+  pendientes. `tcp hog listen`, `tcp hog done -110`.
+
+**Qué se probó y con qué, y qué no.**
+
+- `tcp test` (sin dispositivo, con las interrupciones apagadas para que los
+  ticks no se muevan solos): cola fuera de orden con bloques que se funden,
+  solapados, duplicados, fuera de ventana, FIN adelantado, tabla llena y
+  contenido leído byte a byte (`tcp test ooo ok`); RTT con valores exactos
+  calculados a mano (R = 8, 8, 16: `SRTT` 64, 64, 72, `4 RTTVAR` 16, 12, 17,
+  `RTO` 24, 20, 26), Karn y RTO de 3 s tras retransmitir el SYN|ACK (`rtt`);
+  arranque lento, evitación (+486 con SMSS 1460 y `cwnd` 4380), timeout,
+  ACK que pasa `tc_nxt` retrocedido, 3 ACK repetidos, inflado, ACK parcial y
+  completo (`cc`); 8 bloques llenos, RST|ACK, `-24` en `listen` y `connect`,
+  cola de 3 llena sin RST, liberación al cerrar, reciclaje de TIME_WAIT
+  (`full`); `swap`, `rxdrop`, `txdrop` y la entrega retenida por tiempo
+  (`fault`). Se verificó con una mutación (se quitó `tcp_oo_absorb`): la prueba
+  falló en el chequeo 106.
+- En QEMU con tráfico real: ver «RD-03» en «Prueba».
+- La retransmisión rápida **solo está probada sin dispositivo**: en las
+  corridas reales (`fast 0`) el invitado se recuperó siempre por timeout.
+- Ningún corte de red de un solo segmento: la pérdida real es la del
+  `tcp fault`. El reordenamiento también es inyectado.
+- No se probó `exec2` dentro de una zona, ni más de dos procesos.
 
 ## Prueba
 
@@ -424,9 +557,46 @@ Qué probó cada cosa y qué no:
 - El RST del puerto cerrado sale por el chip y se ve en el pcap; el host no
   lo observa como `ECONNREFUSED` (slirp ya aceptó la conexión del host). El
   rechazo que sí llega al invitado es el de `tcpcli` hacia 10.0.2.2:1.
-- Un solo proceso a la vez usa TCP en las pruebas. Con `exec2` no se probó
-  TCP, ni dos conexiones simultáneas, ni zonas con `exec2`. Las ranuras de
-  proceso siguen siendo dos: no hizo falta subirlas.
-- No se probó el agotamiento de los 6 TCB (SYN descartados), el límite de
-  3 hijos pendientes, ni conexiones desde varios clientes a la vez.
+- (RD-02; `exec2`, conexiones simultáneas y agotamiento de bloques se
+  probaron en RD-03, ver abajo.) Con `exec2` en zonas no se probó TCP. Las
+  ranuras de proceso siguen siendo dos: no hizo falta subirlas.
 - El ISN es aleatorio pero con poca entropía (ver «TCP»).
+
+### RD-03: más de `tests/qemu_tcp_test.sh`
+
+Mismo QEMU y mismo script; agrega `hostfwd` al 7002 (P+2), 7003 (P+3) y 7004
+(P+4) del invitado. Los pasos nuevos van entre el eco de RD-02 y la prueba de
+`tcpcli`:
+
+| Paso | Qué exige |
+|---|---|
+| `tcp test` | además de `tcp test ok`, las líneas `tcp test ooo ok`, `rtt ok`, `cc ok`, `full ok` y `fault ok` (ver «TCP endurecido») |
+| (a) `exec2 tcpmulti tcpmulti` | cuatro `socat` a la vez (2 al 7001, 2 al 7002 del invitado), cada uno con 64 KiB distintos de `/dev/urandom`: las 4 salidas son idénticas a su entrada (`cmp`); las sumas de bytes que cuenta el invitado, por servidor, son las del host; `tcp multi done` de los dos y `exec2 ok`; `peak >= 6` (4 conexiones y 2 escuchadores ocupando bloques a la vez) |
+| (b) pérdida | `tcp fault rxdrop 6 2` y `tcp fault txdrop 9 1`, `exec tcpeco`, 64 KiB desde socat: el eco vuelve idéntico (`cmp`), el invitado cuenta n=65536 y la suma del host, `fdrop` sube exactamente 3 y `retx` sube al menos 1; segunda conexión con `adios` |
+| (c) reordenamiento | `tcp fault swap 5`, `exec tcpeco`, 64 KiB: eco idéntico, `fswap` sube exactamente 1 |
+| (d) agotamiento | `exec tcphog`; cinco conexiones del host que quedan abiertas 3 s (3 al 7003 y 2 al 7004) y una sexta al 7004: `peak = 8`, `full` sube >= 1, `rstout` sube, en el pcap hay un RST\|ACK con `seq 0` desde el puerto 7004, y al terminar el acaparador `used = 0` |
+| (e) | `used 0`, `lst 0`, `tw 0`, `bad 0` y `giveup 0` al final, como en RD-02 |
+
+Los conteos de la zona (`tcp ptr denied`, `tcp listen`) pasaron a compararse
+con la línea base, porque ahora hay más ejecuciones de `tcpeco`.
+
+Qué probó cada cosa y qué no:
+
+- (a) son dos procesos de anillo 3 con 2 conexiones a la vez cada uno: no se
+  probaron 3 por proceso (el tope de fd es 4 y uno es el escuchador). Los
+  servidores usan un hilo y sondean; no hay `poll`/`select`.
+- (b) y (c): la pérdida y el reordenamiento los hace el `tcp fault` dentro
+  del TCP del invitado, no la red (ver «TCP endurecido»). En las corridas de
+  este informe la recuperación fue siempre por el timer de retransmisión
+  (`fast 0`) del invitado (retx +1 en la corrida de referencia); no se
+  investigó qué hizo slirp. En (b) se encolaron 2 a 3 segmentos
+  adelantados (`ooo`), en (c) uno; no se exige un mínimo de `ooo` porque
+  depende de cuántos segmentos manda slirp seguidos, y la reconstrucción
+  exacta de segmentos desordenados la prueba `tcp test`, no QEMU.
+- (d): la sexta conexión se rechaza con RST|ACK; el host no lo ve como error
+  (slirp ya había aceptado la conexión del host). Se prueba que no hay fuga
+  porque `used` vuelve a 0 y las pruebas de zona que siguen vuelven a abrir
+  puertos; `tcphog` termina solo por su plazo, no por una señal del host.
+- Las corridas de referencia de `tcp stat` al final dieron, con todo
+  lo anterior: `ooo 3 oodrop 0 fast 0 rtos 4 full 1 bklog 0 recyc 0 peak 8
+  fdrop 3 fswap 1 giveup 0 bad 0`.
