@@ -32,6 +32,8 @@ import "udpdos_img.lap";
 import "udpwait_img.lap";
 import "tcpeco_img.lap";
 import "tcpcli_img.lap";
+import "tcpmulti_img.lap";
+import "tcphog_img.lap";
 import "udp.lap";
 import "tcp.lap";
 import "trace.lap";
