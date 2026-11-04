@@ -478,3 +478,13 @@ devuelven esa misma dirección y `nx_ranges` las usa. Un `jmp`
 relativo desde la etapa 2 hasta ahí no cabe en rel32; el salto es
 `jmp rax`, que el lenguaje ya tenía. No hace falta `section @ addr`
 ni un caso mínimo nuevo.
+
+## Operando absoluto de 64 bits (SG-01 parte 2)
+
+`*(0xFFFF800000001000 as *u8)` (carga o store con dirección constante que
+no cabe en disp32 con signo) sale `[abs 0x1000]`: nasm avisa `dword
+displacement exceeds bounds` y trunca en silencio. `0xFFFFFFFF80010000`
+sí funciona porque es disp32 con signo. Pedido: error de compilación, o
+`mov r64, imm64` y acceso por registro. Contorno en `src/user/ataque.lap`:
+la dirección va en un `*u8` local. Lo detectó la prueba: el ataque 3 leyó
+`0x1000` en vez de la mitad alta.

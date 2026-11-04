@@ -106,6 +106,7 @@ COPIHUE_KERNEL_SRC = $(KERNEL_SRC)/copihue/console.lap \
                      $(KERNEL_SRC)/copihue/exec_img.lap \
                      $(KERNEL_SRC)/copihue/exec.lap \
                      $(KERNEL_SRC)/copihue/zone_img.lap \
+                     $(KERNEL_SRC)/copihue/atk_img.lap \
                      $(KERNEL_SRC)/copihue/zone.lap \
                      $(KERNEL_SRC)/copihue/net.lap \
                      $(KERNEL_SRC)/copihue/trace.lap \
@@ -218,6 +219,16 @@ $(ZONE_IMG): src/user/zona.lap scripts/mkaxe.sh $(COPIHUE) | $(BUILD_DIR)
 	$(abspath $(COPIHUE)) --flat 0x400000 -o $(ZONE_BIN) src/user/zona.lap
 	scripts/mkaxe.sh $(ZONE_BIN) $(ZONE_AXE) $@ zone_fill
 
+# Programa de ataque de la zona (SG-01 parte 2). `zone atk` lo escribe
+# como zatk. Ver docs/zonas.md.
+ATK_BIN = $(BUILD_DIR)/ataque.bin
+ATK_AXE = $(BUILD_DIR)/ataque.axe
+ATK_IMG = $(KERNEL_SRC)/copihue/atk_img.lap
+
+$(ATK_IMG): src/user/ataque.lap scripts/mkaxe.sh $(COPIHUE) | $(BUILD_DIR)
+	$(abspath $(COPIHUE)) --flat 0x400000 -o $(ATK_BIN) src/user/ataque.lap
+	scripts/mkaxe.sh $(ATK_BIN) $(ATK_AXE) $@ atk_fill
+
 # Consola curses: QEMU entrega el teclado al controlador PS/2 que lee el shell.
 qemu: $(OS_IMAGE) $(DATA_IMG)
 	qemu-system-$(ARCH) $(QEMU_CPU) $(QEMU_DRIVES) -display curses
@@ -235,7 +246,7 @@ debug: $(OS_IMAGE) $(DATA_IMG)
 
 clean:
 	rm -rf $(BUILD_DIR)
-	rm -f $(KERNEL_SRC)/copihue/exec_img.lap $(KERNEL_SRC)/copihue/zone_img.lap
+	rm -f $(KERNEL_SRC)/copihue/exec_img.lap $(KERNEL_SRC)/copihue/zone_img.lap $(KERNEL_SRC)/copihue/atk_img.lap
 
 help:
 	@echo "LapageriaOS $(VERSION) — kernel y arranque en Copihue $(COPIHUE_COMMIT)"

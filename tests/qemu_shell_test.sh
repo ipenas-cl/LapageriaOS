@@ -796,6 +796,101 @@ printf '%s\n' "$clean" | grep -qx 'zone leak' && fail "zone leak"
 echo "ok   zone fs, denied, syscall, quota mem $m1, escape"
 echo "ok   zone attacks: fs create denied, 64 syscalls denied, 5 escapes, quota held (max=12), 1-page zone, disk intact"
 
+# SG-01 parte 2: anillo 3 contra la memoria del kernel y contra sus propias
+# páginas NX / de solo lectura (d), y punteros del kernel como argumento (e).
+# Un solo programa (`zatk`, src/user/ataque.lap) hace un ataque por corrida;
+# el modo está en el archivo `zkq` de la zona k. Cada ataque tiene que
+# terminar con `user killed ...` (el kernel mata solo a ese proceso), sin
+# `atk survived`, con `zone exec ok` (volvió al shell), sin `zone leak`, y
+# el shell tiene que seguir vivo para el ataque siguiente. El directorio
+# cabe 7: se sueltan ztest y zan, que ya cumplieron.
+typefs "fs rm ztest"
+typefs "fs rm zan"
+typefs "zone atk"
+typefs "zone create k zk 12"
+typefs "fs write zkq 1"
+typefs "fs ls"
+attack_n=0
+# atk_run modo vec err addr: el #PF trae CR2 en addr; el #GP trae RIP.
+atk_run() {
+    local mode=$1 vec=$2 err=$3 addr=$4 off win kill
+    typefs "fs write zkq $mode"
+    off=$(wc -c < "$SERIAL" | tr -d ' ')
+    typewait "zone exec k zatk" 100
+    win=$(tail -c +$((off + 1)) "$SERIAL" | tr -d '\r')
+    printf '%s\n' "$win" | grep -qx "atk $mode" || fail "attack $mode did not start"
+    printf '%s\n' "$win" | grep -q 'atk survived' && fail "attack $mode SURVIVED: the kernel did not deny it"
+    printf '%s\n' "$win" | grep -q 'X' && fail "attack $mode read a value it should not have"
+    kill=$(printf '%s\n' "$win" | grep '^user killed ' || true)
+    [ "$(printf '%s\n' "$kill" | grep -c .)" = 1 ] || fail "attack $mode: want one 'user killed' line, got [$kill]"
+    printf '%s\n' "$kill" | grep -Eq "^user killed pid=1 vec=$vec err=$err addr=$addr\$" || fail "attack $mode: wrong fault [$kill] (want vec=$vec err=$err addr=$addr)"
+    printf '%s\n' "$win" | grep -qx 'zone exec ok' || fail "attack $mode: shell did not get control back"
+    printf '%s\n' "$win" | grep -q 'zone leak' && fail "attack $mode leaked memory"
+    printf '%s\n' "$win" | grep -q 'pf-cross' && fail "attack $mode went down the sched recovery path"
+    printf '%s\n' "$win" | grep -q 'user leak' && fail "attack $mode ran a denied syscall"
+    attack_n=$((attack_n + 1))
+}
+K=0xffffffff80010000
+H=0xffff800000001000
+# Mitad alta del kernel: leer y escribir. P|U sin escritura es 0x5; con
+# escritura, 0x7. La página es de supervisor: el bit de usuario del error
+# dice que vino de anillo 3.
+atk_run 1 14 0x00000005 $K
+atk_run 2 14 0x00000007 $K
+atk_run 3 14 0x00000005 $H
+atk_run 4 14 0x00000007 $H
+atk_run 5 14 0x00000005 0x0000000000001000
+# NX: pila y página pedida con la syscall 8 (error 0x15 = P, U, fetch);
+# el texto del kernel tampoco se ejecuta desde anillo 3.
+atk_run 6 14 0x00000015 0x0000000000401800
+atk_run 7 14 0x00000015 0x0000000000402000
+atk_run 9 14 0x00000015 $K
+# Su propio código es de solo lectura (P, W, U).
+atk_run 8 14 0x00000007 0x0000000000400000
+# Dirección no canónica: #GP, no #PF. addr es el RIP del programa.
+atk_run a 13 0x00000000 '0x00000000004[0-9a-f]{5}'
+# Página de usuario que no existe (no presente, U).
+atk_run b 14 0x00000004 0x0000000000500000
+typefs "zone ls"
+zk=$(tr -d '\r' < "$SERIAL" | grep '^zone 4 k pre=zk ' | tail -1)
+[ -n "$zk" ] || fail "zone k missing after the attacks"
+printf '%s\n' "$zk" | grep -q ' pag=0 ' || fail "zone k kept pages after being killed ($zk)"
+printf '%s\n' "$zk" | grep -q 'proc=0/' || fail "zone k kept a process after being killed ($zk)"
+typefs "echo vivo2"
+tr -d '\r' < "$SERIAL" | grep -qx "vivo2" || fail "shell did not answer after the attacks"
+echo "ok   ring 3 vs kernel memory: $attack_n attacks (read/write kernel, exec kernel, exec NX stack and page, write own code, non-canonical, unmapped) each killed only the process"
+
+# (e) Ninguna syscall recibe hoy un puntero de usuario: el nombre y los datos
+# son direcciones fijas del propio proceso (0x401800, 0x401C00). Lo que sí se
+# puede es mandar punteros del kernel como largo (syscalls 6 y 7) y en rsi y
+# rdx, y apuntar la entrada del AXE1 al kernel (el kernel lee esa cabecera
+# del disco). Todo se niega y nada se filtra.
+typefs "fs write zkq d"
+off=$(wc -c < "$SERIAL" | tr -d ' ')
+typewait "zone exec k zatk" 100
+win=$(tail -c +$((off + 1)) "$SERIAL" | tr -d '\r')
+printf '%s\n' "$win" | grep -qx 'atk d' || fail "pointer attack did not start"
+printf '%s\n' "$win" | grep -qx 'zone ptr denied' || fail "kernel pointers as syscall arguments were not all denied"
+printf '%s\n' "$win" | grep -q 'atk survived' && fail "a kernel pointer argument was accepted"
+printf '%s\n' "$win" | grep -q 'user killed' && fail "pointer attack faulted: the kernel touched a bad address?"
+printf '%s\n' "$win" | grep -qx 'zone exec ok' || fail "pointer attack did not finish"
+typefs "fs cat zkq"
+tr -d '\r' < "$SERIAL" | awk '/^lapageria> fs cat zkq$/ {f=1; next} f && /^fs live / {print; exit}' | grep -qx 'fs live d' || fail "pointer attack changed the file"
+typefs "exec kentry"
+typefs "zone exec k kentry"
+tr -d '\r' < "$SERIAL" | awk '
+/^lapageria> exec kentry$/ { f=1; next }
+f && /^exec bad entry$/ && !a { a=1; next }
+f && /^lapageria> zone exec k kentry$/ { g=1; next }
+g && /^exec bad entry$/ { b=1 }
+/run begin/ && f { r=1 }
+END { exit !(a && b && !r) }
+' || fail "AXE1 with entry in the kernel was not rejected, or it ran"
+echo "ok   kernel pointers as syscall arguments denied; AXE1 entry in kernel rejected (exec bad entry)"
+typefs "fs rm zkq"
+typefs "fs rm zatk"
+typefs "fs rm kentry"
+
 require_net
 typewait "net" 120
 tr -d '\r' < "$SERIAL" | awk '

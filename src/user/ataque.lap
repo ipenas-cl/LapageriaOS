@@ -1,0 +1,162 @@
+// Programa de ataque de la zona (SG-01 parte 2). copihue --flat 0x400000.
+// Corre en anillo 3 dentro de una zona y hace UN ataque contra la memoria.
+// El modo sale del archivo `q` de la zona (0x401800 nombre, 0x401C00 datos):
+// el shell lo escribe con `fs write zkq N` antes de cada `zone exec`.
+//
+//   '1' leer el texto del kernel (0xFFFFFFFF80010000)
+//   '2' escribir ahí
+//   '3' leer la mitad alta 0xFFFF800000001000 (alias de las tablas)
+//   '4' escribir ahí
+//   '5' leer 0x1000, físico de las tablas, en la identidad baja
+//   '6' ejecutar la pila (NX)
+//   '7' ejecutar una página pedida con la syscall 8 (NX)
+//   '8' escribir su propia página de código (sin escritura)
+//   '9' ejecutar el texto del kernel
+//   'a' leer una dirección no canónica (#GP)
+//   'b' leer una página de usuario que no existe
+//   'd' punteros del kernel como argumento de las syscalls 6 y 7
+//
+// Cada ataque tiene que matar al proceso con un fallo, así que el mensaje
+// `atk survived` solo sale si el kernel NO lo negó. Los mensajes comparten
+// letras para caber en 4080 bytes (mkaxe.sh).
+
+naked fn emit(c: i64) {
+    rax = 1;
+    syscall();
+}
+
+naked fn nl() {
+    emit(10);
+}
+
+// Salta a la dirección de rdi. Sin locales: un naked no tiene pila propia.
+naked fn jump_to(a: i64) {
+    jmp rdi;
+}
+
+// atk <modo>
+fn say_atk(m: i64) {
+    emit(97);
+    emit(116);
+    emit(107);
+    emit(32);
+    emit(m);
+    nl();
+}
+
+// atk survived
+fn say_survived() {
+    emit(97);
+    emit(116);
+    emit(107);
+    emit(32);
+    emit(115);
+    emit(117);
+    emit(114);
+    emit(118);
+    emit(105);
+    emit(118);
+    emit(101);
+    emit(100);
+    nl();
+}
+
+// zone ptr denied
+fn say_ptr() {
+    emit(122);
+    emit(111);
+    emit(110);
+    emit(101);
+    emit(32);
+    emit(112);
+    emit(116);
+    emit(114);
+    emit(32);
+    emit(100);
+    emit(101);
+    emit(110);
+    emit(105);
+    emit(101);
+    emit(100);
+    nl();
+}
+
+// Lectura de syscall 7 con punteros del kernel en rsi y rdx. El kernel
+// no los usa: el nombre y los datos salen de 0x401800 y 0x401C00.
+naked fn read_ptrs() {
+    rax = 7;
+    rdi = 8;
+    rsi = 0xFFFFFFFF80010000;
+    rdx = 0xFFFF800000001000;
+    syscall();
+}
+
+// (e) Un largo que es un puntero del kernel se rechaza con -9. La lectura
+// recorta a 64 un largo positivo enorme: devuelve 1 (el archivo mide 1 byte)
+// y no copia nada de más.
+fn ptr_attack() {
+    let ok: i64 = 1;
+    if (syscall(6, 0xFFFFFFFF80010000) != 0 - 9) { ok = 0; }
+    if (syscall(6, 0xFFFF800000001000) != 0 - 9) { ok = 0; }
+    if (syscall(6, 0x7FFFFFFFFFFFFFFF) != 0 - 9) { ok = 0; }
+    if (syscall(7, 0xFFFFFFFF80010000) != 0 - 9) { ok = 0; }
+    if (syscall(7, 0xFFFF800000001000) != 0 - 9) { ok = 0; }
+    if (syscall(7, 1 << 63) != 0 - 9) { ok = 0; }
+    if (syscall(7, 0x7FFFFFFFFFFFFFFF) != 1) { ok = 0; }
+    *(0x401C00 as *u8) = 0;
+    let n: i64 = read_ptrs();
+    if (n != 1) { ok = 0; }
+    if (*(0x401C00 as *u8) != 100) { ok = 0; }
+    if (ok == 1) { say_ptr(); }
+    else { say_survived(); }
+}
+
+fn attack(m: i64) {
+    let x: i64 = 0;
+    if (m == 49) { x = *(0xFFFFFFFF80010000 as *u8); }
+    if (m == 50) { *(0xFFFFFFFF80010000 as *u8) = 0x90; }
+    // Dirección en un puntero: como operando absoluto Copihue la recorta a
+    // 32 bits (ver docs/PEDIDOS_COPIHUE.md) y leería 0x1000.
+    if (m == 51) {
+        let p: *u8 = 0xFFFF800000001000 as *u8;
+        x = p[0];
+    }
+    if (m == 52) {
+        let q: *u8 = 0xFFFF800000001000 as *u8;
+        q[0] = 0;
+    }
+    if (m == 53) { x = *(0x1000 as *u8); }
+    if (m == 54) { jump_to(0x401800); }
+    if (m == 55) {
+        if (syscall(8) == 0) { jump_to(0x402000); }
+    }
+    if (m == 56) { *(0x400000 as *u8) = 0; }
+    if (m == 57) { jump_to(0xFFFFFFFF80010000); }
+    if (m == 97) { x = *((1 << 63) as *u8); }
+    if (m == 98) { x = *(0x500000 as *u8); }
+    if (x == 123456) { emit(88); }
+    say_survived();
+}
+
+fn run_mode() {
+    let m: i64 = *(0x401C00 as *u8);
+    m = m & 255;
+    say_atk(m);
+    if (m == 100) {
+        ptr_attack();
+        return;
+    }
+    attack(m);
+}
+
+naked fn _start() {
+    *(0x401800 as *u8) = 113;
+    *(0x401801 as *u8) = 0;
+    rax = 7;
+    rdi = 1;
+    syscall();
+    if (rax == 1) { run_mode(); }
+    rax = 5;
+    syscall();
+    hlt();
+}
