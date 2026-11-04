@@ -1,0 +1,36 @@
+// par: dos copias de este programa, una por zona, corren a la vez con
+// `zone pair` (copihue --flat 0x400000). Cada copia lee su modo del
+// archivo `q` de su zona (0x401800 nombre, 0x401C00 datos) y hace lo suyo:
+//
+//   'y' cede la CPU 6 veces (syscall 4) y sale. Cada cesión es un cambio de
+//       contexto entre zonas distintas (OB-02).
+//
+// Sin cadenas ni globales: un let global cae en la página de código.
+
+fn run() {
+    let m: i64 = *(0x401C00 as *u8);
+    m = m & 255;
+    if (m == 121) {
+        let i: i64 = 0;
+        while (i < 6) {
+            syscall(4);
+            i = i + 1;
+        }
+    }
+}
+
+// El modo por defecto es 'y': un archivo `q` que no se puede leer (la zona
+// global no tiene prefijo, y un nombre que existe fuera de una zona le
+// está vedado) deja ahí la 'y' de abajo.
+naked fn _start() {
+    *(0x401C00 as *u8) = 121;
+    *(0x401800 as *u8) = 113;
+    *(0x401801 as *u8) = 0;
+    rax = 7;
+    rdi = 64;
+    syscall();
+    run();
+    rax = 5;
+    syscall();
+    hlt();
+}

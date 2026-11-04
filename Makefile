@@ -7,6 +7,7 @@
 #   qemu-udp-test  Solo la prueba de red por IRQ y UDP (tests/qemu_udp_test.sh).
 #   qemu-tcp-test  Solo la prueba de TCP (tests/qemu_tcp_test.sh).
 #   qemu-trace-test  Solo la prueba de trazas (tests/qemu_trace_test.sh).
+#   qemu-zswitch-test  Solo el cambio de zona en switch_to (tests/qemu_zswitch_test.sh).
 #   debug      Igual que qemu, y espera a gdb en tcp::1234 (-s -S).
 #   clean      Borra build/.
 #   help       Muestra esta lista.
@@ -113,6 +114,7 @@ COPIHUE_KERNEL_SRC = $(KERNEL_SRC)/copihue/console.lap \
                      $(KERNEL_SRC)/copihue/exec.lap \
                      $(KERNEL_SRC)/copihue/zone_img.lap \
                      $(KERNEL_SRC)/copihue/atk_img.lap \
+                     $(KERNEL_SRC)/copihue/par_img.lap \
                      $(KERNEL_SRC)/copihue/zone.lap \
                      $(KERNEL_SRC)/copihue/net.lap \
                      $(KERNEL_SRC)/copihue/udpeco_img.lap \
@@ -129,7 +131,7 @@ COPIHUE_KERNEL_SRC = $(KERNEL_SRC)/copihue/console.lap \
                      $(KERNEL_SRC)/copihue/shell.lap \
                      $(KERNEL_SRC)/copihue/kernel.lap
 
-.PHONY: all qemu qemu-test qemu-udp-test qemu-tcp-test qemu-trace-test debug clean help
+.PHONY: all qemu qemu-test qemu-udp-test qemu-tcp-test qemu-trace-test qemu-zswitch-test debug clean help
 
 # Imagen de arranque: LBA 0 etapa 1, LBA 1 etapa 2, LBA KERNEL_LBA el kernel.
 all: $(OS_IMAGE)
@@ -245,6 +247,17 @@ $(ATK_IMG): src/user/ataque.lap scripts/mkaxe.sh $(COPIHUE) | $(BUILD_DIR)
 	$(abspath $(COPIHUE)) --flat 0x400000 -o $(ATK_BIN) src/user/ataque.lap
 	scripts/mkaxe.sh $(ATK_BIN) $(ATK_AXE) $@ atk_fill
 
+# Programa de pares de zonas (OB-02). `zone par` lo escribe como par y
+# `zone pair za zb par` corre dos copias a la vez, una en cada zona.
+# Ver docs/zonas.md.
+PAR_BIN = $(BUILD_DIR)/par.bin
+PAR_AXE = $(BUILD_DIR)/par.axe
+PAR_IMG = $(KERNEL_SRC)/copihue/par_img.lap
+
+$(PAR_IMG): src/user/par.lap scripts/mkaxe.sh $(COPIHUE) | $(BUILD_DIR)
+	$(abspath $(COPIHUE)) --flat 0x400000 -o $(PAR_BIN) src/user/par.lap
+	scripts/mkaxe.sh $(PAR_BIN) $(PAR_AXE) $@ par_fill
+
 # Programa de eco UDP de anillo 3 (RD-01). `udp plant` lo escribe como
 # udpeco. Ver docs/red.md.
 UDPECO_BIN = $(BUILD_DIR)/udpeco.bin
@@ -332,6 +345,7 @@ qemu-test: $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_udp_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_tcp_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_trace_test.sh $(OS_IMAGE)
+	$(TESTS_DIR)/qemu_zswitch_test.sh $(OS_IMAGE)
 	COPIHUE=$(abspath $(COPIHUE)) $(TESTS_DIR)/stage2_big_test.sh $(BUILD_DIR)
 
 # Solo la red por IRQ y UDP. Usa una copia nueva del disco de datos.
@@ -346,13 +360,17 @@ qemu-tcp-test: $(OS_IMAGE)
 qemu-trace-test: $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_trace_test.sh $(OS_IMAGE)
 
+# Solo el cambio de zona en switch_to (OB-02). Usa una copia nueva del disco.
+qemu-zswitch-test: $(OS_IMAGE)
+	$(TESTS_DIR)/qemu_zswitch_test.sh $(OS_IMAGE)
+
 # La imagen es un binario plano: gdb no tiene tabla de símbolos ELF.
 debug: $(OS_IMAGE) $(DATA_IMG)
 	qemu-system-$(ARCH) $(QEMU_CPU) $(QEMU_DRIVES) -display curses -s -S
 
 clean:
 	rm -rf $(BUILD_DIR)
-	rm -f $(KERNEL_SRC)/copihue/exec_img.lap $(KERNEL_SRC)/copihue/zone_img.lap $(KERNEL_SRC)/copihue/atk_img.lap $(KERNEL_SRC)/copihue/udpeco_img.lap $(KERNEL_SRC)/copihue/udpdos_img.lap $(KERNEL_SRC)/copihue/udpwait_img.lap $(KERNEL_SRC)/copihue/tcpeco_img.lap $(KERNEL_SRC)/copihue/tcpcli_img.lap $(KERNEL_SRC)/copihue/tcpmulti_img.lap $(KERNEL_SRC)/copihue/tcphog_img.lap $(KERNEL_SRC)/copihue/traza_img.lap
+	rm -f $(KERNEL_SRC)/copihue/exec_img.lap $(KERNEL_SRC)/copihue/zone_img.lap $(KERNEL_SRC)/copihue/atk_img.lap $(KERNEL_SRC)/copihue/par_img.lap $(KERNEL_SRC)/copihue/udpeco_img.lap $(KERNEL_SRC)/copihue/udpdos_img.lap $(KERNEL_SRC)/copihue/udpwait_img.lap $(KERNEL_SRC)/copihue/tcpeco_img.lap $(KERNEL_SRC)/copihue/tcpcli_img.lap $(KERNEL_SRC)/copihue/tcpmulti_img.lap $(KERNEL_SRC)/copihue/tcphog_img.lap $(KERNEL_SRC)/copihue/traza_img.lap
 
 help:
 	@echo "LapageriaOS $(VERSION) — kernel y arranque en Copihue $(COPIHUE_COMMIT)"
@@ -370,6 +388,7 @@ help:
 	@echo "  make qemu-udp-test  Solo esa prueba de red (tests/qemu_udp_test.sh)."
 	@echo "  make qemu-tcp-test  Solo la prueba de TCP (tests/qemu_tcp_test.sh)."
 	@echo "  make qemu-trace-test  Solo la prueba de trazas (tests/qemu_trace_test.sh)."
+	@echo "  make qemu-zswitch-test  Solo el cambio de zona en switch_to (tests/qemu_zswitch_test.sh)."
 	@echo "  make debug      Igual que qemu, esperando gdb en tcp::1234."
 	@echo "  make clean      Borra build/."
 	@echo "  make help       Esta lista."

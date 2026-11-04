@@ -17,6 +17,15 @@ contorno: `irq_save()` / `irq_restore(f)` en las secciones críticas con
 `div_raw` / `rem_raw` en dos ataques nuevos, `r` y `m` (#DE por divisor cero;
 `z` sigue con `INT64_MIN / -1`). Detalle en `docs/PEDIDOS_COPIHUE.md`.
 
+OB-02, cambio de zona en `switch_to`: `zone sched` (da `yield` a una zona),
+`zone par` y `zone pair za zb programa` (dos copias del programa `par` a la
+vez, una por zona), con los contadores `zsw_n` / `zsw_chg` y
+`zone_note_switch`, que también registra la salida de un proceso con el otro
+vivo. Prueba determinista `tests/qemu_zswitch_test.sh` (`make
+qemu-zswitch-test`, en `make qemu-test`): 12 cesiones, 13 cambios de
+contexto, todos cambian la zona y cada uno deja su `zone-switch`; misma zona
+no deja ninguno; global contra zona sí.
+
 Trazas con `rdtsc()`: cada registro del anillo guarda además la marca de
 ciclos (`TrEv` pasa de 48 a 56 bytes). `trace dump` y `traza dump` agregan
 ` c <tsc>` al final de cada línea y la syscall 24 devuelve 7 `i64` por

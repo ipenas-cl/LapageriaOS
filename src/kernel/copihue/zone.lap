@@ -637,6 +637,105 @@ fn zone_net(pos: i64) -> i64 {
     return 0;
 }
 
+// `zone sched nombre`: agrega la syscall 4 (yield) a la máscara de la
+// zona. Una zona nueva no cede la CPU; `zone pair` lo necesita para que dos
+// procesos de zonas distintas se alternen.
+fn zone_sched(pos: i64) -> i64 {
+    let p = fs_scan(pos, fs_name);
+    if (p < 0) { return zone_fail(11); }
+    let z = zone_by_name(fs_name);
+    if (z <= 0) { return zone_fail(11); }
+    zone_mask[z] = zone_mask[z] | (1 << 4);
+    puts("zone sched ok\n");
+    return 0;
+}
+
+// `zone par`: escribe `par` (src/user/par.lap) en el disco.
+fn zone_plant_par() -> i64 {
+    let n = par_fill(exec_buf);
+    if (n < 16 || n > 4096) { return exec_fail(9); }
+    let r = fs_write("par", exec_buf, n);
+    if (r != 0) { return exec_fail(r); }
+    puts("zone par plant ok\n");
+    return 0;
+}
+
+// `zone pair za zb programa`: el mismo programa del disco dos veces a la
+// vez, la copia 1 (pid 1) en la zona za y la 2 (pid 2) en la zb. Las
+// reparte el planificador (yield y PIT). Imprime los contadores de
+// cambios de contexto de esa corrida. za y zb pueden ser la misma zona,
+// o la global ("global").
+fn zone_pair_run(pos: i64) -> i64 {
+    let p = fs_scan(pos, fs_name);
+    if (p < 0) { return zone_fail(11); }
+    let za = zone_by_name(fs_name);
+    if (za < 0) { return zone_fail(11); }
+    p = fs_scan(p, fs_name);
+    if (p < 0) { return zone_fail(11); }
+    let zb = zone_by_name(fs_name);
+    if (zb < 0) { return zone_fail(11); }
+    p = fs_scan(p, fs_name);
+    if (p < 0) { return zone_fail(11); }
+    let entry = exec_prepare();
+    if (entry == 0) { return 0; }
+    if (proc_state[0] != 0 || proc_state[1] != 0) { return zone_fail(4); }
+    let sz = exec_sz;
+    let i = 0;
+    while (i < sz) {
+        exec_code2[i] = exec_code[i];
+        i = i + 1;
+    }
+    zone_errno = 0;
+    let iflags: u64 = irq_save();
+    if (shared_init() == 0) {
+        irq_restore(iflags);
+        return zone_fail(6);
+    }
+    // Después de shared_init: la primera vez toma dos páginas que se quedan.
+    let before = pmm_free;
+    build_zone = za;
+    if (build_proc(0, exec_code as i64, sz, 0) == 0) {
+        write_cr3(0x1000);
+        release_proc(0);
+        irq_restore(iflags);
+        build_zone = 0;
+        return zone_fail(zone_errno);
+    }
+    build_zone = zb;
+    if (build_proc(1, exec_code2 as i64, sz, 0) == 0) {
+        write_cr3(0x1000);
+        release_proc(0);
+        release_proc(1);
+        irq_restore(iflags);
+        build_zone = 0;
+        return zone_fail(zone_errno);
+    }
+    build_zone = 0;
+    forge(0, entry, 0x402000, 0x202);
+    forge(1, entry, 0x402000, 0x202);
+    zsw_n = 0;
+    zsw_chg = 0;
+    nswitch_timer = 0;
+    nswitch_yield = 0;
+    sched_go();
+    irq_restore(iflags);
+    puts("zone pair sw n=");
+    put_int(zsw_n);
+    puts(" chg=");
+    put_int(zsw_chg);
+    puts(" yield=");
+    put_int(nswitch_yield);
+    puts(" timer=");
+    put_int(nswitch_timer);
+    putc('\n');
+    if (pmm_free != before || zone_pages[za] != 0 || zone_pages[zb] != 0) {
+        puts("zone leak\n");
+        return 0;
+    }
+    puts("zone pair ok\n");
+    return 0;
+}
+
 fn cmd_zone() -> i64 {
     if (zone_shell() == 0) {
         puts("zone denied\n");
@@ -650,5 +749,8 @@ fn cmd_zone() -> i64 {
     if (fs_is("net")) { return zone_net(pos); }
     if (fs_is("plant")) { return zone_plant(); }
     if (fs_is("atk")) { return zone_plant_atk(); }
+    if (fs_is("par")) { return zone_plant_par(); }
+    if (fs_is("sched")) { return zone_sched(pos); }
+    if (fs_is("pair")) { return zone_pair_run(pos); }
     return zone_fail(11);
 }

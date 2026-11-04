@@ -31,7 +31,7 @@ el evento entra al anillo.
 | 15 | `tcp-state` | cada cambio de estado de un TCB | índice del TCB | `(viejo << 8) \| nuevo` |
 | 16 | `tcp-retx` | retransmisión (timer o rápida) | índice del TCB | reintentos del TCB |
 | 17 | `tcp-rst` | RST enviado (a = 0) o recibido (a = 1) | 0 / 1 | puerto del par |
-| 18 | `zone-switch` | `syscall 9` que cambia la zona del proceso; y `switch_to` entre procesos de zonas distintas | zona vieja | zona nueva |
+| 18 | `zone-switch` | `syscall 9` que cambia la zona del proceso; `switch_to` entre procesos de zonas distintas; y la salida de un proceso con el otro vivo en otra zona (pid = el que sale) | zona vieja | zona nueva |
 | 19 | `zone-deny` | acceso denegado por la zona | número de syscall (o 3 = ruta) | 1 máscara, 2 escape, errno si es ruta |
 
 Estados de TCP en `tcp-state`: 0 libre, 1 LISTEN, 2 SYN_SENT, 3 SYN_RCVD,
@@ -152,9 +152,8 @@ kernel:
 | zonas | `zone-deny` > `niega` + `fuga` de `zone ls` (el resto son rutas), todos con zona 1; `zone-switch` 0 → 1 |
 | apagado | con `traza off all` no se graba nada |
 
-**Sin cubrir en QEMU:** el `zone-switch` que sale de `switch_to` (dos
-procesos en zonas distintas que se alternan). Las zonas no pueden hacer
-`yield` ni correr a la vez con otra zona, y la salida por `exit` no pasa
-por `switch_to`, así que no hay forma determinista de armarlo con los
-programas que existen. Compila y no cambia ningún contador, pero no tiene
-prueba.
+El `zone-switch` de `switch_to` (dos procesos en zonas distintas que se
+alternan) tiene su prueba en `tests/qemu_zswitch_test.sh`
+(`make qemu-zswitch-test`, también en `make qemu-test`). Se arma con
+`zone sched` (da `yield` a una zona) y `zone pair` (dos copias del programa
+`par` a la vez, una por zona). Ver `docs/zonas.md`.

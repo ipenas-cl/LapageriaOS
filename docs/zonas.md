@@ -65,6 +65,34 @@ zone plant
 igual que `exec plant`. El directorio cabe 7 nombres; la prueba suelta
 `malo` y `gordo` antes.
 
+## Dos zonas a la vez (OB-02)
+
+```
+zone sched nombre            agrega la syscall 4 (yield) a la máscara
+zone par                     escribe el programa par (src/user/par.lap)
+zone pair za zb programa     dos copias del programa, a la vez
+```
+
+`zone pair` pone la copia 1 (pid 1) en la zona `za` y la 2 (pid 2) en la
+`zb`; pueden ser la misma zona o la global (`global`). Las reparte el
+planificador, por `yield` y por el PIT. Al terminar imprime
+`zone pair sw n=… chg=… yield=… timer=…`: `n` son los cambios de contexto
+(los de `switch_to` más la salida del primer proceso con el otro vivo),
+`chg` cuántos cambiaron la zona activa, `yield` y `timer` los motivos de
+los de `switch_to`. También comprueba que no quedó ni una página ni una
+zona con cupo (`zone pair ok`, o `zone leak`).
+
+Cada cambio de contexto pasa por `zone_note_switch` (`sched.lap`): cuenta, y
+si la zona activa (la del proceso que corre) cambia deja `zone-switch`
+(sonda 18) con la zona que sale en `a` y la que entra en `b`, y el pid del
+que sale. La salida de un proceso con el otro vivo no pasa por `switch_to`:
+cuenta como cambio y deja `zone-switch`, pero no `switch`.
+
+`par` en modo `y` (el archivo `q` de la zona, o `y` si no se puede leer)
+cede la CPU 6 veces. Un archivo global con el mismo nombre que el relativo
+del programa le veda ese nombre a la zona (`-12`): por eso la zona global
+no escribe `q`.
+
 `zone ls` muestra `pre`, `cap`, `proc`, `pag`, `niega`, `fuga` y `max`.
 `max` es la marca de agua de `pag`: lo más alto que llegó la zona desde
 que se creó. Nunca pasa de `cap`; si pasara, la cuota falló.
