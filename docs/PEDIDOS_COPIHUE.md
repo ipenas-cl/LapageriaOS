@@ -16,6 +16,18 @@ Sin `asm()` nuevo. Una función de 7 parámetros (`udp_recv`; el séptimo es
 el plazo) compila y la prueba de plazo la ejerce; `udp_park` usa globales
 por prudencia, no porque haya fallado algo.
 
+## FS-03 (migración v1 a v2, `fs snap rm`, `fs rm -r`), con Copihue v0.42.5
+
+Sin pedidos nuevos y sin contornos: `fs_migrate`, `fs_snap_remove` y
+`fs_remove_tree` compilaron a la primera con v0.42.5 y sin `asm()`. Se
+usaron `packed struct`, punteros `*u32` indexables (`mg_u32` lee una palabra
+de 32 bits en un desplazamiento cualquiera) y arreglos globales de `i64`. Dos
+cosas que no se probaron y se evitaron por prudencia, no por un fallo
+comprobado: no se usó `break` dentro de los `while` (se usan banderas, como
+el resto de `fs.lap`), y los arreglos globales de la migración (`mg_fbl` de
+512 `i64`, `mg_fsz`, etc.) son literales repetidos (64 y 8) en vez de una
+constante con nombre; el pedido de RD-03 sobre `const N` sigue valiendo.
+
 ## Pedidos de RD-02 (TCP), con Copihue v0.34.1
 
 El kernel de TCP compila sin `asm()` nuevo. `syscall fn` de 6 parámetros,

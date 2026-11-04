@@ -1334,6 +1334,20 @@ fn fs_migrate() -> i64 {
     return 0;
 }
 
+// `fs rm -r ruta`: saca un archivo o un directorio con todo lo que tiene
+// debajo. Solo hay que quitar la entrada del padre: la publicación corre
+// fs_gc, que libera lo que ya no cuelga de la raíz viva ni de un snapshot
+// (subdirectorios, inodos, indirectos y datos), y deja lo que un snapshot
+// todavía usa.
+fn fs_remove_tree(path: *u8) -> i64 {
+    let r = fs_prep(path);
+    if (r != 0) { return r; }
+    let idx = fs_dt_find(fs_leaf);
+    if (idx < 0) { return 7; }
+    fs_dt_del(idx);
+    return fs_publish();
+}
+
 // Pisa un byte del primer bloque de datos y deja el CRC viejo.
 fn fs_corrupt(path: *u8) -> i64 {
     let r = fs_prep(path);

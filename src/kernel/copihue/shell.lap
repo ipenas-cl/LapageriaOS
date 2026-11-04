@@ -258,6 +258,16 @@ fn cmd_fs() -> i64 {
     if (fs_is("rm")) {
         pos = fs_scanp(pos, fs_path);
         if (pos < 0) { return fs_fail(11); }
+        // fs rm -r <ruta>: borrado recursivo. "-r" solo es la opción si
+        // viene seguido de una ruta.
+        if (fs_path[0] == 45 && fs_path[1] == 114 && fs_path[2] == 0) {
+            pos = fs_scanp(pos, fs_path);
+            if (pos < 0) { return fs_fail(11); }
+            let rr = fs_remove_tree(fs_path);
+            if (rr != 0) { return fs_fail(rr); }
+            puts("fs rm -r ok\n");
+            return 0;
+        }
         let r = fs_remove(fs_path);
         if (r != 0) { return fs_fail(r); }
         puts("fs rm ok\n");

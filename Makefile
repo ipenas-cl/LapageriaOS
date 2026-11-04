@@ -11,7 +11,7 @@
 #   qemu-iso-test  Solo el aislamiento entre zonas (tests/qemu_iso_test.sh).
 #   qemu-fs2-test  Solo directorios, archivos grandes, scrub y raíz por zona
 #              (tests/qemu_fs2_test.sh).
-#   qemu-fs3-test  Solo fs migrate y fs snap rm (tests/qemu_fs3_test.sh;
+#   qemu-fs3-test  Solo fs migrate, fs snap rm y fs rm -r (tests/qemu_fs3_test.sh;
 #              necesita cc para scripts/mkv1.c).
 #   debug      Igual que qemu, y espera a gdb en tcp::1234 (-s -S).
 #   clean      Borra build/.
@@ -381,8 +381,8 @@ qemu-iso-test: $(OS_IMAGE)
 qemu-fs2-test: $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_fs2_test.sh $(OS_IMAGE)
 
-# Solo FS-03: fs migrate (discos v1 armados con scripts/mkv1.c) y fs snap rm.
-# Usa copias nuevas de la imagen y del disco de datos. Con
+# Solo FS-03: fs migrate (discos v1 armados con scripts/mkv1.c), fs snap rm y
+# fs rm -r. Usa copias nuevas de la imagen y del disco de datos. Con
 # V1_KERNEL_IMG=ruta suma la sección del kernel v1 real (ver la prueba).
 qemu-fs3-test: $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_fs3_test.sh $(OS_IMAGE)
@@ -414,7 +414,7 @@ help:
 	@echo "  make qemu-zswitch-test  Solo el cambio de zona en switch_to (tests/qemu_zswitch_test.sh)."
 	@echo "  make qemu-iso-test  Solo el aislamiento entre zonas (tests/qemu_iso_test.sh)."
 	@echo "  make qemu-fs2-test  Solo directorios, archivos grandes, scrub y raíz por zona (tests/qemu_fs2_test.sh)."
-	@echo "  make qemu-fs3-test  Solo fs migrate y fs snap rm (tests/qemu_fs3_test.sh)."
+	@echo "  make qemu-fs3-test  Solo fs migrate, fs snap rm y fs rm -r (tests/qemu_fs3_test.sh)."
 	@echo "  make debug      Igual que qemu, esperando gdb en tcp::1234."
 	@echo "  make clean      Borra build/."
 	@echo "  make help       Esta lista."

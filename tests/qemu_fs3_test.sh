@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# FS-03: `fs migrate` (v1 -> v2) y `fs snap rm`.
+# FS-03: `fs migrate` (v1 -> v2), `fs snap rm` y `fs rm -r`.
 #
 # A. Migración. El disco v1 lo arma scripts/mkv1.c (C, sin Python ni kernel):
 #    escenario `std` (dos snapshots, un archivo que solo vive en un snapshot,
@@ -15,10 +15,14 @@
 #    superbloques: siguen siendo v1.
 # B. `fs snap rm`: con tres snapshots que comparten bloques entre sí y con la
 #    raíz viva, borrar uno libera exactamente los bloques que solo él usaba
-#    (44, 2, 44, contados a mano); lo compartido sigue leyéndose (se escribe
+#    (2, 44 y 44, contados a mano); lo compartido sigue leyéndose (se escribe
 #    un archivo grande encima para pisar lo que se hubiera liberado de más y
 #    se relee con rollback); al final el scrub da lo mismo que un disco de
 #    control con el mismo contenido y sin snapshots (ni fugas ni faltantes).
+# C. `fs rm -r`: un árbol con subcarpetas, archivos de 64 y 72 KiB (bloque
+#    indirecto) y un directorio de dos bloques; el scrub vuelve a la cuenta
+#    de antes de crearlo; con un snapshot encima no libera nada de lo que el
+#    snapshot usa, y al borrar el snapshot se libera todo.
 # D. (opcional, segundo argumento o V1_KERNEL_IMG=ruta/a/lapageriaos.img de un kernel anterior a
 #    FS-02) el disco v1 lo escribe el kernel viejo de verdad y el kernel nuevo
 #    lo migra; además el viejo lee un disco hecho por mkv1 (valida el formato
@@ -351,6 +355,72 @@ run "fs snap q2 /extra"; want "fs fail 7"
 scrub_is 116 "tras crear y borrar 9 snapshots"
 echo "ok   snap rm: 8 snapshots, borrar uno del medio libera su lugar (el noveno entra), todos se pueden borrar, scrub 116"
 
+# =============================================================== C. fs rm -r
+ok "fs format" "fs format ok"
+ok "fs write /keep guardado" "fs write ok"
+n0=$(nblocks)
+[ "$n0" = 6 ] || fail "base de rm -r: bloques=$n0, esperaba 6 (2 + raíz 2 + keep 2)"
+build_tree() {
+    ok "fs mkdir /t" "fs mkdir ok"
+    ok "fs mkdir /t/a" "fs mkdir ok"
+    ok "fs mkdir /t/a/b" "fs mkdir ok"
+    ok "fs mkdir /t/c" "fs mkdir ok"
+    ok "fs mkdir /t/m" "fs mkdir ok"
+    ok "fs write /t/x equis" "fs write ok"
+    bigw /t/a/y 64 2
+    bigw /t/a/b/z 72 5
+    ok "fs write /t/c/w doble" "fs write ok"
+    local i
+    for i in 01 02 03 04 05 06 07 08 09 10 11 12 13 14 15 16 17; do
+        ok "fs write /t/m/f$i d$i" "fs write ok"
+    done
+}
+build_tree
+# dirs: t 2, a 2, b 2, c 2, m 3 (17 entradas = 2 bloques); archivos: x 2,
+# y 130 (128+indirecto+inodo), z 146 (144+indirecto+inodo), w 2, 17 x 2
+n1=$(nblocks)
+[ "$n1" = 331 ] || fail "árbol armado: bloques=$n1, esperaba 6 + 325 = 331"
+ok "fs rm /t" "fs fail 14"
+ok "fs rm -r /t" "fs rm -r ok"
+run "fs ls /"
+[ "$(ents)" = "file:keep" ] || fail "tras rm -r /t: $(ents)"
+run "fs cat /t/x"; want "fs fail 7"
+run "fs ls /t"; want "fs fail 7"
+expect_cat /keep "guardado"
+scrub_is 6 "tras rm -r de todo el árbol (vuelve a la cuenta de antes)"
+echo "ok   rm -r: árbol de 325 bloques (subcarpetas, 64 y 72 KiB, directorio de 2 bloques) borrado, scrub vuelve a 6, sin fugas"
+
+# rm -r de un archivo suelto y errores.
+ok "fs write /solo uno" "fs write ok"
+ok "fs rm -r /solo" "fs rm -r ok"
+ok "fs rm -r /solo" "fs fail 7"
+ok "fs rm -r /nada/x" "fs fail 7"
+ok "fs rm -r /" "fs fail 11"
+ok "fs rm -r" "fs fail 11"
+scrub_is 6 "tras rm -r de un archivo"
+
+# Con un snapshot encima: nada de lo que usa se libera, y al borrarlo sí.
+build_tree
+ok "fs snap sn" "fs snap ok"
+ok "fs rm -r /t" "fs rm -r ok"
+# 2 superbloques + raíz nueva 2 + keep 2 + raíz vieja del snapshot 2 + árbol 325
+scrub_is 333 "con el árbol sostenido por el snapshot"
+ok "fs rollback sn" "fs rollback ok"
+scrub_is 331 "rollback al snapshot: la raíz nueva queda suelta y se libera"
+bigr_ok /t/a/y 2
+bigr_ok /t/a/b/z 5
+expect_cat /t/c/w "doble"
+expect_cat /t/m/f17 "d17"
+expect_cat /t/x "equis"
+ok "fs rm -r /t" "fs rm -r ok"
+scrub_is 333 "segundo rm -r con el snapshot todavía"
+ok "fs snap rm sn" "fs snap rm ok"
+scrub_is 6 "tras borrar el árbol y el snapshot"
+echo "ok   rm -r con snapshot: lo que el snapshot usa sigue (rollback lo trae intacto, 64 y 72 KiB con su patrón), y al borrar el snapshot se libera todo (scrub 6)"
+
+run "version"
+printf '%s\n' "$OUT" | grep -q 'LapageriaOS' || fail "el shell no sigue vivo"
+
 # =============================================================== D. kernel v1 real (opcional)
 if [ -n "${V1_KERNEL_IMG:-}" ]; then
     [ -f "$V1_KERNEL_IMG" ] || fail "V1_KERNEL_IMG no existe: $V1_KERNEL_IMG"
@@ -397,4 +467,4 @@ if [ -n "${V1_KERNEL_IMG:-}" ]; then
     echo "ok   D2 disco v1 escrito por el kernel viejo: migrado, íntegro y scrub ok"
 fi
 
-echo "ok   fs3: migración y snap rm"
+echo "ok   fs3: migración, snap rm y rm -r"

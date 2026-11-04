@@ -137,6 +137,7 @@ superbloque, y solo cuando ya hay una copia más nueva.
 | `fs_read_snap(snap, ruta, buf, max)` | lee esa raíz, no la viva |
 | `fs_rollback(snap)` | la raíz viva pasa a ser la del snapshot |
 | `fs_snap_remove(snap)` | saca el snapshot y libera lo que solo él mantenía |
+| `fs_remove_tree(ruta)` | saca un archivo o un directorio con todo lo de abajo |
 | `fs_migrate` | pasa un disco versión 1 a versión 2 en el sitio |
 | `fs_scrub` | recorre todo y verifica cada CRC (abajo) |
 
@@ -162,6 +163,7 @@ Las rutas van con `/`; `fs write /a/b/f hola`.
 | `fs cat <ruta>` | `fs live <texto>`, o `fs empty` |
 | `fs ls [ruta]` | `fs file <nombre>` o `fs dir <nombre>`, uno por línea, en el orden de creación. Sin ruta: la raíz |
 | `fs rm <ruta>` | archivo o directorio vacío. `fs rm ok` |
+| `fs rm -r <ruta>` | borrado recursivo: la carpeta con sus subcarpetas y archivos (o un archivo). `fs rm -r ok`. Libera lo que nadie más usa; lo que un snapshot todavía apunta se queda. `-r` solo es la opción si le sigue una ruta; `/` se rechaza (11) |
 | `fs snap rm <nombre>` | borra el snapshot y libera los bloques que solo él usaba. `fs snap rm ok`; 7 si no existe. `rm` está reservado: no se puede crear un snapshot con ese nombre (11) |
 | `fs migrate` | migra un disco v1 a v2. `fs migrate ok snaps=S files=F`; en un disco que ya es v2, `fs migrate not needed` |
 | `fs stat <ruta>` | `fs stat file size=N blocks=K ino=I first=B` (o `dir`) |
@@ -251,9 +253,10 @@ libres.
   que escriban a la vez entran al fs por syscall uno tras otro, sin
   reentrar (un cambio de proceso no ocurre dentro de la syscall).
 - No guarda fechas, permisos ni nombres de más de 15 bytes.
-- `fs snap rm` libera por alcanzabilidad (`fs_gc`): si el barrido
-  encuentra un bloque malo no libera nada y el espacio se filtra hasta que
-  el disco se repare.
+- `fs snap rm` y `fs rm -r` liberan por alcanzabilidad (`fs_gc`): si el
+  barrido encuentra un bloque malo no libera nada y el espacio se filtra
+  hasta que el disco se repare. `fs rm -r` no mira si la carpeta es la raíz de
+  una zona (`/zonas/<nombre>`): igual que `fs rm`, deja a la zona sin raíz.
 - El barrido de `fs_gc` lee todos los directorios e inodos alcanzables en
   cada escritura: cuesta tiempo con muchos archivos.
 
@@ -293,6 +296,10 @@ pisado). Comprueba, con las cuentas hechas a mano:
   final (116) coincide con un disco de control con el mismo contenido y sin
   snapshots. Ocho snapshots, el noveno falla (6), borrar uno de en medio
   libera el lugar.
+- `fs rm -r`: árbol de 325 bloques (subcarpetas, 64 y 72 KiB, un directorio
+  de 2 bloques); el scrub vuelve a la cuenta de antes (6). Con un snapshot
+  encima no libera lo que el snapshot usa (333 bloques, el rollback trae los
+  archivos con su patrón) y al borrar el snapshot se libera todo.
 
 Con un segundo argumento (o `V1_KERNEL_IMG`) apuntando a la imagen de un
 kernel anterior a FS-02 (`git worktree add <dir> d122028^` y `make all
