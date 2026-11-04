@@ -1,0 +1,87 @@
+// Acaparador de bloques TCP (RD-03). copihue --flat 0x400000.
+//
+// Abre escuchadores en el 7003 y el 7004 y nunca acepta: cada SYN que llega
+// deja un hijo pendiente (hasta 3 por escuchador) y consume un bloque. Un
+// tercer escuchador en el 7006 sirve de reloj: `accept` con plazo de 400
+// ticks (4 s) duerme todo ese tiempo, porque nadie se conecta al 7006. En ese
+// plazo la prueba llena los 8 bloques desde el host y comprueba que el
+// siguiente SYN recibe RST|ACK. Al terminar cierra todo y sale.
+//
+//   tcp hog listen     los tres escuchadores están abiertos
+//   tcp hog done <r>   venció el plazo (r = -110); los bloques se liberan
+//                      al salir
+// Un fallo de listen imprime `tcp hog fail <código>`. Sin cadenas.
+
+naked fn emit(c: i64) {
+    rax = 1;
+    syscall();
+}
+
+fn say8(w: i64) {
+    let x: i64 = w;
+    while (x != 0) {
+        emit(x & 255);
+        x = x >> 8;
+    }
+}
+
+fn say_num(n: i64) {
+    let v: i64 = n;
+    if (v < 0) {
+        emit(45);
+        v = 0 - v;
+    }
+    let p: i64 = 1;
+    while (v / p >= 10) { p = p * 10; }
+    while (p > 0) {
+        emit(48 + (v / p) % 10);
+        p = p / 10;
+    }
+}
+
+fn w_hog() {
+    say8(0x20706374);
+    say8(0x20676f68);
+}
+
+fn say_listen() {
+    w_hog();
+    say8(0x0a6e657473696c);
+}
+
+fn say_fail(r: i64) {
+    w_hog();
+    say8(0x206c696166);
+    say_num(r);
+    emit(10);
+}
+
+fn say_done(r: i64) {
+    w_hog();
+    say8(0x20656e6f64);
+    say_num(r);
+    emit(10);
+}
+
+fn hog_main() {
+    let a: i64 = syscall(17, 7003);
+    let b: i64 = syscall(17, 7004);
+    let c: i64 = syscall(17, 7006);
+    if (a != 0 || b != 1 || c != 2) {
+        say_fail(a * 100 + b * 10 + c);
+        return;
+    }
+    say_listen();
+    let r: i64 = syscall(18, 2, 400);
+    say_done(r);
+    syscall(22, 0);
+    syscall(22, 1);
+    syscall(22, 2);
+}
+
+naked fn _start() {
+    hog_main();
+    rax = 5;
+    syscall();
+    hlt();
+}

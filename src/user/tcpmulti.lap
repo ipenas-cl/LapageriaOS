@@ -1,0 +1,224 @@
+// Servidor de eco TCP con varias conexiones a la vez (RD-03).
+// copihue --flat 0x400000.
+//
+// Escucha en el 7001; si otro proceso ya lo tiene (-98), en el 7002. Así
+// `exec2 tcpmulti tcpmulti` levanta dos servidores. Cada uno atiende 2
+// conexiones a la vez con un solo hilo: accept sin plazo, recv sin plazo
+// sobre cada fd (devuelve -11 si no hay nada) y, cuando una vuelta no hizo
+// nada, un recv de un tick para no girar en vacío. Devuelve cada byte tal
+// cual (send con plazo 1000, en trozos de 1024) hasta el EOF del par.
+//
+// Salida, al final y de a una línea (el proceso del 7002 espera 30 ticks
+// antes de sus líneas para que no se mezclen con las del otro):
+//   tcp multi listen <puerto>
+//   tcp multi <puerto> n=<bytes> sum=<suma de bytes>   (una por conexión)
+//   tcp multi done <puerto>
+// Un error se imprime como `tcp multi fail <código>`.
+//
+// Estado en 0x401800 (la página de código es de solo lectura; nada de
+// globales), de a i64: [0] aceptadas, [1] terminadas, [2] activas,
+// [3] primer error, [4+3k] fd de la ranura k (-1 libre), [5+3k] bytes,
+// [6+3k] suma; [16+2j] y [17+2j] resultado de la conexión j que terminó.
+// Buffer 0x401400 (1024 bytes).
+
+naked fn emit(c: i64) {
+    rax = 1;
+    syscall();
+}
+
+fn say8(w: i64) {
+    let x: i64 = w;
+    while (x != 0) {
+        emit(x & 255);
+        x = x >> 8;
+    }
+}
+
+fn say_num(n: i64) {
+    let v: i64 = n;
+    if (v < 0) {
+        emit(45);
+        v = 0 - v;
+    }
+    let p: i64 = 1;
+    while (v / p >= 10) { p = p * 10; }
+    while (p > 0) {
+        emit(48 + (v / p) % 10);
+        p = p / 10;
+    }
+}
+
+fn w_multi() {
+    say8(0x20706374);
+    say8(0x2069746c756d);
+}
+
+fn say_listen(port: i64) {
+    w_multi();
+    say8(0x206e657473696c);
+    say_num(port);
+    emit(10);
+}
+
+fn say_fail(r: i64) {
+    w_multi();
+    say8(0x206c696166);
+    say_num(r);
+    emit(10);
+}
+
+fn say_conn(port: i64, n: i64, sum: i64) {
+    w_multi();
+    say_num(port);
+    say8(0x3d6e20);
+    say_num(n);
+    say8(0x3d6d757320);
+    say_num(sum);
+    emit(10);
+}
+
+fn say_done(port: i64) {
+    w_multi();
+    say8(0x20656e6f64);
+    say_num(port);
+    emit(10);
+}
+
+// Devuelve lo recibido en el buffer por el fd c. 0 o el error de send.
+fn echo_back(c: i64, n: i64) -> i64 {
+    let off: i64 = 0;
+    while (off < n) {
+        let s: i64 = syscall(20, c, 0x401400 + off, n - off, 1000);
+        if (s <= 0) {
+            if (s == 0) { return 0 - 1; }
+            return s;
+        }
+        off = off + s;
+    }
+    return 0;
+}
+
+fn sum_buf(n: i64) -> i64 {
+    let t: i64 = 0;
+    let i: i64 = 0;
+    while (i < n) {
+        let q: *u8 = (0x401400 + i) as *u8;
+        t = t + (q[0] & 255);
+        i = i + 1;
+    }
+    return t;
+}
+
+// Cierra la ranura b y anota su resultado.
+fn finish(s: *i64, b: i64, err: i64) {
+    let j: i64 = s[1];
+    if (err != 0 && s[3] == 0) { s[3] = err; }
+    if (j < 2) {
+        s[16 + 2 * j] = s[b + 1];
+        s[17 + 2 * j] = s[b + 2];
+    }
+    syscall(22, s[b]);
+    s[b] = 0 - 1;
+    s[1] = j + 1;
+    s[2] = s[2] - 1;
+}
+
+fn serve() {
+    let s: *i64 = 0x401800 as *i64;
+    let idle: i64 = 0;
+    let guard: i64 = 0;
+    let waits: i64 = 0;
+    while (s[1] < 2 && waits < 40 && guard < 2000000) {
+        guard = guard + 1;
+        let prog: i64 = 0;
+        if (s[0] < 2 && s[2] < 3) {
+            let atmo: i64 = 0;
+            if (s[2] == 0) { atmo = 50; }
+            let c: i64 = syscall(18, 0, atmo);
+            if (c >= 0) {
+                let k: i64 = 0;
+                while (s[4 + k * 3] >= 0) { k = k + 1; }
+                s[4 + k * 3] = c;
+                s[5 + k * 3] = 0;
+                s[6 + k * 3] = 0;
+                s[0] = s[0] + 1;
+                s[2] = s[2] + 1;
+                prog = 1;
+                waits = 0;
+            } else {
+                if (c == 0 - 110) { waits = waits + 1; }
+            }
+        }
+        let w: i64 = idle;
+        let k: i64 = 0;
+        while (k < 3) {
+            let b: i64 = 4 + k * 3;
+            let c: i64 = s[b];
+            if (c >= 0) {
+                let r: i64 = syscall(21, c, 0x401400, 1024, w);
+                w = 0;
+                if (r > 0) {
+                    s[b + 1] = s[b + 1] + r;
+                    s[b + 2] = s[b + 2] + sum_buf(r);
+                    let e: i64 = echo_back(c, r);
+                    if (e != 0) { finish(s, b, e); }
+                    prog = 1;
+                } else {
+                    if (r == 0) {
+                        finish(s, b, 0);
+                        prog = 1;
+                    } else {
+                        if (r != 0 - 11 && r != 0 - 110) {
+                            finish(s, b, r);
+                            prog = 1;
+                        }
+                    }
+                }
+            }
+            k = k + 1;
+        }
+        idle = 0;
+        if (prog == 0) { idle = 1; }
+    }
+}
+
+fn srv_main() {
+    let s: *i64 = 0x401800 as *i64;
+    let i: i64 = 0;
+    while (i < 24) {
+        s[i] = 0;
+        i = i + 1;
+    }
+    s[4] = 0 - 1;
+    s[7] = 0 - 1;
+    s[10] = 0 - 1;
+    let port: i64 = 7001;
+    let fd: i64 = syscall(17, port);
+    if (fd == 0 - 98) {
+        port = 7002;
+        fd = syscall(17, port);
+    }
+    if (fd != 0) {
+        say_fail(fd);
+        return;
+    }
+    if (port == 7002) { syscall(18, 0, 30); }
+    say_listen(port);
+    serve();
+    if (port == 7002) { syscall(18, 0, 50); }
+    i = 0;
+    while (i < s[1] && i < 2) {
+        say_conn(port, s[16 + 2 * i], s[17 + 2 * i]);
+        i = i + 1;
+    }
+    if (s[3] != 0) { say_fail(s[3]); }
+    say_done(port);
+    syscall(22, 0);
+}
+
+naked fn _start() {
+    srv_main();
+    rax = 5;
+    syscall();
+    hlt();
+}

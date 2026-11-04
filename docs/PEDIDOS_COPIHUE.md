@@ -39,6 +39,23 @@ No es de Copihue pero conviene dejarlo escrito: un `let` global en un programa
 de anillo 3 cae en la página de código (solo lectura) y mata al proceso con
 `#PF`; los programas de usuario guardan estado en la página de la pila.
 
+## Pedidos de RD-03 (TCP endurecido), con Copihue v0.34.1
+
+Sin `asm()` nuevo; todo compiló con v0.34.1. Una sola cosa para anotar:
+
+1. **El número de TCB (8) es un literal repetido.** Aparece en los tamaños de
+   40 arreglos `tc_*` (`[i64; 8]`, y `[i64; 32]` para las tablas de bloques
+   fuera de orden), en 11 bucles `while (i < 8)` y en los índices de los
+   buffers (`t * 4096`). Pasar de 6 a 8 se hizo con un `sed` por número de
+   línea. Habría que poder escribir el tamaño una vez (`const N = 8;` y
+   `[i64; N]`). **No probé** si v0.34.1 ya lo acepta; no lo usé, así que no es
+   un fallo comprobado, es una duda anotada.
+
+Los campos por conexión siguen siendo arreglos paralelos indexados a mano
+(`tc_una[t]`, `tc_ool[t * 4 + k]`). Funciona, pero un error de índice no lo
+detecta nadie; tampoco comprobé si Copihue permite un arreglo de `struct`
+global con acceso `tc[t].una`.
+
 ## Cerrado en v0.27.0 y v0.27.1
 
 Un arreglo adentro de `packed struct` ahora mide `N * sizeof(T)`.

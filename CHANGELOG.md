@@ -8,6 +8,34 @@ para ese commit es `legacy-tempo`.
 
 ## 0.8
 
+RD-03: TCP endurecido (`tcp.lap`). **Bloques:** 8 TCB (eran 6, 64 KiB de
+`.bss`); sin bloque libre se recicla el TIME_WAIT más viejo y, si no hay, el
+SYN recibe RST\|ACK sin reservar nada (`full`); `listen`/`connect` dan `-24`
+limpio; cola de 3 hijos llena descarta el SYN (`bklog`). **Cola fuera de
+orden:** 4 bloques por conexión, los bytes van al anillo de recepción en su
+posición final y se funden al llegar el hueco; ACK repetido por cada segmento
+adelantado. **RTT/RTO (RFC 6298):** SRTT/RTTVAR por conexión, Karn, RTO de 3 s
+tras retransmitir el SYN; RTO inicial 50, mínimo 20 y máximo 400 ticks (tres
+desviaciones documentadas). **Congestión (RFC 5681/6582):** ventana inicial de
+2 segmentos, arranque lento, evitación, timeout (`ssthresh`, `cwnd = 1`),
+retransmisión rápida con 3 ACK repetidos, recuperación con ACK parciales;
+`tc_max` separa lo más alto enviado de `tc_nxt`, que retrocede en un timeout.
+**`tcp fault`:** `rxdrop`, `txdrop`, `swap` y `off` pierden o reordenan
+segmentos con datos dentro del TCP del invitado (no en la red). **Programas:**
+`tcpmulti` (eco de 2 conexiones a la vez por proceso, `exec2 tcpmulti
+tcpmulti`) y `tcphog` (llena los bloques con hijos pendientes). **`tcp stat`**
+suma `ooo oodrop fast rtos full bklog recyc rtts rtt rto cwmax fdrop peak
+fswap`. **Pruebas** (`make qemu-test`): `tcp test` agrega cola fuera de orden,
+RTT con valores exactos, congestión, agotamiento y fallas inyectadas; en QEMU,
+4 ecos simultáneos de 64 KiB idénticos (2 servidores con `exec2`), eco íntegro
+con pérdida (2 recibidos, 1 enviado) y con un segmento reordenado, y 8 de 8
+bloques ocupados con RST\|ACK al siguiente SYN y `used 0` después. **No
+probado:** la retransmisión rápida con tráfico real (en QEMU el invitado se
+recuperó por timeout), pérdida de un solo segmento en la red (la inyecta el
+TCP del invitado), `exec2` dentro de una zona. Kernel: 331 992 bytes, 649
+sectores (544 antes; unos 29 KB son las dos imágenes de usuario nuevas, el resto TCP y sus pruebas), `.bss`
+termina en `0x47726C` (tope de `stage2_big_test`: `0x480000`).
+
 RD-02: TCP mínimo (`tcp.lap`). **Protocolo:** handshake de 3 vías activo y
 pasivo, ISN aleatorio (xorshift mezclado con el PIT, el CMOS y la MAC; no
 criptográfico), ventana de recepción de 4096 anunciada en cada segmento,

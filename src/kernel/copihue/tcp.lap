@@ -1,5 +1,5 @@
-// TCP sobre el e1000 de net.lap (RD-02). Seis bloques de control (TCB), cada
-// uno con 4 KiB de envío y 4 KiB de recepción, y seis syscalls para anillo 3:
+// TCP sobre el e1000 de net.lap (RD-02, endurecido en RD-03). Ocho bloques de
+// control (TCB), cada uno con 4 KiB de envío y 4 KiB de recepción, y seis syscalls para anillo 3:
 //
 //   17 listen(puerto)              fd (0..3), o -22 -24 -98 -100
 //   18 accept(fd, plazo)           fd nuevo, o -9 -22 -24 -11 -110
@@ -15,14 +15,18 @@
 // Lo que hace: handshake de 3 vías activo y pasivo; ISN aleatorio (xorshift
 // sembrado con el contador del PIT, los ticks, el reloj CMOS y la MAC; no es
 // criptográfico); ventana de recepción de 4096 bytes anunciada en cada
-// segmento; ACK inmediato por segmento de datos; solo se acepta lo que llega
-// en orden (lo demás se descarta y se contesta con un ACK duplicado);
-// retransmisión con timer desde el PIT (RTO 50 ticks, se duplica hasta 400,
-// 8 intentos); cierre FIN en ambos sentidos (TIME_WAIT de 200 ticks); RST
-// para segmentos a puertos sin socket, y RST al cerrar con datos sin leer.
+// segmento; ACK inmediato por segmento de datos; cola fuera de orden (4
+// bloques por conexión, en el propio anillo de recepción); medición de RTT y
+// RTO adaptativo (RFC 6298, con Karn); control de congestión (RFC 5681:
+// arranque lento, evitación, timeout, retransmisión rápida y recuperación con
+// ACK parciales de RFC 6582); retransmisión con timer desde el PIT (se duplica
+// hasta 400 ticks, 8 intentos); cierre FIN en ambos sentidos (TIME_WAIT de
+// 200 ticks, que se recicla si faltan bloques); RST para segmentos a puertos
+// sin socket y al cerrar con datos sin leer; un SYN sin bloque libre recibe
+// RST|ACK. `tcp fault` pierde o reordena segmentos para las pruebas.
 //
-// Lo que no hace: control de congestión, medición de RTT, ventana
-// escalada, SACK, retransmisión rápida, entrega fuera de orden, urgentes,
+// Lo que no hace: ventana escalada, SACK, reinicio tras inactividad
+// (RFC 5681 4.1), FIN fuera de orden (se ignora y el par lo reenvía), urgentes,
 // ni fragmentos. Un solo vecino (la puerta), IP fija 10.0.2.15.
 //
 // Estados: 0 libre, 1 LISTEN, 2 SYN_SENT, 3 SYN_RCVD, 4 ESTABLISHED,
@@ -36,40 +40,58 @@
 // udp_wdl, estado 4, marco reescrito): el proceso vuelve a ejecutar la
 // misma syscall al despertar.
 
-let tc_st: [i64; 6];
-let tc_own: [i64; 6];
-let tc_par: [i64; 6];
-let tc_age: [i64; 6];
-let tc_lport: [i64; 6];
-let tc_rport: [i64; 6];
-let tc_rip: [i64; 6];
-let tc_iss: [i64; 6];
-let tc_una: [i64; 6];
-let tc_nxt: [i64; 6];
-let tc_wnd: [i64; 6];
-let tc_irs: [i64; 6];
-let tc_rnxt: [i64; 6];
-let tc_mss: [i64; 6];
-let tc_txh: [i64; 6];
-let tc_txn: [i64; 6];
-let tc_rxh: [i64; 6];
-let tc_rxn: [i64; 6];
-let tc_finwant: [i64; 6];
-let tc_finsent: [i64; 6];
-let tc_fin: [i64; 6];
-let tc_rto: [i64; 6];
-let tc_dl: [i64; 6];
-let tc_dl2: [i64; 6];
-let tc_nre: [i64; 6];
-let tc_err: [i64; 6];
-let tc_txb: [u8; 24576];
-let tc_rxb: [u8; 24576];
+let tc_st: [i64; 8];
+let tc_own: [i64; 8];
+let tc_par: [i64; 8];
+let tc_age: [i64; 8];
+let tc_lport: [i64; 8];
+let tc_rport: [i64; 8];
+let tc_rip: [i64; 8];
+let tc_iss: [i64; 8];
+let tc_una: [i64; 8];
+let tc_nxt: [i64; 8];
+let tc_wnd: [i64; 8];
+let tc_irs: [i64; 8];
+let tc_rnxt: [i64; 8];
+let tc_mss: [i64; 8];
+let tc_txh: [i64; 8];
+let tc_txn: [i64; 8];
+let tc_rxh: [i64; 8];
+let tc_rxn: [i64; 8];
+let tc_finwant: [i64; 8];
+let tc_finsent: [i64; 8];
+let tc_fin: [i64; 8];
+let tc_rto: [i64; 8];
+let tc_dl: [i64; 8];
+let tc_dl2: [i64; 8];
+let tc_nre: [i64; 8];
+let tc_err: [i64; 8];
+// RD-03. snd_max (lo más alto enviado: tc_nxt retrocede en un timeout);
+// congestión (RFC 5681); RTT (RFC 6298, srtt x8 y 4 x rttvar, en ticks);
+// FIN enviado alguna vez; cola fuera de orden (4 bloques por TCB: inicio
+// de secuencia y largo; largo 0 = vacío).
+let tc_max: [i64; 8];
+let tc_cwnd: [i64; 8];
+let tc_ssth: [i64; 8];
+let tc_dupn: [i64; 8];
+let tc_frec: [i64; 8];
+let tc_rcvr: [i64; 8];
+let tc_srtt: [i64; 8];
+let tc_rvar: [i64; 8];
+let tc_hrtt: [i64; 8];
+let tc_rseq: [i64; 8];
+let tc_rts: [i64; 8];
+let tc_finonce: [i64; 8];
+let tc_oos: [i64; 32];
+let tc_ool: [i64; 32];
+let tc_txb: [u8; 32768];
+let tc_rxb: [u8; 32768];
 // fd de un proceso -> TCB + 1 (0 = libre). Índice: dueño * 4 + fd.
 let tcp_fdmap: [i64; 16];
 // connect en curso por proceso: TCB + 1, y su fd.
 let tcp_cpend: [i64; 2];
 let tcp_cfd: [i64; 2];
-let tcp_last: [u8; 256];
+let tcp_last: [u8; 1600];
 let tcp_lastlen: i64 = 0;
 let tcp_dry: i64 = 0;
 let tcp_skew: i64 = 0;
@@ -95,6 +117,39 @@ let tcp_giveup: i64 = 0;
 let tcp_last_iss: i64 = 0;
 let tcp_rst_win: i64 = 0;
 let tcp_rst_cnt: i64 = 0;
+// RD-03: contadores nuevos.
+let tcp_ooo_n: i64 = 0;
+let tcp_oodrop: i64 = 0;
+let tcp_fast_n: i64 = 0;
+let tcp_rtos: i64 = 0;
+let tcp_full: i64 = 0;
+let tcp_bklog: i64 = 0;
+let tcp_recyc: i64 = 0;
+let tcp_rtt_n: i64 = 0;
+let tcp_rtt_last: i64 = 0;
+let tcp_rto_last: i64 = 0;
+let tcp_cwmax: i64 = 0;
+let tcp_fdrop: i64 = 0;
+let tcp_fswap: i64 = 0;
+let tcp_peak: i64 = 0;
+// Fallas inyectadas (comando `tcp fault`): cuenta atrás de segmentos con
+// datos hasta el primero que se pierde, y cuántos seguidos se pierden.
+let tcp_f_rxat: i64 = 0;
+let tcp_f_rxn: i64 = 0;
+let tcp_f_txat: i64 = 0;
+let tcp_f_txn: i64 = 0;
+let tcp_f_swat: i64 = 0;
+let tcp_f_held: i64 = 0;
+let tcp_f_rel: i64 = 0;
+let tcp_f_replay: i64 = 0;
+let tcp_f_hold_t: i64 = 0;
+let tcp_f_hold_ihl: i64 = 0;
+let tcp_f_hold_tot: i64 = 0;
+let tcp_hold: [u8; 2048];
+let tcp_inj_sport: i64 = 4000;
+let tcp_inj_win: i64 = 2000;
+let tcp_inj_c0: i64 = 97;
+let tcp_t_iss: i64 = 0;
 // Argumentos del segmento que se arma (tcp_emit) y del que llegó (tcp_input).
 let tcp_o_sip: i64 = 0;
 let tcp_o_dip: i64 = 0;
@@ -185,7 +240,7 @@ fn tcp_rand() -> i64 {
 
 fn tcp_reset() -> i64 {
     let i = 0;
-    while (i < 6) {
+    while (i < 8) {
         tc_st[i] = 0;
         tc_own[i] = 0 - 1;
         tc_par[i] = 0;
@@ -194,8 +249,13 @@ fn tcp_reset() -> i64 {
         tc_dl[i] = 0;
         tc_dl2[i] = 0;
         tc_err[i] = 0;
+        tcp_oo_clear(i);
         i = i + 1;
     }
+    tcp_f_rxn = 0;
+    tcp_f_txn = 0;
+    tcp_f_swat = 0;
+    tcp_f_held = 0;
     i = 0;
     while (i < 16) {
         tcp_fdmap[i] = 0;
@@ -218,7 +278,17 @@ fn tcp_event(t: i64) -> i64 {
     return 0;
 }
 
+fn tcp_oo_clear(t: i64) -> i64 {
+    let k = 0;
+    while (k < 4) {
+        tc_ool[t * 4 + k] = 0;
+        k = k + 1;
+    }
+    return 0;
+}
+
 fn tcp_drop(t: i64) -> i64 {
+    tcp_oo_clear(t);
     tc_st[t] = 0;
     tc_own[t] = 0 - 1;
     tc_par[t] = 0;
@@ -322,10 +392,19 @@ fn tcp_build(out: *u8) -> i64 {
 
 // Transmite lo que dejó tcp_o_*. En seco (pruebas) deja la trama en tcp_last.
 fn tcp_emit() -> i64 {
+    // Falla inyectada: el segmento con datos se pierde antes del chip.
+    if (tcp_f_txn > 0 && tcp_o_dlen > 0 && tcp_o_t >= 0) {
+        tcp_f_txat = tcp_f_txat - 1;
+        if (tcp_f_txat <= 0) {
+            tcp_f_txn = tcp_f_txn - 1;
+            tcp_fdrop = tcp_fdrop + 1;
+            return 0;
+        }
+    }
     if (tcp_dry != 0) {
         let fl = sizeof(EthHdr) + 20 + 20 + tcp_o_dlen;
         if (tcp_o_mss != 0) { fl = fl + 4; }
-        if (fl > 256) { return 0; }
+        if (fl > 1600) { return 0; }
         tcp_lastlen = tcp_build(tcp_last);
         tcp_tx_n = tcp_tx_n + 1;
         return 0;
@@ -399,7 +478,7 @@ fn tcp_rst_tcb(t: i64) -> i64 {
 
 fn tcp_find(sip: i64, sport: i64, dport: i64) -> i64 {
     let i = 0;
-    while (i < 6) {
+    while (i < 8) {
         if (tc_st[i] >= 2 && tc_st[i] <= 10) {
             if (tc_lport[i] == dport && tc_rport[i] == sport && tc_rip[i] == sip) { return i; }
         }
@@ -410,20 +489,35 @@ fn tcp_find(sip: i64, sport: i64, dport: i64) -> i64 {
 
 fn tcp_find_listen(dport: i64) -> i64 {
     let i = 0;
-    while (i < 6) {
+    while (i < 8) {
         if (tc_st[i] == 1 && tc_lport[i] == dport) { return i; }
         i = i + 1;
     }
     return 0 - 1;
 }
 
+// Un bloque libre. Si no hay, se recicla el TIME_WAIT más viejo (huérfano:
+// ningún fd lo mira); si tampoco, -1 y el que llama rechaza.
 fn tcp_free_tcb() -> i64 {
     let i = 0;
-    while (i < 6) {
+    while (i < 8) {
         if (tc_st[i] == 0) { return i; }
         i = i + 1;
     }
-    return 0 - 1;
+    let best = 0 - 1;
+    i = 0;
+    while (i < 8) {
+        if (tc_st[i] == 10 && tc_own[i] < 0) {
+            if (best < 0 || tc_age[i] < tc_age[best]) { best = i; }
+        }
+        i = i + 1;
+    }
+    if (best >= 0) {
+        tcp_recyc = tcp_recyc + 1;
+        tcp_closed_n = tcp_closed_n + 1;
+        tcp_drop(best);
+    }
+    return best;
 }
 
 fn tcp_fd_t(owner: i64, fd: i64) -> i64 {
@@ -448,6 +542,14 @@ fn tcp_arm(t: i64) -> i64 {
 
 // Reinicia un TCB recién tomado.
 fn tcp_init(t: i64, lport: i64, rport: i64, rip: i64) -> i64 {
+    // Máximo de bloques ocupados a la vez (este incluido: aún está en 0).
+    let u = 1;
+    let q = 0;
+    while (q < 8) {
+        if (tc_st[q] != 0) { u = u + 1; }
+        q = q + 1;
+    }
+    if (u > tcp_peak) { tcp_peak = u; }
     tcp_age_n = tcp_age_n + 1;
     tc_age[t] = tcp_age_n;
     tc_lport[t] = lport;
@@ -475,6 +577,76 @@ fn tcp_init(t: i64, lport: i64, rport: i64, rip: i64) -> i64 {
     tc_dl2[t] = 0;
     tc_nre[t] = 0;
     tc_err[t] = 0;
+    tc_max[t] = tc_nxt[t];
+    tc_cwnd[t] = 1072;
+    tc_ssth[t] = 0x7FFFFFFF;
+    tc_dupn[t] = 0;
+    tc_frec[t] = 0;
+    tc_rcvr[t] = 0;
+    tc_srtt[t] = 0;
+    tc_rvar[t] = 0;
+    tc_hrtt[t] = 0;
+    tc_rseq[t] = 0 - 1;
+    tc_rts[t] = 0;
+    tc_finonce[t] = 0;
+    tcp_oo_clear(t);
+    return 0;
+}
+
+// ----- RTT y RTO (RFC 6298), en ticks de 10 ms -----
+//
+// srtt va multiplicado por 8 y rttvar por 4, como en la RFC: la primera
+// muestra R da SRTT = R, RTTVAR = R / 2, RTO = SRTT + max(G, 4 * RTTVAR). El
+// reloj es el tick (G = 1). RTO mínimo 20 ticks (la RFC pide 1 s), máximo
+// 400 (la RFC pide al menos 60 s) y inicial 50 (la RFC pide 1 s): tres
+// desviaciones documentadas en docs/red.md.
+
+fn tcp_rto_calc(t: i64) -> i64 {
+    let v = tc_rvar[t];
+    if (v < 1) { v = 1; }
+    let r = (tc_srtt[t] >> 3) + v;
+    if (r < 20) { r = 20; }
+    if (r > 400) { r = 400; }
+    tc_rto[t] = r;
+    tcp_rto_last = r;
+    return r;
+}
+
+// Muestra de RTT r (Karn: solo de segmentos que no se retransmitieron).
+fn tcp_rtt_sample(t: i64, r: i64) -> i64 {
+    if (r < 0) { r = 0; }
+    if (tc_hrtt[t] == 0) {
+        tc_srtt[t] = r * 8;
+        tc_rvar[t] = r * 2;
+        tc_hrtt[t] = 1;
+    } else {
+        let d = tc_srtt[t] - r * 8;
+        if (d < 0) { d = 0 - d; }
+        tc_rvar[t] = tc_rvar[t] - (tc_rvar[t] >> 2) + (d >> 3);
+        tc_srtt[t] = tc_srtt[t] - (tc_srtt[t] >> 3) + r;
+    }
+    tcp_rtt_n = tcp_rtt_n + 1;
+    tcp_rtt_last = r;
+    tcp_rto_calc(t);
+    return 0;
+}
+
+// ----- Congestión (RFC 5681) -----
+
+fn tcp_smss(t: i64) -> i64 {
+    let m = tc_mss[t];
+    if (m > 1460) { m = 1460; }
+    if (m < 64) { m = 536; }
+    return m;
+}
+
+// Al establecerse: ventana inicial de 2 segmentos y ssthresh «infinito».
+fn tcp_cc_init(t: i64) -> i64 {
+    tc_cwnd[t] = 2 * tcp_smss(t);
+    tc_ssth[t] = 0x7FFFFFFF;
+    tc_dupn[t] = 0;
+    tc_frec[t] = 0;
+    if (tc_cwnd[t] > tcp_cwmax) { tcp_cwmax = tc_cwnd[t]; }
     return 0;
 }
 
@@ -483,6 +655,7 @@ fn tcp_init(t: i64, lport: i64, rport: i64, rip: i64) -> i64 {
 fn tcp_kill(t: i64, err: i64) -> i64 {
     if (tc_own[t] >= 0) {
         tc_st[t] = 11;
+        tcp_oo_clear(t);
         tc_err[t] = err;
         tc_txn[t] = 0;
         tc_rxn[t] = 0;
@@ -495,9 +668,11 @@ fn tcp_kill(t: i64, err: i64) -> i64 {
     return 0;
 }
 
-// Manda lo que la ventana permita, y el FIN cuando no queda nada por
-// mandar. tcp_force deja pasar un segmento aunque la ventana esté en 0
-// (retransmisión y sondeo).
+// Manda lo que la ventana permita (la del par o la de congestión, la menor),
+// y el FIN cuando no queda nada por mandar. tcp_force deja pasar un segmento
+// aunque la ventana esté en 0 (retransmisión y sondeo). tc_nxt retrocede en
+// un timeout; tc_max recuerda lo más alto que salió, y un envío por debajo
+// de tc_max es una retransmisión (no se mide su RTT).
 fn tcp_output(t: i64) -> i64 {
     let st = tc_st[t];
     if (st != 4 && st != 5 && st != 7 && st != 8 && st != 9) { return 0; }
@@ -507,7 +682,9 @@ fn tcp_output(t: i64) -> i64 {
         let outst = tcp_sub(tc_nxt[t], tc_una[t]);
         let inflight = outst - tc_finsent[t];
         let unsent = tc_txn[t] - inflight;
-        let allow = tc_wnd[t] - outst;
+        let w = tc_wnd[t];
+        if (tc_cwnd[t] < w) { w = tc_cwnd[t]; }
+        let allow = w - outst;
         if (tcp_force != 0 && allow < 1) { allow = 1; }
         if (unsent > 0 && tc_finsent[t] == 0) {
             if (allow > 0) {
@@ -516,8 +693,15 @@ fn tcp_output(t: i64) -> i64 {
                 let mx = tc_mss[t];
                 if (mx > 1460) { mx = 1460; }
                 if (n > mx) { n = mx; }
+                let fresh = 0;
+                if (tcp_sub(tc_nxt[t], tc_max[t]) >= 0) { fresh = 1; }
                 tcp_seg(t, 24, tc_nxt[t], inflight, n);
                 tc_nxt[t] = (tc_nxt[t] + n) & 0xFFFFFFFF;
+                if (tcp_sub(tc_nxt[t], tc_max[t]) > 0) { tc_max[t] = tc_nxt[t]; }
+                if (fresh != 0 && tc_rseq[t] < 0) {
+                    tc_rseq[t] = tc_nxt[t];
+                    tc_rts[t] = tcp_now();
+                }
                 tcp_force = 0;
                 if (tc_dl[t] == 0) { tcp_arm(t); }
             } else {
@@ -529,7 +713,9 @@ fn tcp_output(t: i64) -> i64 {
             if (unsent <= 0 && tc_finwant[t] != 0 && tc_finsent[t] == 0) {
                 tcp_seg(t, 17, tc_nxt[t], 0, 0);
                 tc_nxt[t] = (tc_nxt[t] + 1) & 0xFFFFFFFF;
+                if (tcp_sub(tc_nxt[t], tc_max[t]) > 0) { tc_max[t] = tc_nxt[t]; }
                 tc_finsent[t] = 1;
+                tc_finonce[t] = 1;
                 if (tc_st[t] == 4) { tc_st[t] = 5; }
                 if (tc_st[t] == 7) { tc_st[t] = 9; }
                 if (tc_dl[t] == 0) { tcp_arm(t); }
@@ -537,6 +723,25 @@ fn tcp_output(t: i64) -> i64 {
             guard = 99;
         }
     }
+    return 0;
+}
+
+// Reenvía solo el primer segmento sin confirmar (retransmisión rápida y
+// ACK parcial), sin mover tc_nxt.
+fn tcp_rxmit_first(t: i64) -> i64 {
+    let smss = tcp_smss(t);
+    let sent = tcp_sub(tc_max[t], tc_una[t]) - tc_finonce[t];
+    if (sent > tc_txn[t]) { sent = tc_txn[t]; }
+    let n = sent;
+    if (n > smss) { n = smss; }
+    if (n > 0) {
+        tcp_seg(t, 24, tc_una[t], 0, n);
+    } else {
+        if (tc_finonce[t] != 0) { tcp_seg(t, 17, tc_una[t], 0, 0); }
+    }
+    tc_rseq[t] = 0 - 1;
+    tcp_retx_n = tcp_retx_n + 1;
+    if (tc_dl[t] == 0) { tcp_arm(t); }
     return 0;
 }
 
@@ -557,6 +762,8 @@ fn tcp_retx(t: i64) -> i64 {
     tc_rto[t] = tc_rto[t] * 2;
     if (tc_rto[t] > 400) { tc_rto[t] = 400; }
     tcp_retx_n = tcp_retx_n + 1;
+    tcp_rtos = tcp_rtos + 1;
+    tc_rseq[t] = 0 - 1;
     if (st == 2) {
         tcp_seg(t, 2, tc_iss[t], 0, 0);
         tcp_arm(t);
@@ -566,6 +773,17 @@ fn tcp_retx(t: i64) -> i64 {
         tcp_seg(t, 18, tc_iss[t], 0, 0);
         tcp_arm(t);
         return 0;
+    }
+    // RFC 5681 (3.1): ssthresh = max(FlightSize / 2, 2 * SMSS), cwnd = 1 SMSS.
+    // Un sondeo de ventana cero no es congestión.
+    if (persist == 0) {
+        let smss = tcp_smss(t);
+        let h = tcp_sub(tc_max[t], tc_una[t]) / 2;
+        if (h < 2 * smss) { h = 2 * smss; }
+        tc_ssth[t] = h;
+        tc_cwnd[t] = smss;
+        tc_dupn[t] = 0;
+        tc_frec[t] = 0;
     }
     // Vuelve a mandar desde lo que no fue confirmado (go-back-N).
     tc_nxt[t] = tc_una[t];
@@ -583,7 +801,7 @@ fn tcp_tick() -> i64 {
     if (net_on == 0 && tcp_dry == 0) { return 0; }
     let now = tcp_now();
     let i = 0;
-    while (i < 6) {
+    while (i < 8) {
         let st = tc_st[i];
         if (st >= 2 && st <= 10) {
             if (tc_dl[i] != 0 && now >= tc_dl[i]) {
@@ -598,6 +816,7 @@ fn tcp_tick() -> i64 {
         }
         i = i + 1;
     }
+    if (tcp_f_held != 0 && tcp_now() - tcp_f_hold_t >= 20) { tcp_release_held(); }
     return 0;
 }
 
@@ -640,13 +859,23 @@ fn tcp_mss_opt(p: *u8, o: i64, e: i64) -> i64 {
 fn tcp_passive(l: i64, sip: i64, sport: i64, dport: i64, seq: i64, win: i64) -> i64 {
     let kids = 0;
     let i = 0;
-    while (i < 6) {
+    while (i < 8) {
         if (tc_par[i] == l + 1 && tc_st[i] >= 2) { kids = kids + 1; }
         i = i + 1;
     }
-    if (kids >= 3) { return 0; }
+    // Cola del escuchador llena: el SYN se descarta y el cliente reintenta.
+    if (kids >= 3) {
+        tcp_bklog = tcp_bklog + 1;
+        return 0;
+    }
     let t = tcp_free_tcb();
-    if (t < 0) { return 0; }
+    if (t < 0) {
+        // Sin bloques: rechazo explícito (RST|ACK), no silencio. No queda
+        // nada reservado.
+        tcp_full = tcp_full + 1;
+        tcp_closed(sip, sport, dport, seq, 0, 2, 0);
+        return 0;
+    }
     tcp_init(t, dport, sport, sip);
     tc_par[t] = l + 1;
     tc_irs[t] = seq;
@@ -654,8 +883,104 @@ fn tcp_passive(l: i64, sip: i64, sport: i64, dport: i64, seq: i64, win: i64) -> 
     tc_wnd[t] = win;
     tc_mss[t] = tcp_i_mss;
     tc_st[t] = 3;
+    tc_rseq[t] = tc_iss[t] + 1;
+    tc_rts[t] = tcp_now();
     tcp_seg(t, 18, tc_iss[t], 0, 0);
     tcp_arm(t);
+    return 0;
+}
+
+// Fin del handshake (t ya en 4): muestra de RTT del SYN o SYN|ACK si no se
+// retransmitió (Karn); si se retransmitió, RFC 6298 (5.7) pide RTO de 3 s al
+// empezar los datos. Arranca la ventana de congestión.
+fn tcp_hs_done(t: i64) -> i64 {
+    if (tc_nre[t] == 0 && tc_rseq[t] >= 0) {
+        tcp_rtt_sample(t, tcp_now() - tc_rts[t]);
+    } else {
+        tc_rto[t] = 50;
+        if (tc_nre[t] > 0) { tc_rto[t] = 300; }
+    }
+    tc_rseq[t] = 0 - 1;
+    tc_dl[t] = 0;
+    tc_nre[t] = 0;
+    tcp_cc_init(t);
+    return 0;
+}
+
+// Bloques fuera de orden. d es el desplazamiento de la carga respecto de
+// tc_rnxt (> 0). Los bytes van al anillo de recepción en su posición final
+// (rxh + rxn + d), así que no hay copia al llegar el hueco; el bloque solo
+// anota cuáles bytes de ese rango son válidos. Se funden los que se tocan.
+// 1 si quedó anotado.
+fn tcp_oo_add(t: i64, d: i64, doff: i64, dlen: i64) -> i64 {
+    let win = tcp_win(t);
+    if (d >= win) { return 0; }
+    let n = dlen;
+    if (d + n > win) { n = win - d; }
+    if (n <= 0) { return 0; }
+    let s = d;
+    let e = d + n;
+    let k = 0;
+    let free = 0 - 1;
+    let touched = 0;
+    while (k < 4) {
+        let ln = tc_ool[t * 4 + k];
+        if (ln == 0) {
+            if (free < 0) { free = k; }
+        } else {
+            let bs = tcp_sub(tc_oos[t * 4 + k], tc_rnxt[t]);
+            let be = bs + ln;
+            if (bs <= e && be >= s) {
+                if (bs < s) { s = bs; }
+                if (be > e) { e = be; }
+                tc_ool[t * 4 + k] = 0;
+                if (free < 0 || k < free) { free = k; }
+                touched = touched + 1;
+            }
+        }
+        k = k + 1;
+    }
+    if (free < 0) {
+        tcp_oodrop = tcp_oodrop + 1;
+        return 0;
+    }
+    // Los bytes del segmento a su lugar.
+    let i = 0;
+    while (i < n) {
+        let sb: *u8 = (tcp_i_p + doff + i) as *u8;
+        tc_rxb[t * 4096 + ((tc_rxh[t] + tc_rxn[t] + d + i) & 4095)] = sb[0];
+        i = i + 1;
+    }
+    tc_oos[t * 4 + free] = (tc_rnxt[t] + s) & 0xFFFFFFFF;
+    tc_ool[t * 4 + free] = e - s;
+    tcp_ooo_n = tcp_ooo_n + 1;
+    return 1;
+}
+
+// Tras avanzar tc_rnxt: los bloques que ya empiezan en el punto de lectura
+// pasan a ser datos en orden (sus bytes ya están en el anillo).
+fn tcp_oo_absorb(t: i64) -> i64 {
+    let again = 1;
+    while (again != 0) {
+        again = 0;
+        let k = 0;
+        while (k < 4) {
+            let ln = tc_ool[t * 4 + k];
+            if (ln != 0) {
+                let bs = tcp_sub(tc_oos[t * 4 + k], tc_rnxt[t]);
+                if (bs <= 0) {
+                    let be = bs + ln;
+                    if (be > 0) {
+                        tc_rxn[t] = tc_rxn[t] + be;
+                        tc_rnxt[t] = (tc_rnxt[t] + be) & 0xFFFFFFFF;
+                    }
+                    tc_ool[t * 4 + k] = 0;
+                    again = 1;
+                }
+            }
+            k = k + 1;
+        }
+    }
     return 0;
 }
 
@@ -688,9 +1013,7 @@ fn tcp_input(t: i64) -> i64 {
             tc_wnd[t] = tcp_i_win;
             tc_mss[t] = tcp_i_mss;
             tc_st[t] = 4;
-            tc_dl[t] = 0;
-            tc_nre[t] = 0;
-            tc_rto[t] = 50;
+            tcp_hs_done(t);
             tcp_est = tcp_est + 1;
             tcp_ack(t);
             tcp_event(t);
@@ -718,9 +1041,7 @@ fn tcp_input(t: i64) -> i64 {
         tc_wnd[t] = tcp_i_win;
         tc_st[t] = 4;
         st = 4;
-        tc_dl[t] = 0;
-        tc_nre[t] = 0;
-        tc_rto[t] = 50;
+        tcp_hs_done(t);
         tcp_est = tcp_est + 1;
         tcp_event(t);
     }
@@ -741,6 +1062,9 @@ fn tcp_input(t: i64) -> i64 {
     let dlen = tcp_i_dlen;
     let doff = tcp_i_doff;
     let needack = 0;
+    // ACK puro (sin datos, SYN ni FIN): candidato a ACK duplicado.
+    let pureack = 0;
+    if (tcp_i_dlen == 0 && (fl & 3) == 0) { pureack = 1; }
     if (dlen > 0 || (fl & 1) != 0) { needack = 1; }
     if (dseq < 0) {
         let skip = 0 - dseq;
@@ -756,10 +1080,17 @@ fn tcp_input(t: i64) -> i64 {
         needack = 1;
     } else {
         if (dseq > 0) {
-            // Adelantado: no hay cola fuera de orden. ACK duplicado.
+            // Adelantado: los datos van a la cola fuera de orden y se manda
+            // un ACK duplicado. Un FIN adelantado se ignora (el par lo
+            // reenvía cuando se llene el hueco).
             tcp_dup = tcp_dup + 1;
-            tcp_ack(t);
-            return 0;
+            if (dlen > 0 && (st == 4 || st == 5 || st == 6)) {
+                if (tc_own[t] >= 0 || tc_par[t] != 0) { tcp_oo_add(t, dseq, doff, dlen); }
+            }
+            needack = 0;
+            if (dlen > 0) { needack = 1; }
+            dlen = 0;
+            fl = fl & 62;
         }
     }
     if ((fl & 2) != 0) {
@@ -767,16 +1098,17 @@ fn tcp_input(t: i64) -> i64 {
         return 0;
     }
     if ((fl & 16) == 0) { return 0; }
-    let outst = tcp_sub(tc_nxt[t], tc_una[t]);
+    let outm = tcp_sub(tc_max[t], tc_una[t]);
     let a = tcp_sub(ack, tc_una[t]);
-    if (a > outst) {
+    if (a > outm) {
         tcp_ack(t);
         return 0;
     }
+    let smss = tcp_smss(t);
     if (a > 0) {
         let nd = a;
         let finacked = 0;
-        if (tc_finsent[t] != 0 && a == outst) {
+        if (tc_finonce[t] != 0 && a == outm) {
             nd = nd - 1;
             finacked = 1;
         }
@@ -784,9 +1116,48 @@ fn tcp_input(t: i64) -> i64 {
         tc_txh[t] = (tc_txh[t] + nd) & 4095;
         tc_txn[t] = tc_txn[t] - nd;
         tc_una[t] = ack;
+        // Tras un timeout tc_nxt retrocedió: el ACK puede pasarlo.
+        if (tcp_sub(tc_nxt[t], tc_una[t]) < 0) { tc_nxt[t] = tc_una[t]; }
+        // RTT (RFC 6298): solo si el ACK cubre el segmento medido.
+        if (tc_rseq[t] >= 0 && tcp_sub(ack, tc_rseq[t]) >= 0) {
+            tcp_rtt_sample(t, tcp_now() - tc_rts[t]);
+            tc_rseq[t] = 0 - 1;
+        }
         tc_nre[t] = 0;
-        tc_rto[t] = 50;
-        if (tc_una[t] == tc_nxt[t]) { tc_dl[t] = 0; } else { tcp_arm(t); }
+        if (tc_hrtt[t] != 0) { tcp_rto_calc(t); } else { tc_rto[t] = 50; }
+        // Congestión (RFC 5681 / 6582).
+        if (tc_frec[t] != 0) {
+            if (tcp_sub(ack, tc_rcvr[t]) >= 0) {
+                // ACK completo: fin de la recuperación, la ventana se desinfla.
+                tc_frec[t] = 0;
+                tc_dupn[t] = 0;
+                tc_cwnd[t] = tc_ssth[t];
+            } else {
+                // ACK parcial: el siguiente hueco, y la ventana baja lo
+                // confirmado (más un segmento si se confirmó uno entero).
+                tcp_rxmit_first(t);
+                let c = tc_cwnd[t] - a;
+                if (a >= smss) { c = c + smss; }
+                if (c < smss) { c = smss; }
+                tc_cwnd[t] = c;
+            }
+        } else {
+            tc_dupn[t] = 0;
+            if (tc_cwnd[t] < tc_ssth[t]) {
+                // Arranque lento: sube lo confirmado, hasta un SMSS por ACK.
+                let inc = a;
+                if (inc > smss) { inc = smss; }
+                tc_cwnd[t] = tc_cwnd[t] + inc;
+            } else {
+                // Evitación de congestión: SMSS * SMSS / cwnd por ACK.
+                let inc = smss * smss / tc_cwnd[t];
+                if (inc < 1) { inc = 1; }
+                tc_cwnd[t] = tc_cwnd[t] + inc;
+            }
+        }
+        if (tc_cwnd[t] > 1048576) { tc_cwnd[t] = 1048576; }
+        if (tc_cwnd[t] > tcp_cwmax) { tcp_cwmax = tc_cwnd[t]; }
+        if (tc_una[t] == tc_max[t]) { tc_dl[t] = 0; } else { tcp_arm(t); }
         if (finacked != 0) {
             if (st == 5) {
                 tc_st[t] = 6;
@@ -804,10 +1175,32 @@ fn tcp_input(t: i64) -> i64 {
                 return 0;
             }
         }
+    } else {
+        // ACK duplicado (RFC 5681): mismo ack, sin datos, hay algo en vuelo y
+        // la ventana no cambió. A los tres, retransmisión rápida.
+        if (a == 0 && pureack != 0 && outm > 0 && tcp_i_win == tc_wnd[t]) {
+            tc_dupn[t] = tc_dupn[t] + 1;
+            if (tc_frec[t] == 0) {
+                if (tc_dupn[t] == 3) {
+                    let h = outm / 2;
+                    if (h < 2 * smss) { h = 2 * smss; }
+                    tc_ssth[t] = h;
+                    tc_cwnd[t] = h + 3 * smss;
+                    tc_frec[t] = 1;
+                    tc_rcvr[t] = tc_max[t];
+                    tcp_fast_n = tcp_fast_n + 1;
+                    tcp_rxmit_first(t);
+                    if (tc_cwnd[t] > tcp_cwmax) { tcp_cwmax = tc_cwnd[t]; }
+                }
+            } else {
+                tc_cwnd[t] = tc_cwnd[t] + smss;
+            }
+        }
     }
     if (a >= 0) { tc_wnd[t] = tcp_i_win; }
     // Datos.
     let acc = 0;
+    let fin_ok = 1;
     if (dlen > 0) {
         if (st == 4 || st == 5 || st == 6) {
             if (tc_own[t] < 0 && tc_par[t] == 0) {
@@ -828,11 +1221,16 @@ fn tcp_input(t: i64) -> i64 {
             }
             tc_rxn[t] = tc_rxn[t] + acc;
             tc_rnxt[t] = (tc_rnxt[t] + acc) & 0xFFFFFFFF;
+            // El hueco se llenó: lo que esperaba en la cola pasa a datos.
+            let r1 = tc_rnxt[t];
+            tcp_oo_absorb(t);
+            if (tc_rnxt[t] != r1) { fin_ok = 0; }
         }
     }
-    if ((fl & 1) != 0 && acc == dlen && (st == 4 || st == 5 || st == 6)) {
+    if ((fl & 1) != 0 && fin_ok != 0 && acc == dlen && (st == 4 || st == 5 || st == 6)) {
         tc_rnxt[t] = (tc_rnxt[t] + 1) & 0xFFFFFFFF;
         tc_fin[t] = 1;
+        tcp_oo_clear(t);
         if (st == 4) { tc_st[t] = 7; }
         if (st == 5) { tc_st[t] = 8; }
         if (st == 6) {
@@ -848,7 +1246,7 @@ fn tcp_input(t: i64) -> i64 {
 
 // Llamada desde net_ip con la cabecera IP ya validada y el destino
 // nuestro. 0: atendida o ignorada. 1: malformada, se descarta.
-fn tcp_rx(p: *u8, ihl: i64, total: i64) -> i64 {
+fn tcp_rx_main(p: *u8, ihl: i64, total: i64) -> i64 {
     let tl = total - ihl;
     if (tl < 20) { tcp_bad = tcp_bad + 1; return 1; }
     let off = sizeof(EthHdr) + ihl;
@@ -875,6 +1273,38 @@ fn tcp_rx(p: *u8, ihl: i64, total: i64) -> i64 {
     tcp_i_mss = 536;
     if ((fl & 2) != 0) { tcp_i_mss = tcp_mss_opt(p, off + 20, off + doff); }
     if (sport == 0 || dport == 0) { return 0; }
+    // Fallas inyectadas (`tcp fault`), solo a segmentos con datos que no son
+    // el reenvío de uno retenido.
+    if (dlen > 0 && tcp_f_replay == 0) {
+        if (tcp_f_rxn > 0) {
+            tcp_f_rxat = tcp_f_rxat - 1;
+            if (tcp_f_rxat <= 0) {
+                tcp_f_rxn = tcp_f_rxn - 1;
+                tcp_fdrop = tcp_fdrop + 1;
+                return 0;
+            }
+        }
+        if (tcp_f_held != 0) {
+            tcp_f_rel = 1;
+        } else {
+            if (tcp_f_swat > 0) {
+                tcp_f_swat = tcp_f_swat - 1;
+                if (tcp_f_swat == 0 && sizeof(EthHdr) + total <= 2048) {
+                    let h = 0;
+                    while (h < sizeof(EthHdr) + total) {
+                        tcp_hold[h] = p[h];
+                        h = h + 1;
+                    }
+                    tcp_f_held = 1;
+                    tcp_f_hold_t = tcp_now();
+                    tcp_f_hold_ihl = ihl;
+                    tcp_f_hold_tot = total;
+                    tcp_fswap = tcp_fswap + 1;
+                    return 0;
+                }
+            }
+        }
+    }
     let t = tcp_find(sip, sport, dport);
     if (t >= 0) {
         tcp_input(t);
@@ -889,6 +1319,24 @@ fn tcp_rx(p: *u8, ihl: i64, total: i64) -> i64 {
     }
     tcp_closed(sip, sport, dport, seq, ack, fl, dlen);
     return 0;
+}
+
+// El segmento retenido por `tcp fault swap` se entrega ahora (después del
+// siguiente, o a los 20 ticks si no llega otro).
+fn tcp_release_held() -> i64 {
+    if (tcp_f_held == 0) { return 0; }
+    tcp_f_held = 0;
+    tcp_f_rel = 0;
+    tcp_f_replay = 1;
+    tcp_rx_main(tcp_hold, tcp_f_hold_ihl, tcp_f_hold_tot);
+    tcp_f_replay = 0;
+    return 0;
+}
+
+fn tcp_rx(p: *u8, ihl: i64, total: i64) -> i64 {
+    let r = tcp_rx_main(p, ihl, total);
+    if (tcp_f_rel != 0) { tcp_release_held(); }
+    return r;
 }
 
 // ----- Interfaz de los procesos -----
@@ -963,7 +1411,7 @@ fn tcp_do_listen(me: i64, port: i64) -> i64 {
 fn tcp_pick_child(l: i64) -> i64 {
     let best = 0 - 1;
     let i = 0;
-    while (i < 6) {
+    while (i < 8) {
         if (tc_par[i] == l + 1 && (tc_st[i] == 4 || tc_st[i] == 7)) {
             if (best < 0 || tc_age[i] < tc_age[best]) { best = i; }
         }
@@ -1017,7 +1465,7 @@ fn tcp_do_connect(me: i64, dst: i64, tmo: i64) -> i64 {
             let c = 49152 + (tcp_rand() & 16383);
             let u = 0;
             let i = 0;
-            while (i < 6) {
+            while (i < 8) {
                 if (tc_st[i] != 0 && tc_lport[i] == c) { u = 1; }
                 i = i + 1;
             }
@@ -1033,6 +1481,8 @@ fn tcp_do_connect(me: i64, dst: i64, tmo: i64) -> i64 {
             tcp_cpend[me] = t + 1;
             tcp_cfd[me] = fd;
         }
+        tc_rseq[t] = tc_iss[t] + 1;
+        tc_rts[t] = tcp_now();
         tcp_seg(t, 2, tc_iss[t], 0, 0);
         tcp_arm(t);
     }
@@ -1129,7 +1579,7 @@ fn tcp_do_close(me: i64, fd: i64) -> i64 {
     tcp_closed_n = tcp_closed_n + 1;
     if (st == 1) {
         let i = 0;
-        while (i < 6) {
+        while (i < 8) {
             if (tc_par[i] == t + 1 && tc_st[i] >= 2) {
                 if (tc_st[i] >= 3) { tcp_rst_tcb(i); }
                 tcp_drop(i);
@@ -1243,12 +1693,12 @@ fn tcp_inj(dport: i64, fl: i64, seq: i64, ack: i64, dlen: i64, bad: i64) -> i64 
     tcp_o_rev = 1;
     tcp_o_sip = 0x0A000202;
     tcp_o_dip = 0x0A00020F;
-    tcp_o_sport = 4000;
+    tcp_o_sport = tcp_inj_sport;
     tcp_o_dport = dport;
     tcp_o_seq = seq & 0xFFFFFFFF;
     tcp_o_ack = ack & 0xFFFFFFFF;
     tcp_o_fl = fl;
-    tcp_o_win = 2000;
+    tcp_o_win = tcp_inj_win;
     tcp_o_mss = 0;
     if ((fl & 2) != 0) { tcp_o_mss = 1; }
     tcp_o_t = 0 - 1;
@@ -1258,7 +1708,7 @@ fn tcp_inj(dport: i64, fl: i64, seq: i64, ack: i64, dlen: i64, bad: i64) -> i64 
     tcp_o_rev = 0;
     let k = 0;
     while (k < dlen) {
-        udp_probe[n - dlen + k] = (97 + k) as u8;
+        udp_probe[n - dlen + k] = ((tcp_inj_c0 + k) & 255) as u8;
         k = k + 1;
     }
     // La carga se escribió después del checksum: se vuelve a calcular.
@@ -1283,11 +1733,396 @@ fn tcp_l_dport() -> i64 { return tcp_g16(tcp_last, 36); }
 fn tcp_used() -> i64 {
     let n = 0;
     let i = 0;
-    while (i < 6) {
+    while (i < 8) {
         if (tc_st[i] != 0) { n = n + 1; }
         i = i + 1;
     }
     return n;
+}
+
+// ----- RD-03: pruebas sin dispositivo de cola fuera de orden, RTT, congestión,
+// agotamiento de bloques y fallas inyectadas. Cada una devuelve 0 si pasó o
+// un número (>= 100) que identifica el chequeo que falló. -----
+
+fn tcp_oo_blocks(t: i64) -> i64 {
+    let n = 0;
+    let k = 0;
+    while (k < 4) {
+        if (tc_ool[t * 4 + k] != 0) { n = n + 1; }
+        k = k + 1;
+    }
+    return n;
+}
+
+// Handshake pasivo completo: escuchador nuevo en port para el dueño me, SYN
+// del par con ISN pisn, ACK, accept. Devuelve el TCB del hijo (su fd es el
+// siguiente al del escuchador) y deja el ISS en tcp_t_iss. -1 si falla.
+fn tcp_t_conn(me: i64, port: i64, pisn: i64) -> i64 {
+    let lfd = tcp_do_listen(me, port);
+    if (lfd < 0) { return 0 - 1; }
+    tcp_inj(port, 2, pisn, 0, 0, 0);
+    tcp_t_iss = tcp_l_seq();
+    tcp_inj(port, 16, pisn + 1, tcp_t_iss + 1, 0, 0);
+    let cfd = tcp_do_accept(me, lfd, 0);
+    if (cfd < 0) { return 0 - 1; }
+    return tcp_fd_t(me, cfd);
+}
+
+// 1 si udp_tmp[0..n) vale (base + i) & 255.
+fn tcp_t_pat(n: i64, base: i64) -> i64 {
+    let i = 0;
+    while (i < n) {
+        if ((udp_tmp[i] & 255) != ((base + i) & 255)) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+// (c) Segmentos desordenados: se encolan, se funden, se reensamblan.
+fn tcp_st_ooo() -> i64 {
+    tcp_reset();
+    tcp_inj_win = 2000;
+    let t = tcp_t_conn(2, 5003, 2999);
+    if (t < 0) { return 100; }
+    let iss = tcp_t_iss;
+    if (tc_rnxt[t] != 3000) { return 101; }
+    let o0 = tcp_ooo_n;
+    // Llegan [200,300), [100,200) y [400,450) (desplazamientos desde 3000).
+    tcp_inj_c0 = 200;
+    tcp_inj(5003, 24, 3200, iss + 1, 100, 0);
+    if (tcp_l_ack() != 3000 || tc_rxn[t] != 0 || tcp_oo_blocks(t) != 1) { return 102; }
+    tcp_inj_c0 = 100;
+    tcp_inj(5003, 24, 3100, iss + 1, 100, 0);
+    if (tcp_l_ack() != 3000 || tcp_oo_blocks(t) != 1) { return 103; }
+    tcp_inj_c0 = 144;
+    tcp_inj(5003, 24, 3400, iss + 1, 50, 0);
+    if (tcp_l_ack() != 3000 || tcp_oo_blocks(t) != 2 || tcp_ooo_n != o0 + 3) { return 104; }
+    // Nada es legible todavía.
+    if (tcp_do_recv(2, 1, udp_tmp as i64, 16, 0) != (0 - 11)) { return 105; }
+    // Llega el primero: se absorbe el bloque [100,300) y queda el de 400.
+    tcp_inj_c0 = 0;
+    tcp_inj(5003, 24, 3000, iss + 1, 100, 0);
+    if (tcp_l_ack() != 3300 || tc_rxn[t] != 300 || tcp_oo_blocks(t) != 1) { return 106; }
+    if (tcp_do_recv(2, 1, udp_tmp as i64, 512, 0) != 300) { return 107; }
+    if (tcp_t_pat(300, 0) == 0) { return 108; }
+    // Se llena el hueco [300,400): sale también [400,450).
+    tcp_inj_c0 = 44;
+    tcp_inj(5003, 24, 3300, iss + 1, 100, 0);
+    if (tcp_l_ack() != 3450 || tc_rxn[t] != 150 || tcp_oo_blocks(t) != 0) { return 109; }
+    if (tcp_do_recv(2, 1, udp_tmp as i64, 512, 0) != 150) { return 110; }
+    if (tcp_t_pat(150, 300) == 0) { return 111; }
+    // Duplicado y solapado dentro de la cola: un solo bloque de 150.
+    tcp_inj_c0 = 38;
+    tcp_inj(5003, 24, 3550, iss + 1, 100, 0);
+    tcp_inj(5003, 24, 3550, iss + 1, 100, 0);
+    if (tcp_oo_blocks(t) != 1) { return 112; }
+    tcp_inj_c0 = 88;
+    tcp_inj(5003, 24, 3600, iss + 1, 100, 0);
+    if (tcp_oo_blocks(t) != 1) { return 113; }
+    let k = 0;
+    let ln = 0;
+    while (k < 4) {
+        if (tc_ool[t * 4 + k] != 0) { ln = tc_ool[t * 4 + k]; }
+        k = k + 1;
+    }
+    if (ln != 150) { return 114; }
+    // Fuera de la ventana: no se encola.
+    let o1 = tcp_ooo_n;
+    tcp_inj(5003, 24, 3450 + 5000, iss + 1, 10, 0);
+    if (tcp_ooo_n != o1) { return 115; }
+    // Un FIN adelantado se ignora.
+    tcp_inj(5003, 17, 3450 + 900, iss + 1, 0, 0);
+    if (tc_st[t] != 4 || tc_fin[t] != 0) { return 116; }
+    // Cuatro bloques caben; el quinto no.
+    tcp_inj(5003, 24, 3450 + 400, iss + 1, 10, 0);
+    tcp_inj(5003, 24, 3450 + 600, iss + 1, 10, 0);
+    tcp_inj(5003, 24, 3450 + 800, iss + 1, 10, 0);
+    if (tcp_oo_blocks(t) != 4) { return 117; }
+    let d0 = tcp_oodrop;
+    tcp_inj(5003, 24, 3450 + 1000, iss + 1, 10, 0);
+    if (tcp_oodrop != d0 + 1 || tcp_oo_blocks(t) != 4) { return 118; }
+    if (tcp_l_ack() != 3450) { return 119; }
+    tcp_reset();
+    return 0;
+}
+
+// (RFC 6298) RTT, RTO, Karn y el RTO de 3 s tras retransmitir el SYN|ACK.
+fn tcp_st_rtt() -> i64 {
+    tcp_reset();
+    tcp_inj_win = 2000;
+    tcp_skew = 100;
+    let lfd = tcp_do_listen(2, 5004);
+    if (lfd != 0) { return 120; }
+    tcp_inj(5004, 2, 700, 0, 0, 0);
+    let iss = tcp_l_seq();
+    tcp_skew = 108;
+    tcp_inj(5004, 16, 701, iss + 1, 0, 0);
+    let cfd = tcp_do_accept(2, lfd, 0);
+    let t = tcp_fd_t(2, cfd);
+    if (t < 0) { return 121; }
+    // R = 8: SRTT 8 (x8 = 64), RTTVAR 4 (x4 = 16), RTO = 8 + 16 = 24.
+    if (tc_srtt[t] != 64 || tc_rvar[t] != 16 || tc_rto[t] != 24) { return 122; }
+    let n0 = tcp_rtt_n;
+    // R = 8 otra vez: RTTVAR x4 = 16 - 4 + 0 = 12, SRTT igual, RTO = 8 + 12.
+    if (tcp_do_send(2, cfd, tcp_hold as i64, 100, 0) != 100) { return 123; }
+    tcp_skew = 116;
+    tcp_inj(5004, 16, 701, iss + 101, 0, 0);
+    if (tc_srtt[t] != 64 || tc_rvar[t] != 12 || tc_rto[t] != 20 || tcp_rtt_n != n0 + 1) { return 124; }
+    // R = 16: |64 - 128| / 8 = 8, RTTVAR x4 = 12 - 3 + 8 = 17, SRTT x8 = 72, RTO = 9 + 17.
+    if (tcp_do_send(2, cfd, tcp_hold as i64, 100, 0) != 100) { return 125; }
+    tcp_skew = 132;
+    tcp_inj(5004, 16, 701, iss + 201, 0, 0);
+    if (tc_srtt[t] != 72 || tc_rvar[t] != 17 || tc_rto[t] != 26) { return 126; }
+    // Karn: el segmento se retransmite, su ACK no da muestra.
+    let n1 = tcp_rtt_n;
+    if (tcp_do_send(2, cfd, tcp_hold as i64, 100, 0) != 100) { return 127; }
+    tcp_skew = 132 + 26 + 1;
+    tcp_tick();
+    if (tc_rto[t] != 52) { return 128; }
+    tcp_skew = 175;
+    tcp_inj(5004, 16, 701, iss + 301, 0, 0);
+    if (tcp_rtt_n != n1 || tc_rto[t] != 26) { return 129; }
+    // SYN|ACK retransmitido: sin muestra y RTO de 300 al empezar los datos.
+    let l2 = tcp_do_listen(2, 5005);
+    tcp_skew = 200;
+    tcp_inj(5005, 2, 900, 0, 0, 0);
+    let iss2 = tcp_l_seq();
+    tcp_skew = 260;
+    tcp_tick();
+    tcp_skew = 261;
+    let n2 = tcp_rtt_n;
+    tcp_inj(5005, 16, 901, iss2 + 1, 0, 0);
+    let c2 = tcp_do_accept(2, l2, 0);
+    let t2 = tcp_fd_t(2, c2);
+    if (t2 < 0) { return 130; }
+    if (tc_rto[t2] != 300 || tcp_rtt_n != n2 || tc_hrtt[t2] != 0) { return 131; }
+    if (tc_cwnd[t2] != 2920 || tc_ssth[t2] < 1000000) { return 132; }
+    tcp_skew = 0;
+    tcp_reset();
+    return 0;
+}
+
+// (RFC 5681 / 6582) Arranque lento, evitación, timeout, retransmisión
+// rápida y recuperación; y el ACK que pasa el tc_nxt retrocedido.
+fn tcp_st_cc() -> i64 {
+    tcp_reset();
+    tcp_skew = 0;
+    tcp_inj_win = 60000;
+    let t = tcp_t_conn(2, 5006, 5000);
+    if (t < 0) { return 140; }
+    let iss = tcp_t_iss;
+    if (tc_cwnd[t] != 2920) { return 141; }
+    // Dos envíos de 2048: con cwnd 2920 salen solo 2920 bytes.
+    if (tcp_do_send(2, 1, tcp_hold as i64, 2048, 0) != 2048) { return 142; }
+    if (tcp_do_send(2, 1, tcp_hold as i64, 2048, 0) != 2048) { return 143; }
+    if (tcp_sub(tc_nxt[t], tc_una[t]) != 2920) { return 144; }
+    // Arranque lento: confirmar 1460 sube cwnd 1460 y salen los 1176 que faltaban.
+    tcp_inj(5006, 16, 5001, iss + 1 + 1460, 0, 0);
+    if (tc_cwnd[t] != 4380) { return 145; }
+    if (tcp_sub(tc_nxt[t], tc_una[t]) != 2636) { return 146; }
+    // Evitación: con ssthresh 3000, sube SMSS * SMSS / cwnd = 486.
+    tc_ssth[t] = 3000;
+    tcp_inj(5006, 16, 5001, iss + 1 + 2920, 0, 0);
+    if (tc_cwnd[t] != 4380 + 486) { return 147; }
+    // Timeout: ssthresh = max(1176 / 2, 2920), cwnd = 1 SMSS.
+    tcp_skew = tcp_skew + 500;
+    tcp_tick();
+    if (tc_ssth[t] != 2920 || tc_cwnd[t] != 1460) { return 148; }
+    tcp_inj(5006, 16, 5001, iss + 1 + 4096, 0, 0);
+    if (tc_una[t] != ((iss + 1 + 4096) & 0xFFFFFFFF) || tc_txn[t] != 0 || tc_dl[t] != 0) { return 149; }
+    // Tras el timeout, un ACK que pasa lo reenviado (tc_nxt retrocedió).
+    if (tcp_do_send(2, 1, tcp_hold as i64, 2048, 0) != 2048) { return 150; }
+    if (tcp_do_send(2, 1, tcp_hold as i64, 2048, 0) != 2048) { return 151; }
+    let una1 = tc_una[t];
+    let mx1 = tc_max[t];
+    tcp_skew = tcp_skew + 500;
+    tcp_tick();
+    if (tcp_sub(tc_nxt[t], tc_una[t]) >= tcp_sub(tc_max[t], tc_una[t])) { return 152; }
+    if (tc_max[t] != mx1) { return 153; }
+    tcp_inj(5006, 16, 5001, mx1, 0, 0);
+    if (tc_una[t] != mx1 || tcp_sub(tc_nxt[t], tc_una[t]) < 0) { return 154; }
+    if (tc_txn[t] != 4096 - tcp_sub(mx1, una1)) { return 155; }
+    // Retransmisión rápida: 4096 bytes en vuelo, tres ACK duplicados.
+    tcp_reset();
+    tcp_inj_win = 60000;
+    t = tcp_t_conn(2, 5007, 6000);
+    iss = tcp_t_iss;
+    tc_cwnd[t] = 20000;
+    if (tcp_do_send(2, 1, tcp_hold as i64, 2048, 0) != 2048) { return 156; }
+    if (tcp_do_send(2, 1, tcp_hold as i64, 2048, 0) != 2048) { return 157; }
+    if (tcp_sub(tc_nxt[t], tc_una[t]) != 4096) { return 158; }
+    let f0 = tcp_fast_n;
+    tcp_inj(5007, 16, 6001, iss + 1, 0, 0);
+    tcp_inj(5007, 16, 6001, iss + 1, 0, 0);
+    if (tcp_fast_n != f0) { return 159; }
+    tcp_inj(5007, 16, 6001, iss + 1, 0, 0);
+    if (tcp_fast_n != f0 + 1 || tc_frec[t] != 1) { return 160; }
+    if (tcp_sub(tcp_l_seq(), iss + 1) != 0 || tcp_lastlen != 54 + 1460) { return 161; }
+    if (tc_ssth[t] != 2920 || tc_cwnd[t] != 2920 + 3 * 1460) { return 162; }
+    tcp_inj(5007, 16, 6001, iss + 1, 0, 0);
+    if (tc_cwnd[t] != 2920 + 4 * 1460) { return 163; }
+    // ACK parcial (RFC 6582): reenvía el siguiente hueco y sigue en recuperación.
+    tcp_inj(5007, 16, 6001, iss + 1 + 1460, 0, 0);
+    if (tc_frec[t] != 1 || tcp_sub(tcp_l_seq(), iss + 1 + 1460) != 0) { return 164; }
+    // ACK completo: fin de la recuperación, cwnd = ssthresh.
+    tcp_inj(5007, 16, 6001, iss + 1 + 4096, 0, 0);
+    if (tc_frec[t] != 0 || tc_cwnd[t] != 2920 || tc_txn[t] != 0) { return 165; }
+    tcp_inj_win = 2000;
+    tcp_skew = 0;
+    tcp_reset();
+    return 0;
+}
+
+// (d) Agotar los bloques: rechazo con RST|ACK, sin reservar nada, y todo se
+// libera al cerrar. Un TIME_WAIT se recicla antes de rechazar.
+fn tcp_st_full() -> i64 {
+    tcp_reset();
+    tcp_inj_win = 2000;
+    let l1 = tcp_do_listen(2, 6001);
+    let l2 = tcp_do_listen(2, 6002);
+    let l3 = tcp_do_listen(2, 6003);
+    if (l1 != 0 || l2 != 1 || l3 != 2) { return 170; }
+    // 3 hijos en 6001 y 2 en 6002: 3 + 5 = 8 bloques.
+    let i = 0;
+    while (i < 5) {
+        tcp_inj_sport = 4001 + i;
+        if (i < 3) { tcp_inj(6001, 2, 1000 + i, 0, 0, 0); } else { tcp_inj(6002, 2, 1000 + i, 0, 0, 0); }
+        i = i + 1;
+    }
+    tcp_inj_sport = 4000;
+    if (tcp_used() != 8) { return 171; }
+    // Sexto SYN, a un escuchador con cola libre: no hay bloque.
+    let f0 = tcp_full;
+    let x0 = tcp_rstout;
+    tcp_inj_sport = 4100;
+    tcp_inj(6003, 2, 7777, 0, 0, 0);
+    tcp_inj_sport = 4000;
+    if (tcp_full != f0 + 1 || tcp_rstout != x0 + 1) { return 172; }
+    if (tcp_l_fl() != 0x14 || tcp_l_ack() != 7778 || tcp_l_seq() != 0 || tcp_l_dport() != 4100) { return 173; }
+    if (tcp_used() != 8) { return 174; }
+    // La cola de 6001 está llena: el SYN se descarta sin RST.
+    let b0 = tcp_bklog;
+    let t0 = tcp_tx_n;
+    tcp_inj_sport = 4200;
+    tcp_inj(6001, 2, 5555, 0, 0, 0);
+    tcp_inj_sport = 4000;
+    if (tcp_bklog != b0 + 1 || tcp_tx_n != t0 || tcp_full != f0 + 1) { return 175; }
+    // listen y connect del otro dueño también se rechazan.
+    if (tcp_do_listen(3, 6200) != (0 - 24)) { return 176; }
+    if (tcp_do_connect(3, (0x0A000202 << 16) | 4000, 0) != (0 - 24)) { return 177; }
+    if (tcp_fdmap[3 * 4] != 0 || tcp_cpend[1] != 0) { return 178; }
+    // Cerrar los escuchadores libera sus hijos (con RST a los SYN_RCVD).
+    tcp_do_close(2, l1);
+    if (tcp_used() != 4) { return 179; }
+    tcp_do_close(2, l2);
+    tcp_do_close(2, l3);
+    if (tcp_used() != 0) { return 180; }
+    // Y vuelve a haber lugar.
+    let t = tcp_t_conn(2, 6004, 100);
+    if (t < 0 || tcp_used() != 2) { return 181; }
+    tcp_reset();
+    // TIME_WAIT reciclado: el hijo de 5009 cierra primero y queda en TIME_WAIT.
+    t = tcp_t_conn(2, 5009, 100);
+    if (t < 0) { return 182; }
+    let iss = tcp_t_iss;
+    tcp_do_close(2, 1);
+    if (tc_st[t] != 5) { return 183; }
+    tcp_inj(5009, 16, 101, iss + 2, 0, 0);
+    tcp_inj(5009, 17, 101, iss + 2, 0, 0);
+    if (tc_st[t] != 10) { return 184; }
+    // 1 TIME_WAIT + 5009 + 6001 con 3 hijos + 6002 con 1 hijo = 8.
+    let a = tcp_do_listen(2, 6001);
+    let b = tcp_do_listen(2, 6002);
+    if (a < 0 || b < 0) { return 185; }
+    i = 0;
+    while (i < 4) {
+        tcp_inj_sport = 4001 + i;
+        if (i < 3) { tcp_inj(6001, 2, 1000 + i, 0, 0, 0); } else { tcp_inj(6002, 2, 1000 + i, 0, 0, 0); }
+        i = i + 1;
+    }
+    tcp_inj_sport = 4000;
+    if (tcp_used() != 8 || tc_st[t] != 10) { return 186; }
+    let r0 = tcp_recyc;
+    let f1 = tcp_full;
+    tcp_inj_sport = 4300;
+    tcp_inj(6002, 2, 3000, 0, 0, 0);
+    tcp_inj_sport = 4000;
+    if (tcp_recyc != r0 + 1 || tcp_full != f1) { return 187; }
+    if (tcp_l_fl() != 0x12 || tcp_l_ack() != 3001 || tcp_l_dport() != 4300) { return 188; }
+    if (tcp_used() != 8) { return 189; }
+    tcp_reset();
+    return 0;
+}
+
+// Fallas inyectadas: retener y reordenar, perder al entrar, perder al salir.
+fn tcp_st_fault() -> i64 {
+    tcp_reset();
+    tcp_inj_win = 2000;
+    let t = tcp_t_conn(2, 5008, 9000);
+    if (t < 0) { return 190; }
+    let iss = tcp_t_iss;
+    // swap: A (9001) se retiene, B (9101) entra primero y luego A.
+    let s0 = tcp_fswap;
+    tcp_f_swat = 1;
+    tcp_inj_c0 = 0;
+    tcp_inj(5008, 24, 9001, iss + 1, 100, 0);
+    if (tcp_f_held != 1 || tc_rxn[t] != 0 || tcp_fswap != s0 + 1) { return 191; }
+    tcp_inj_c0 = 100;
+    tcp_inj(5008, 24, 9101, iss + 1, 100, 0);
+    if (tcp_f_held != 0 || tc_rxn[t] != 200 || tc_rnxt[t] != 9201 || tcp_l_ack() != 9201) { return 192; }
+    if (tcp_do_recv(2, 1, udp_tmp as i64, 512, 0) != 200) { return 193; }
+    if (tcp_t_pat(200, 0) == 0) { return 194; }
+    // El retenido sin sucesor sale a los 20 ticks.
+    tcp_f_swat = 1;
+    tcp_inj_c0 = 200;
+    tcp_inj(5008, 24, 9201, iss + 1, 50, 0);
+    if (tcp_f_held != 1) { return 195; }
+    tcp_skew = tcp_skew + 25;
+    tcp_tick();
+    if (tcp_f_held != 0 || tc_rxn[t] != 50 || tcp_l_ack() != 9251) { return 196; }
+    if (tcp_do_recv(2, 1, udp_tmp as i64, 512, 0) != 50) { return 197; }
+    // rxdrop 2 1: el segundo con datos se pierde.
+    let d0 = tcp_fdrop;
+    tcp_f_rxat = 2;
+    tcp_f_rxn = 1;
+    tcp_inj_c0 = 250;
+    tcp_inj(5008, 24, 9251, iss + 1, 10, 0);
+    if (tc_rnxt[t] != 9261) { return 198; }
+    tcp_inj(5008, 24, 9261, iss + 1, 10, 0);
+    if (tc_rnxt[t] != 9261 || tcp_fdrop != d0 + 1) { return 199; }
+    tcp_inj(5008, 24, 9261, iss + 1, 10, 0);
+    if (tc_rnxt[t] != 9271) { return 200; }
+    // txdrop 1 1: el primer segmento que sale se pierde; el timer lo reenvía.
+    let tx0 = tcp_tx_n;
+    tcp_f_txat = 1;
+    tcp_f_txn = 1;
+    if (tcp_do_send(2, 1, tcp_hold as i64, 10, 0) != 10) { return 201; }
+    if (tcp_tx_n != tx0 || tcp_fdrop != d0 + 2) { return 202; }
+    tcp_skew = tcp_skew + 60;
+    tcp_tick();
+    if (tcp_tx_n != tx0 + 1 || tcp_sub(tcp_l_seq(), iss + 1) != 0 || tcp_lastlen != 54 + 10) { return 203; }
+    tcp_skew = 0;
+    tcp_reset();
+    return 0;
+}
+
+fn tcp_selftest2() -> i64 {
+    let r = tcp_st_ooo();
+    if (r != 0) { return r; }
+    puts("tcp test ooo ok\n");
+    r = tcp_st_rtt();
+    if (r != 0) { return r; }
+    puts("tcp test rtt ok\n");
+    r = tcp_st_cc();
+    if (r != 0) { return r; }
+    puts("tcp test cc ok\n");
+    r = tcp_st_full();
+    if (r != 0) { return r; }
+    puts("tcp test full ok\n");
+    r = tcp_st_fault();
+    if (r != 0) { return r; }
+    puts("tcp test fault ok\n");
+    return 0;
 }
 
 fn tcp_selftest() -> i64 {
@@ -1344,16 +2179,16 @@ fn tcp_selftest() -> i64 {
     if (tc_dl[t] == 0) { return tcp_fail(27); }
     // Sin ACK, el timer retransmite el mismo segmento y duplica el RTO.
     let r0 = tcp_retx_n;
-    tcp_skew = 40;
+    tcp_skew = 15;
     tcp_tick();
     if (tcp_retx_n != r0) { return tcp_fail(28); }
-    tcp_skew = 60;
+    tcp_skew = 25;
     tcp_tick();
     if (tcp_retx_n != r0 + 1 || tcp_sub(tcp_l_seq(), iss + 1) != 0 || (tcp_last[56] & 255) != 122) { return tcp_fail(29); }
-    if (tc_rto[t] != 100) { return tcp_fail(30); }
-    // Se confirma: el timer se apaga y el RTO vuelve a 50.
+    if (tc_rto[t] != 40) { return tcp_fail(30); }
+    // Se confirma (la muestra del handshake dio 0 ticks, RTO mínimo 20): el timer se apaga y el RTO sale del RTT, sin el retroceso.
     tcp_inj(5000, 16, 1006, iss + 4, 0, 0);
-    if (tc_dl[t] != 0 || tc_txn[t] != 0 || tc_rto[t] != 50) { return tcp_fail(31); }
+    if (tc_dl[t] != 0 || tc_txn[t] != 0 || tc_rto[t] != 20) { return tcp_fail(31); }
     // FIN del par: ACK, CLOSE_WAIT y recv devuelve 0.
     tcp_inj(5000, 17, 1006, iss + 4, 0, 0);
     if (tc_st[t] != 7 || tcp_l_ack() != 1007) { return tcp_fail(32); }
@@ -1458,6 +2293,38 @@ fn tcp_selftest() -> i64 {
     tcp_do_close(2, cfd);
     tcp_do_close(2, lfd);
     if (tcp_used() != 0) { return tcp_fail(66); }
+    tcp_inj_win = 2000;
+    tcp_inj_sport = 4000;
+    tcp_inj_c0 = 97;
+    tcp_skew = 0;
+    let r2 = tcp_selftest2();
+    if (r2 != 0) {
+        tcp_inj_win = 2000;
+        tcp_inj_sport = 4000;
+        tcp_inj_c0 = 97;
+        return tcp_fail(r2);
+    }
+    tcp_inj_win = 2000;
+    tcp_inj_sport = 4000;
+    tcp_inj_c0 = 97;
+    tcp_ooo_n = 0;
+    tcp_oodrop = 0;
+    tcp_fast_n = 0;
+    tcp_rtos = 0;
+    tcp_full = 0;
+    tcp_bklog = 0;
+    tcp_recyc = 0;
+    tcp_rtt_n = 0;
+    tcp_rtt_last = 0;
+    tcp_rto_last = 0;
+    tcp_cwmax = 0;
+    tcp_fdrop = 0;
+    tcp_fswap = 0;
+    tcp_peak = 0;
+    tcp_f_rxn = 0;
+    tcp_f_txn = 0;
+    tcp_f_swat = 0;
+    tcp_f_held = 0;
     tcp_dry = 0;
     tcp_skew = 0;
     tcp_reset();
@@ -1483,7 +2350,7 @@ fn tcp_show() -> i64 {
     let lst = 0;
     let tw = 0;
     let i = 0;
-    while (i < 6) {
+    while (i < 8) {
         if (tc_st[i] != 0) { used = used + 1; }
         if (tc_st[i] == 1) { lst = lst + 1; }
         if (tc_st[i] == 10) { tw = tw + 1; }
@@ -1523,7 +2390,84 @@ fn tcp_show() -> i64 {
     put_int(tw);
     puts(" iss ");
     put_int(tcp_last_iss);
+    puts(" ooo ");
+    put_int(tcp_ooo_n);
+    puts(" oodrop ");
+    put_int(tcp_oodrop);
+    puts(" fast ");
+    put_int(tcp_fast_n);
+    puts(" rtos ");
+    put_int(tcp_rtos);
+    puts(" full ");
+    put_int(tcp_full);
+    puts(" bklog ");
+    put_int(tcp_bklog);
+    puts(" recyc ");
+    put_int(tcp_recyc);
+    puts(" rtts ");
+    put_int(tcp_rtt_n);
+    puts(" rtt ");
+    put_int(tcp_rtt_last);
+    puts(" rto ");
+    put_int(tcp_rto_last);
+    puts(" cwmax ");
+    put_int(tcp_cwmax);
+    puts(" fdrop ");
+    put_int(tcp_fdrop);
+    puts(" peak ");
+    put_int(tcp_peak);
+    puts(" fswap ");
+    put_int(tcp_fswap);
     putc('\n');
+    return 0;
+}
+
+// `tcp fault rxdrop K C` / `txdrop K C`: pierde C segmentos con datos
+// seguidos, empezando por el K-ésimo desde ahora (K >= 1), al entrar al TCP
+// o antes de salir al chip. `swap K`: retiene el K-ésimo y lo entrega
+// después del siguiente. `off` borra todo. Es una falla del propio TCP del
+// invitado, no de la red: sirve para ejercitar la recuperación con tráfico
+// real de QEMU. Lee los números con parse_int desde pos.
+fn tcp_fault_cmd(pos: i64) -> i64 {
+    let p2 = fs_scan(pos, fs_sub);
+    if (p2 < 0) {
+        puts("tcp fault fail arg\n");
+        return 0;
+    }
+    if (fs_is("off")) {
+        tcp_f_rxn = 0;
+        tcp_f_txn = 0;
+        tcp_f_swat = 0;
+        tcp_release_held();
+        puts("tcp fault off\n");
+        return 0;
+    }
+    let kind = 0;
+    if (fs_is("rxdrop")) { kind = 1; }
+    if (fs_is("txdrop")) { kind = 2; }
+    if (fs_is("swap")) { kind = 3; }
+    if (kind == 0) {
+        puts("tcp fault fail arg\n");
+        return 0;
+    }
+    parse_pos = p2;
+    let k = parse_int();
+    let c = 1;
+    if (kind != 3) { c = parse_int(); }
+    if (k < 1 || k > 100000 || c < 1 || c > 1000) {
+        puts("tcp fault fail arg\n");
+        return 0;
+    }
+    if (kind == 1) {
+        tcp_f_rxat = k;
+        tcp_f_rxn = c;
+    }
+    if (kind == 2) {
+        tcp_f_txat = k;
+        tcp_f_txn = c;
+    }
+    if (kind == 3) { tcp_f_swat = k; }
+    puts("tcp fault ok\n");
     return 0;
 }
 
@@ -1537,6 +2481,8 @@ fn tcp_plant_one(name: *u8, n: i64) -> i64 {
 fn tcp_plant() -> i64 {
     if (tcp_plant_one("tcpeco", tcpeco_fill(exec_buf)) != 0) { return 0; }
     if (tcp_plant_one("tcpcli", tcpcli_fill(exec_buf)) != 0) { return 0; }
+    if (tcp_plant_one("tcpmulti", tcpmulti_fill(exec_buf)) != 0) { return 0; }
+    if (tcp_plant_one("tcphog", tcphog_fill(exec_buf)) != 0) { return 0; }
     puts("tcp plant ok\n");
     return 0;
 }
@@ -1544,9 +2490,15 @@ fn tcp_plant() -> i64 {
 fn cmd_tcp() -> i64 {
     let pos = fs_scan(3, fs_sub);
     if (pos < 0) { return 0; }
-    if (fs_is("test")) { return tcp_selftest(); }
+    if (fs_is("test")) {
+        cli();
+        let r = tcp_selftest();
+        sti();
+        return r;
+    }
     if (fs_is("plant")) { return tcp_plant(); }
     if (fs_is("stat")) { return tcp_show(); }
+    if (fs_is("fault")) { return tcp_fault_cmd(pos); }
     puts("tcp fail arg\n");
     return 0;
 }

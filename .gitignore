@@ -11,6 +11,8 @@ src/kernel/copihue/udpdos_img.lap
 src/kernel/copihue/udpwait_img.lap
 src/kernel/copihue/tcpeco_img.lap
 src/kernel/copihue/tcpcli_img.lap
+src/kernel/copihue/tcpmulti_img.lap
+src/kernel/copihue/tcphog_img.lap
 
 *.o
 *.img
