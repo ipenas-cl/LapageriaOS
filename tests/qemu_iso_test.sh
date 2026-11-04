@@ -22,6 +22,16 @@
 # está fijado (el PIT también cambia de proceso): `par` cede la CPU para que
 # el otro siga vivo mientras uno intenta algo, y la prueba no depende del
 # orden. El disco de datos es una copia nueva.
+#
+# Determinismo (FS-03): en `s`, el pid 1 solo mata al pid 2 cuando este dejó su
+# marca (el archivo r2 con "11"), que espera por polling con cesión. Antes
+# daba por hecho que la cesión llegaba antes que el PIT; si el PIT cortaba al
+# pid 2 antes de escribir, el pid 1 lo mataba sin resultado ("misma zona,
+# pid 2: [], esperaba [11]"; se reprodujo con -icount shift=1, 1 de 3). Nada
+# de la prueba depende del reloj: sincroniza con los prompts de la consola.
+# La imagen de arranque se copia al directorio temporal: así se pueden correr
+# varias a la vez (QEMU bloquea la imagen). QEMU_EXTRA="-icount shift=7" suma
+# opciones; tests/repeat.sh y tests/sweep.sh repiten la prueba.
 # Uso: tests/qemu_iso_test.sh [imagen]
 # Necesita: qemu-system-x86_64, socat.
 set -u
@@ -31,6 +41,8 @@ if [ ! -f "$DATA_SRC" ]; then echo "FAIL: no data image $DATA_SRC"; exit 1; fi
 SOCAT=$(command -v socat) || { echo "FAIL: falta socat"; exit 1; }
 TMP=$(mktemp -d); MON=$TMP/mon.sock; SERIAL=$TMP/serial.log
 DATA=$TMP/data.img
+BOOT=$TMP/boot.img
+cp "$IMAGE" "$BOOT"
 QPID=""
 SECTORS=$(( $(wc -c < "$DATA_SRC") / 512 ))
 dd if=/dev/zero of="$DATA" bs=512 count="$SECTORS" status=none
@@ -64,7 +76,9 @@ fail() {
 start_qemu() {
     : > "$SERIAL"
     rm -f "$MON"
-    qemu-system-x86_64 -cpu qemu64 -drive format=raw,file="$IMAGE" \
+    # QEMU_EXTRA: opciones de más, p. ej. QEMU_EXTRA="-icount shift=7".
+    # shellcheck disable=SC2086
+    qemu-system-x86_64 -cpu qemu64 ${QEMU_EXTRA:-} -drive format=raw,file="$BOOT" \
         -drive file="$DATA",format=raw,if=ide,index=1 \
         -display none -no-reboot \
         -serial file:"$SERIAL" -monitor unix:"$MON",server,nowait &
