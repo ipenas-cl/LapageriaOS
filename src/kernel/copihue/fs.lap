@@ -1032,6 +1032,8 @@ fn fs_stat(path: *u8) -> i64 {
 
 fn fs_snapshot(name: *u8) -> i64 {
     if (fs_name_ok(name, 11) == 0) { return 11; }
+    // "rm" está reservado: `fs snap rm <nombre>` borra un snapshot.
+    if ((name[0] & 255) == 114 && (name[1] & 255) == 109 && (name[2] & 255) == 0) { return 11; }
     let r = fs_reload();
     if (r != 0) { return r; }
     if (fs_snap_find(name) >= 0) { return 11; }
@@ -1057,6 +1059,31 @@ fn fs_rollback(name: *u8) -> i64 {
     let newroot = snap.root;
     if (newroot == s.root) { return 0; }
     s.root = newroot as u32;
+    fs_gc();
+    return fs_commit();
+}
+
+// `fs snap rm nombre`: saca el snapshot y libera, con el barrido de
+// alcanzabilidad, los bloques que solo él mantenía vivos. Lo que comparte
+// con la raíz viva o con otro snapshot sigue con el bit puesto. Si el
+// barrido encuentra un bloque malo no libera nada (fs_gc): el snapshot se
+// va igual y el espacio se filtra, que es preferible a liberar algo en uso.
+fn fs_snap_remove(name: *u8) -> i64 {
+    let r = fs_open();
+    if (r != 0) { return r; }
+    let i = fs_snap_find(name);
+    if (i < 0) { return 7; }
+    let s: *FsSuper = fs_sb(fs_super);
+    let n = s.nsnaps;
+    let j = i;
+    while (j < n - 1) {
+        let d: *FsSnap = fs_snap(fs_super, j);
+        let o: *FsSnap = fs_snap(fs_super, j + 1);
+        fs_copy(d as *u8, o as *u8, 24);
+        j = j + 1;
+    }
+    fs_zero_at(fs_super, offsetof(FsSuper, snaps) + (n - 1) * 24, 24);
+    s.nsnaps = (n - 1) as u32;
     fs_gc();
     return fs_commit();
 }

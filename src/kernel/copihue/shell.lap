@@ -216,6 +216,15 @@ fn cmd_fs() -> i64 {
     if (fs_is("snap")) {
         pos = fs_scan(pos, fs_name);
         if (pos < 0) { return fs_fail(11); }
+        // fs snap rm <nombre>: "rm" no puede ser nombre de snapshot.
+        if (fs_name[0] == 114 && fs_name[1] == 109 && fs_name[2] == 0) {
+            pos = fs_scan(pos, fs_name);
+            if (pos < 0) { return fs_fail(11); }
+            let r = fs_snap_remove(fs_name);
+            if (r != 0) { return fs_fail(r); }
+            puts("fs snap rm ok\n");
+            return 0;
+        }
         let look = pos;
         while (look < line_len && line[look] == ' ') { look = look + 1; }
         if (look < line_len) {

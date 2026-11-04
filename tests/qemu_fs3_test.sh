@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# FS-03: `fs migrate` (v1 -> v2).
+# FS-03: `fs migrate` (v1 -> v2) y `fs snap rm`.
 #
 # A. Migración. El disco v1 lo arma scripts/mkv1.c (C, sin Python ni kernel):
 #    escenario `std` (dos snapshots, un archivo que solo vive en un snapshot,
@@ -13,6 +13,12 @@
 #    hace nada y el fs v2 sigue escribiendo. Los discos que v2 no puede
 #    migrar (nombre `x/y`, bloque con CRC malo) se rechazan sin tocar los
 #    superbloques: siguen siendo v1.
+# B. `fs snap rm`: con tres snapshots que comparten bloques entre sí y con la
+#    raíz viva, borrar uno libera exactamente los bloques que solo él usaba
+#    (44, 2, 44, contados a mano); lo compartido sigue leyéndose (se escribe
+#    un archivo grande encima para pisar lo que se hubiera liberado de más y
+#    se relee con rollback); al final el scrub da lo mismo que un disco de
+#    control con el mismo contenido y sin snapshots (ni fugas ni faltantes).
 # D. (opcional, segundo argumento o V1_KERNEL_IMG=ruta/a/lapageriaos.img de un kernel anterior a
 #    FS-02) el disco v1 lo escribe el kernel viejo de verdad y el kernel nuevo
 #    lo migra; además el viejo lee un disco hecho por mkv1 (valida el formato
@@ -280,6 +286,71 @@ start_qemu
 run "fs migrate"; want "fs fail 8"
 echo "ok   migrar en un disco sin formato: fs fail 8"
 
+# =============================================================== B. fs snap rm
+ok "fs format" "fs format ok"
+scrub_is 3 "disco recién formateado"
+ok "fs mkdir /d" "fs mkdir ok"
+bigw /d/inner 4 5
+bigw /shared 20 1
+bigw /cow 20 2
+ok "fs snap s1" "fs snap ok"
+bigw /cow 20 3
+ok "fs snap s2" "fs snap ok"
+bigw /extra 8 4
+ok "fs snap s3" "fs snap ok"
+ok "fs rm /shared" "fs rm ok"
+# vivo 72 (raíz 2, d 11, cow3 42, extra 17) + s3 44 (raíz 2 y shared 42) + s2 2
+# (su raíz) + s1 44 (raíz 2 y cow2 42) + 2 superbloques
+scrub_is 164 "antes de borrar snapshots"
+run "fs snap rm"; want "fs fail 7"
+run "fs snap rm nada"; want "fs fail 7"
+ok "fs snap rm s2" "fs snap rm ok"
+scrub_is 162 "tras fs snap rm s2 (solo su raíz, 2 bloques)"
+run "fs snap rm s2"; want "fs fail 7"
+ok "fs snap rm s1" "fs snap rm ok"
+scrub_is 118 "tras fs snap rm s1 (raíz y cow2, 44 bloques; shared sigue en s3)"
+# Un archivo grande encima: si se hubiera liberado de más algo que usa s3 o la
+# raíz viva, se pisaría con esto.
+bigw /fill 30 7
+scrub_is 180 "con /fill (62 bloques)"
+ok "fs rollback s3" "fs rollback ok"
+scrub_is 116 "rollback a s3 (fill y raíces sueltas liberados)"
+bigr_ok /shared 1
+bigr_ok /cow 3
+bigr_ok /extra 4
+bigr_ok /d/inner 5
+run "fs ls"
+[ "$(ents)" = "dir:d file:shared file:cow file:extra" ] || fail "fs ls tras rollback a s3: $(ents)"
+ok "fs snap rm s3" "fs snap rm ok"
+scrub_is 116 "borrar s3, que comparte la raíz con el vivo, no libera nada"
+bigr_ok /shared 1
+bigr_ok /cow 3
+bigr_ok /extra 4
+bigr_ok /d/inner 5
+run "fs snap s3 /extra"; want "fs fail 7"
+run "fs snap rm s3"; want "fs fail 7"
+# Control: el mismo contenido vivo en un disco sin snapshots.
+ok "fs format" "fs format ok"
+ok "fs mkdir /d" "fs mkdir ok"
+bigw /d/inner 4 5
+bigw /shared 20 1
+bigw /cow 20 3
+bigw /extra 8 4
+scrub_is 116 "disco de control (mismo contenido, sin snapshots)"
+echo "ok   snap rm: liberó 2, 44 y 44 bloques (los que solo usaba cada uno), lo compartido sigue leyéndose, scrub igual al de control (116), sin fugas"
+
+# Ocho snapshots, borrar uno del medio y reusar el lugar.
+for i in 1 2 3 4 5 6 7 8; do ok "fs snap q$i" "fs snap ok"; done
+ok "fs snap q9" "fs fail 6"
+ok "fs snap rm q4" "fs snap rm ok"
+ok "fs snap q9" "fs snap ok"
+ok "fs snap rm q1" "fs snap rm ok"
+ok "fs snap rm q9" "fs snap rm ok"
+for i in 2 3 5 6 7 8; do ok "fs snap rm q$i" "fs snap rm ok"; done
+run "fs snap q2 /extra"; want "fs fail 7"
+scrub_is 116 "tras crear y borrar 9 snapshots"
+echo "ok   snap rm: 8 snapshots, borrar uno del medio libera su lugar (el noveno entra), todos se pueden borrar, scrub 116"
+
 # =============================================================== D. kernel v1 real (opcional)
 if [ -n "${V1_KERNEL_IMG:-}" ]; then
     [ -f "$V1_KERNEL_IMG" ] || fail "V1_KERNEL_IMG no existe: $V1_KERNEL_IMG"
@@ -326,4 +397,4 @@ if [ -n "${V1_KERNEL_IMG:-}" ]; then
     echo "ok   D2 disco v1 escrito por el kernel viejo: migrado, íntegro y scrub ok"
 fi
 
-echo "ok   fs3: migración"
+echo "ok   fs3: migración y snap rm"
