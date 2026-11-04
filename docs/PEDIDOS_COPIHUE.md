@@ -637,8 +637,8 @@ en el RIP), `cx = n * 256` en `bits 16` (la etapa 2 carga el kernel de
 ataque `z` sigue dando #DE, o sea el divisor es -1 y no 255) y `rdtsc()`
 (las marcas crecen en los 32 `pit` seguidos). No se probó `read_rflags()`
 ni `rdrand` / `rdseed`: `qemu64` no tiene `rdrand`. El ISN de TCP (RD-02,
-pedido 1) sigue sembrándose con el PIT, los ticks, el CMOS y la MAC; con
-`rdtsc()` disponible se puede mejorar, y no se tocó en este cambio.
+pedido 1) ya usa `rdtsc()` en lugar del PIT y el CMOS (OB-02b); sigue
+sin `rdrand`.
 
 Dos notas, ninguna con contorno:
 

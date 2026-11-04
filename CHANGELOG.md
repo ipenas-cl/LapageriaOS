@@ -17,6 +17,10 @@ contorno: `irq_save()` / `irq_restore(f)` en las secciones críticas con
 `div_raw` / `rem_raw` en dos ataques nuevos, `r` y `m` (#DE por divisor cero;
 `z` sigue con `INT64_MIN / -1`). Detalle en `docs/PEDIDOS_COPIHUE.md`.
 
+El ISN de TCP (y el puerto efímero) se mezcla con `rdtsc()` en lugar del
+contador del PIT y el segundero del CMOS; la MAC y los ticks siguen. No es
+criptográfico.
+
 OB-02, etapa 7, aislamiento entre zonas: un proceso de una zona no ve, no
 señala ni traza a los de otra. Syscalls nuevas 25 `proc_stat` y 26
 `proc_kill` (`zone sched` las da junto con `yield`); `trace_read` (24) fuera de

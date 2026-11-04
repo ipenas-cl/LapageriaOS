@@ -13,7 +13,7 @@
 // 1..6000. Los fd de TCP son una tabla aparte de la de UDP (4 por proceso).
 //
 // Lo que hace: handshake de 3 vías activo y pasivo; ISN aleatorio (xorshift
-// sembrado con el contador del PIT, los ticks, el reloj CMOS y la MAC; no es
+// sembrado con la MAC y mezclado con rdtsc y los ticks; no es
 // criptográfico); ventana de recepción de 4096 bytes anunciada en cada
 // segmento; ACK inmediato por segmento de datos; cola fuera de orden (4
 // bloques por conexión, en el propio anillo de recepción); medición de RTT y
@@ -214,13 +214,9 @@ fn tcp_p32(p: *u8, o: i64, v: i64) -> i64 {
 }
 
 // Aleatorio de 32 bits. xorshift64 que se vuelve a mezclar en cada llamada
-// con el contador del canal 0 del PIT, los ticks y el segundero del CMOS.
+// con la marca de ciclos (rdtsc), los ticks y el número de conexión.
 fn tcp_rand() -> i64 {
-    outb(0x43, 0);
-    let lo = inb(0x40) & 255;
-    let hi = inb(0x40) & 255;
-    outb(0x70, 0);
-    let sec = inb(0x71) & 255;
+    let tsc = rdtsc() as i64;
     if (tcp_rs == 0) {
         tcp_rs = 0x1E3779B97F4A7C15;
         let k = 0;
@@ -229,7 +225,7 @@ fn tcp_rand() -> i64 {
             k = k + 1;
         }
     }
-    let x = tcp_rs ^ (lo | (hi << 8) | (sec << 16) | (ticks << 24)) ^ (tcp_age_n << 40);
+    let x = tcp_rs ^ tsc ^ (ticks << 24) ^ (tcp_age_n << 40);
     x = x ^ (x << 13);
     x = x ^ ((x >> 7) & 0x01FFFFFFFFFFFFFF);
     x = x ^ (x << 17);

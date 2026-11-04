@@ -233,10 +233,10 @@ error (`-104` reset, `-111` rechazada, `-110` agotó los reintentos).
   hasta 3 hijos pendientes por escuchador; con la cola llena el SYN se
   descarta y el cliente reintenta; un SYN sin TCB libre recibe RST|ACK, ver
   «TCP endurecido»).
-- ISN aleatorio: xorshift64 que se vuelve a mezclar en cada conexión con el
-  contador del canal 0 del PIT, los ticks, el segundero del CMOS y la MAC.
-  **No es criptográfico**: en una máquina virtual la entropía es poca. El
-  `qemu64` no tiene `rdrand` y Copihue no tiene `rdtsc`.
+- ISN aleatorio: xorshift64 sembrado con la MAC que se vuelve a mezclar en
+  cada llamada con `rdtsc()` (Copihue v0.42.5), los ticks y el número de
+  conexión. **No es criptográfico**: en una máquina virtual la entropía es
+  poca, y `qemu64` no tiene `rdrand`.
 - Aritmética de secuencia de 32 bits con vuelta (`tcp_sub`).
 - Ventana: se anuncia `4096 - bytes sin leer` en cada segmento; el envío
   respeta la ventana del par. Si el par la cierra con datos pendientes, un
