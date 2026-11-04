@@ -121,6 +121,7 @@ COPIHUE_KERNEL_SRC = $(KERNEL_SRC)/copihue/console.lap \
                      $(KERNEL_SRC)/copihue/tcpcli_img.lap \
                      $(KERNEL_SRC)/copihue/tcpmulti_img.lap \
                      $(KERNEL_SRC)/copihue/tcphog_img.lap \
+                     $(KERNEL_SRC)/copihue/traza_img.lap \
                      $(KERNEL_SRC)/copihue/udp.lap \
                      $(KERNEL_SRC)/copihue/tcp.lap \
                      $(KERNEL_SRC)/copihue/trace.lap \
@@ -307,6 +308,16 @@ $(TCPHOG_IMG): src/user/tcphog.lap scripts/mkaxe.sh $(COPIHUE) | $(BUILD_DIR)
 	$(abspath $(COPIHUE)) --flat 0x400000 -o $(TCPHOG_BIN) src/user/tcphog.lap
 	scripts/mkaxe.sh $(TCPHOG_BIN) $(TCPHOG_AXE) $@ tcphog_fill
 
+# Programa de trazas de anillo 3 (OB-01). `trace plant` lo escribe como
+# traza y `traza ...` lo corre. Ver docs/trace.md.
+TRAZA_BIN = $(BUILD_DIR)/traza.bin
+TRAZA_AXE = $(BUILD_DIR)/traza.axe
+TRAZA_IMG = $(KERNEL_SRC)/copihue/traza_img.lap
+
+$(TRAZA_IMG): src/user/traza.lap scripts/mkaxe.sh $(COPIHUE) | $(BUILD_DIR)
+	$(abspath $(COPIHUE)) --flat 0x400000 -o $(TRAZA_BIN) src/user/traza.lap
+	scripts/mkaxe.sh $(TRAZA_BIN) $(TRAZA_AXE) $@ traza_fill
+
 # Consola curses: QEMU entrega el teclado al controlador PS/2 que lee el shell.
 qemu: $(OS_IMAGE) $(DATA_IMG)
 	qemu-system-$(ARCH) $(QEMU_CPU) $(QEMU_DRIVES) -display curses
@@ -335,7 +346,7 @@ debug: $(OS_IMAGE) $(DATA_IMG)
 
 clean:
 	rm -rf $(BUILD_DIR)
-	rm -f $(KERNEL_SRC)/copihue/exec_img.lap $(KERNEL_SRC)/copihue/zone_img.lap $(KERNEL_SRC)/copihue/atk_img.lap $(KERNEL_SRC)/copihue/udpeco_img.lap $(KERNEL_SRC)/copihue/udpdos_img.lap $(KERNEL_SRC)/copihue/udpwait_img.lap $(KERNEL_SRC)/copihue/tcpeco_img.lap $(KERNEL_SRC)/copihue/tcpcli_img.lap $(KERNEL_SRC)/copihue/tcpmulti_img.lap $(KERNEL_SRC)/copihue/tcphog_img.lap
+	rm -f $(KERNEL_SRC)/copihue/exec_img.lap $(KERNEL_SRC)/copihue/zone_img.lap $(KERNEL_SRC)/copihue/atk_img.lap $(KERNEL_SRC)/copihue/udpeco_img.lap $(KERNEL_SRC)/copihue/udpdos_img.lap $(KERNEL_SRC)/copihue/udpwait_img.lap $(KERNEL_SRC)/copihue/tcpeco_img.lap $(KERNEL_SRC)/copihue/tcpcli_img.lap $(KERNEL_SRC)/copihue/tcpmulti_img.lap $(KERNEL_SRC)/copihue/tcphog_img.lap $(KERNEL_SRC)/copihue/traza_img.lap
 
 help:
 	@echo "LapageriaOS $(VERSION) — kernel y arranque en Copihue $(COPIHUE_COMMIT)"

@@ -465,6 +465,105 @@ fn trace_sys_read(buf: i64, max: i64, sel: i64) -> i64 {
     return out;
 }
 
+// ---- Shell ---------------------------------------------------------
+
+// `trace plant`: escribe el programa traza en el disco.
+fn trace_plant() -> i64 {
+    let n = traza_fill(exec_buf);
+    if (n < 16 || n > 4096) { return exec_fail(9); }
+    let r = fs_write("traza", exec_buf, n);
+    if (r != 0) { return exec_fail(r); }
+    puts("trace plant ok\n");
+    return 0;
+}
+
+// Número decimal en tr_word a partir de off.
+fn tr_num_at(off: i64) -> i64 {
+    let v = 0;
+    while (tr_word[off] >= '0' && tr_word[off] <= '9') {
+        v = v * 10 + (tr_word[off] - '0');
+        off = off + 1;
+    }
+    return v;
+}
+
+fn traza_usage() -> i64 {
+    puts("traza: ls | count | clear | ptr | zone <n> | on|off <sonda|all> | dump [ev=<sonda>] [zone=<n>] [pid=<n>] [n=<k>]\n");
+    return 0;
+}
+
+// `traza ...`: arma la petición de 8 bytes en el archivo tzq y corre el
+// programa traza del disco (anillo 3), que la lee con la syscall 7.
+//   [0] l ls  c count  x clear  p ptr  o on  f off  d dump
+//   [1] sonda (255 = todas)   [2] sonda + 1   [3] zona + 1
+//   [4] pid + 1               [5] n (1..32)
+fn cmd_traza() -> i64 {
+    let i = 0;
+    while (i < 8) { tr_req[i] = 0; i = i + 1; }
+    let pos = tr_word_at(6);
+    if (tr_word[0] == 0 || tr_is("ls") != 0) { tr_req[0] = 'l'; }
+    else if (tr_is("count") != 0) { tr_req[0] = 'c'; }
+    else if (tr_is("clear") != 0) { tr_req[0] = 'x'; }
+    else if (tr_is("ptr") != 0) { tr_req[0] = 'p'; }
+    else if (tr_is("on") != 0 || tr_is("off") != 0) {
+        if (tr_is("on") != 0) { tr_req[0] = 'o'; } else { tr_req[0] = 'f'; }
+        tr_word_at(pos);
+        if (tr_is("all") != 0) { tr_req[1] = 255; }
+        else {
+            let id = tr_find();
+            if (id < 0) {
+                puts("trace bad probe\n");
+                return 0;
+            }
+            tr_req[1] = id as u8;
+        }
+    }
+    else if (tr_is("zone") != 0) {
+        tr_req[0] = 'z';
+        tr_word_at(pos);
+        tr_req[1] = tr_num_at(0) as u8;
+    }
+    else if (tr_is("dump") != 0) {
+        tr_req[0] = 'd';
+        tr_req[5] = 16;
+        while (1) {
+            pos = tr_word_at(pos);
+            if (tr_word[0] == 0) { break; }
+            if (tr_word[0] == 'e' && tr_word[1] == 'v' && tr_word[2] == '=') {
+                let id = tr_find_at(3);
+                if (id < 0) {
+                    puts("trace bad probe\n");
+                    return 0;
+                }
+                tr_req[2] = (id + 1) as u8;
+            }
+            else if (tr_word[0] == 'z' && tr_word[1] == 'o' && tr_word[2] == 'n' && tr_word[3] == 'e' && tr_word[4] == '=') {
+                tr_req[3] = (tr_num_at(5) + 1) as u8;
+            }
+            else if (tr_word[0] == 'p' && tr_word[1] == 'i' && tr_word[2] == 'd' && tr_word[3] == '=') {
+                tr_req[4] = (tr_num_at(4) + 1) as u8;
+            }
+            else if (tr_word[0] == 'n' && tr_word[1] == '=') {
+                let k = tr_num_at(2);
+                if (k < 1 || k > 32) { return traza_usage(); }
+                tr_req[5] = k as u8;
+            }
+            else { return traza_usage(); }
+        }
+    }
+    else { return traza_usage(); }
+    let r = fs_write("tzq", tr_req, 8);
+    if (r != 0) {
+        puts("traza fail ");
+        put_int(r);
+        putc(10);
+        return 0;
+    }
+    fs_zero(fs_name, 16);
+    fs_copy(fs_name, "traza", 6);
+    return exec_run();
+}
+
 fn cmd_trace() -> i64 {
     if (trace_layout() == 0) {
         puts("trace layout\n");
@@ -474,6 +573,7 @@ fn cmd_trace() -> i64 {
     if (tr_word[0] == 0 || tr_is("ls") != 0) { return trace_ls(); }
     if (tr_is("count") != 0) { return trace_count(); }
     if (tr_is("clear") != 0) { return trace_clear(); }
+    if (tr_is("plant") != 0) { return trace_plant(); }
     if (tr_is("dump") != 0) {
         while (pos < line_len && line[pos] == 32) { pos = pos + 1; }
         if (pos >= line_len) { return trace_dump(0); }
