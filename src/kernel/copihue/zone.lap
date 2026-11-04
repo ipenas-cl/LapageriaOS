@@ -606,6 +606,23 @@ fn zone_exec_cmd(pos: i64) -> i64 {
     return zone_run(z);
 }
 
+// `zone net nombre`: agrega las syscalls 12..16 (UDP) a la máscara de la
+// zona. Solo la zona 0 puede pedirlo (cmd_zone). Por defecto una zona
+// nueva no tiene red.
+fn zone_net(pos: i64) -> i64 {
+    let p = fs_scan(pos, fs_name);
+    if (p < 0) { return zone_fail(11); }
+    let z = zone_by_name(fs_name);
+    if (z <= 0) { return zone_fail(11); }
+    let nr = 12;
+    while (nr <= 16) {
+        zone_mask[z] = zone_mask[z] | (1 << nr);
+        nr = nr + 1;
+    }
+    puts("zone net ok\n");
+    return 0;
+}
+
 fn cmd_zone() -> i64 {
     if (zone_shell() == 0) {
         puts("zone denied\n");
@@ -616,6 +633,7 @@ fn cmd_zone() -> i64 {
     if (fs_is("create")) { return zone_create(pos); }
     if (fs_is("ls")) { return zone_ls(); }
     if (fs_is("exec")) { return zone_exec_cmd(pos); }
+    if (fs_is("net")) { return zone_net(pos); }
     if (fs_is("plant")) { return zone_plant(); }
     if (fs_is("atk")) { return zone_plant_atk(); }
     return zone_fail(11);

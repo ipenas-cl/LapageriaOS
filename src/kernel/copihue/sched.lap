@@ -214,6 +214,7 @@ fn release_proc(pi: i64) -> i64 {
     }
     proc_zone[pi] = 0;
     proc_uva[pi] = 0;
+    udp_release(pi);
     return f;
 }
 
