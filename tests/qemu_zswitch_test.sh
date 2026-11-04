@@ -10,12 +10,16 @@
 #     el contador del kernel (chg) es igual al de cambios (n);
 #   - n = yield + timer + 1 (la salida del primero con el otro vivo
 #     también cambia de contexto, sin pasar por switch_to);
-#   - sin interrupción de reloj en medio (timer=0) hay exactamente 12
-#     cesiones, y se repite la corrida si el PIT cayó dentro;
+#   - la prueba NO depende del tiempo: el PIT puede caer en cualquier punto
+#     de la corrida (en un runner lento cae varias veces) y eso solo reparte
+#     los cambios entre yield y timer. Se comprueban los invariantes que
+#     valen con cualquier número de ticks, contando los switch_to reales
+#     (sonda switch) y no un número fijo de cesiones;
 #   - las sondas `switch` y `zone-switch` lo registran: una zone-switch
 #     por cambio, a == zona que sale, b == zona que entra, la zona de
-#     salida de cada una es la de entrada de la anterior, y cada `switch`
-#     va seguido de su zone-switch con el mismo pid;
+#     salida de cada una es la de entrada de la anterior, el pid 1 siempre
+#     sale de su zona y el 2 de la suya, y cada `switch` va seguido de su
+#     zone-switch con el mismo pid;
 #   - con la misma zona dos veces hay cambios pero ninguno cambia la zona
 #     y no queda ninguna zone-switch;
 #   - la zona global (0) contra una zona normal también se registra (a 0).
@@ -62,7 +66,9 @@ fail() {
 start_qemu() {
     : > "$SERIAL"
     rm -f "$MON"
-    qemu-system-x86_64 -cpu qemu64 -drive format=raw,file="$IMAGE" \
+    # QEMU_EXTRA: opciones de más, p. ej. QEMU_EXTRA="-icount shift=7" (TCG lento).
+    # shellcheck disable=SC2086
+    qemu-system-x86_64 -cpu qemu64 ${QEMU_EXTRA:-} -drive format=raw,file="$IMAGE" \
         -drive file="$DATA",format=raw,if=ide,index=1 \
         -display none -no-reboot \
         -serial file:"$SERIAL" -monitor unix:"$MON",server,nowait &
@@ -127,36 +133,33 @@ typewait "fs write ibq y" 30
 typewait "trace on switch" 30
 typewait "trace on zone-switch" 30
 
-# pair_run za zb: corre y reintenta (hasta 4 veces) si el PIT cayó en medio.
+# pair_run za zb: una sola corrida; los invariantes no dependen de dónde cae el PIT.
 pair_run() {
-    local a=$1 b=$2 try
-    for try in 1 2 3 4; do
-        typewait "trace clear" 30
-        typewait "zone pair $a $b par" 150
-        w=$(win "zone pair $a $b par")
-        printf '%s\n' "$w" | grep -qx 'zone pair ok' || fail "zone pair $a $b: $(printf '%s' "$w" | tr '\n' '|')"
-        printf '%s\n' "$w" | grep -q 'zone leak\|user killed' && fail "zone pair $a $b: leak o proceso muerto"
-        [ "$(sw "zone pair $a $b par" timer)" = 0 ] && return 0
-    done
-    fail "zone pair $a $b: el PIT cayó dentro 4 veces seguidas"
+    local a=$1 b=$2 w
+    typewait "trace clear" 30
+    typewait "zone pair $a $b par" 150
+    w=$(win "zone pair $a $b par")
+    printf '%s\n' "$w" | grep -qx 'zone pair ok' || fail "zone pair $a $b: $(printf '%s' "$w" | tr '\n' '|')"
+    printf '%s\n' "$w" | grep -q 'zone leak\|user killed' && fail "zone pair $a $b: leak o proceso muerto"
+    return 0
 }
 
 # 1. Dos zonas distintas: cada cambio de contexto cambia la zona activa.
 pair_run za zb
 n=$(sw "zone pair za zb par" n); chg=$(sw "zone pair za zb par" chg)
-y=$(sw "zone pair za zb par" yield)
-[ "$y" = 12 ] || fail "esperaba 12 cesiones (2 procesos x 6), vi $y"
-[ "$n" = 13 ] || fail "esperaba n=13 (12 cesiones + la salida del primero), vi $n"
+y=$(sw "zone pair za zb par" yield); t=$(sw "zone pair za zb par" timer)
+[ "$y" -ge 1 ] || fail "ninguna cesión (yield=$y)"
+[ "$n" = $((y + t + 1)) ] || fail "n=$n, esperaba yield+timer+1 = $((y + t + 1))"
 [ "$chg" = "$n" ] || fail "la zona activa no cambió en cada cambio de contexto: n=$n chg=$chg"
 typewait "trace count" 30
 ps=$(pc switch); pz=$(pc zone-switch)
-[ "$ps" = 12 ] || fail "sonda switch=$ps, esperaba 12"
+[ "$ps" = $((y + t)) ] || fail "sonda switch=$ps, esperaba yield+timer = $((y + t))"
 [ "$pz" = "$n" ] || fail "sonda zone-switch=$pz, esperaba $n"
-echo "ok   zonas za/zb: $y cesiones, n=$n cambios de contexto, chg=$chg (todos cambian la zona); sondas switch=$ps zone-switch=$pz"
+echo "ok   zonas za/zb: yield=$y timer=$t, n=$n cambios de contexto, chg=$chg (todos cambian la zona); sondas switch=$ps zone-switch=$pz"
 
 # 2. Las trazas registran cada cambio, en orden.
 typewait "trace dump" 100
-tr -d '\r' < "$SERIAL" | awk '
+tr -d '\r' < "$SERIAL" | awk -v want_sw="$ps" -v want_zs="$pz" '
 function bad(msg) { print msg > "/dev/stderr"; exit 1 }
 $0 == "trace begin" { cap = 1; n = 0; next }
 cap && /^trace end n / { cap = 0; total = n; next }
@@ -178,38 +181,42 @@ END {
             if (prevb != "" && a[i] != prevb) bad("la zona de salida " a[i] " no es la de entrada anterior " prevb)
             prevb = b[i]
             if (zs == 1 && !(a[i] == 1 && b[i] == 2 && pid[i] == 1)) bad("el primero tenía que ser pid 1, zona 1 -> 2")
-            if (zs > 1 && pid[i] == pidprev) bad("el pid que sale no alterna en " i)
-            pidprev = pid[i]
+            if (a[i] != pid[i]) bad("el pid " pid[i] " sale de la zona " a[i] " en " i)
             if (i == 0 || ev[i - 1] != "switch") last_alone = i
         } else bad("evento inesperado " ev[i])
     }
-    if (sw != 12) bad("switch=" sw ", esperaba 12")
-    if (zs != 13) bad("zone-switch=" zs ", esperaba 13")
+    if (sw != want_sw) bad("switch=" sw ", esperaba " want_sw)
+    if (zs != want_zs) bad("zone-switch=" zs ", esperaba " want_zs)
     if (last_alone != total - 1) bad("la salida (zone-switch sin switch) tenía que ser la última")
     printf "%d switch, %d zone-switch, la salida al final\n", sw, zs
 }' > "$TMP/ring.out" 2> "$TMP/ring.err" || fail "anillo: $(cat "$TMP/ring.err")"
-echo "ok   trazas: $(cat "$TMP/ring.out"); 1 -> 2 -> 1 ... alternan, cada switch con su zone-switch del mismo pid, c no baja"
+echo "ok   trazas: $(cat "$TMP/ring.out"); cadena de zonas continua, cada switch con su zone-switch del mismo pid, c no baja"
 
 # 3. La misma zona dos veces: hay cambios de contexto, ninguno cambia la zona.
 pair_run za za
 n=$(sw "zone pair za za par" n); chg=$(sw "zone pair za za par" chg)
-[ "$n" = 13 ] && [ "$chg" = 0 ] || fail "za za: n=$n chg=$chg, esperaba 13 y 0"
+y=$(sw "zone pair za za par" yield); t=$(sw "zone pair za za par" timer)
+[ "$n" = $((y + t + 1)) ] && [ "$chg" = 0 ] || fail "za za: n=$n chg=$chg yield=$y timer=$t, esperaba n=yield+timer+1 y chg=0"
 typewait "trace count" 30
 pz=$(pc zone-switch); ps=$(pc switch)
-[ "$ps" = 12 ] && [ "$pz" = 0 ] || fail "za za: switch=$ps zone-switch=$pz, esperaba 12 y 0"
-echo "ok   misma zona: n=$n cambios de contexto, chg=0 y ninguna zone-switch (switch=$ps)"
+[ "$ps" = $((y + t)) ] && [ "$pz" = 0 ] || fail "za za: switch=$ps zone-switch=$pz, esperaba $((y + t)) y 0"
+echo "ok   misma zona: n=$n cambios de contexto (yield=$y timer=$t), chg=0 y ninguna zone-switch (switch=$ps)"
 
 # 4. La zona global contra una zona: el pid 1 (zona 0) sale con a 0 y el
 # pid 2 (zona 2) con b 0.
 pair_run global zb
 n=$(sw "zone pair global zb par" n); chg=$(sw "zone pair global zb par" chg)
-[ "$n" = 13 ] && [ "$chg" = 13 ] || fail "global zb: n=$n chg=$chg, esperaba 13 y 13"
+y=$(sw "zone pair global zb par" yield); t=$(sw "zone pair global zb par" timer)
+[ "$n" = $((y + t + 1)) ] && [ "$chg" = "$n" ] || fail "global zb: n=$n chg=$chg yield=$y timer=$t, esperaba n=yield+timer+1 y chg=n"
+# Quién sale primero depende del reloj: la última zone-switch es la salida
+# de uno de los dos (pid 1 de la zona 0, o pid 2 de la zona 2).
 typewait "trace dump 1" 60
 l=$(win "trace dump 1" | grep '^t ')
-printf '%s\n' "$l" | grep -q ' zone-switch pid 1 a 0 b 2 z 0 c [0-9]*$' || fail "global zb: la última zone-switch (la salida del pid 1) tenía que ser a 0 b 2: $l"
+printf '%s\n' "$l" | grep -qE ' zone-switch pid (1 a 0 b 2 z 0|2 a 2 b 0 z 2) c [0-9]*$' || fail "global zb: la última zone-switch (una salida) tenía que ser pid 1 a 0 b 2 o pid 2 a 2 b 0: $l"
 typewait "trace dump" 100
-win "trace dump" | grep -q ' zone-switch pid 2 a 2 b 0 z 2 c [0-9]*$' || fail "global zb: falta la vuelta del pid 2 a la zona 0 (a 2 b 0)"
-echo "ok   global/zb: 13 de 13 cambios cambian la zona (0 -> 2 ... 2 -> 0), registrados con a 0 y b 0"
+win "trace dump" | grep -qE ' zone-switch pid 1 a 0 b 2 z 0 c [0-9]*$' || fail "global zb: falta una salida de la zona 0 a la 2 (pid 1, a 0 b 2)"
+win "trace dump" | grep -qE ' zone-switch pid 2 a 2 b 0 z 2 c [0-9]*$' || fail "global zb: falta la vuelta del pid 2 a la zona 0 (a 2 b 0)"
+echo "ok   global/zb: $n de $n cambios cambian la zona (0 -> 2 ... 2 -> 0; yield=$y timer=$t), registrados con a 0 y b 0"
 
 typewait "zone ls" 30
 win "zone ls" | grep -q '^zone 1 za pre=ia .* proc=0/2 pag=0 ' || fail "zona za quedó con procesos o páginas: $(win 'zone ls' | tr '\n' '|')"
