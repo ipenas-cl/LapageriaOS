@@ -32,7 +32,7 @@ el evento entra al anillo.
 | 16 | `tcp-retx` | retransmisión (timer o rápida) | índice del TCB | reintentos del TCB |
 | 17 | `tcp-rst` | RST enviado (a = 0) o recibido (a = 1) | 0 / 1 | puerto del par |
 | 18 | `zone-switch` | `syscall 9` que cambia la zona del proceso; `switch_to` entre procesos de zonas distintas; y la salida de un proceso con el otro vivo en otra zona (pid = el que sale) | zona vieja | zona nueva |
-| 19 | `zone-deny` | acceso denegado por la zona | número de syscall (o 3 = ruta) | 1 máscara, 2 escape, errno si es ruta |
+| 19 | `zone-deny` | acceso denegado por la zona | número de syscall (o 3 = ruta) | 1 máscara, 2 escape, 4 proceso o traza de otra zona, errno si es ruta |
 
 Estados de TCP en `tcp-state`: 0 libre, 1 LISTEN, 2 SYN_SENT, 3 SYN_RCVD,
 4 ESTABLISHED, 5 FIN_WAIT_1, 6 FIN_WAIT_2, 7 CLOSE_WAIT, 8 CLOSING,
@@ -83,6 +83,13 @@ registros, los más nuevos que pasan el filtro `sel`, del más viejo al más
 nuevo. Son 7 `i64` por registro: tick, sonda, pid, zona, a, b, tsc. Devuelve
 cuántos. `sel`: bits 0..7 = sonda + 1, bits 8..15 = zona + 1, bits 16..39 =
 pid + 1; un campo en 0 no filtra.
+
+Desde una zona distinta de la global (con `zone trace`): `trace_read` solo
+devuelve eventos de la zona del que llama (el filtro de zona es el suyo;
+pedir otra da `-1`) y `trace_ctl` solo contesta las operaciones 4 y 5. El
+anillo y las sondas son de todos, así que lo demás (prender o apagar una
+sonda, vaciar, leer contadores o el estado) se niega con `-1`. Cada negación
+deja `zone-deny` con `b` = 4. Ver `docs/zonas.md`.
 
 Errores de las dos: `-22` argumento, `-14` puntero fuera del rango
 permitido (kernel, MMIO, página de código al escribir, cruzando el final de

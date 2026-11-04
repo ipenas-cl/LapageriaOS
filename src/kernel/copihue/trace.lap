@@ -359,6 +359,9 @@ fn trace_set(on: i64) -> i64 {
 //   5 name   a = sonda, b = puntero de escritura de 16 bytes -> largo
 // Errores: -22 argumento, -14 puntero, -16 anillo tomado.
 fn trace_sys_ctl(op: i64, a: i64, b: i64) -> i64 {
+    // Las sondas, el anillo y los contadores son de todos: una zona que
+    // no es la global solo puede preguntar cuántas sondas hay y sus nombres.
+    if (zone_caller() != 0 && op != 4 && op != 5) { return zone_other_denied(23); }
     if (op == 0) {
         if (a == 255) {
             let i = 0;
@@ -421,6 +424,15 @@ fn trace_sys_read(buf: i64, max: i64, sel: i64) -> i64 {
     if (max < 1 || max > 32) { return 0 - 22; }
     if (sel < 0) { return 0 - 22; }
     if (uptr_range_ok(buf, max * 56, 1) == 0) { return 0 - 14; }
+    // Una zona que no es la global solo ve los eventos de su zona: el
+    // filtro de zona es el suyo y pedir el de otra se niega. El pid de
+    // otra zona no encuentra nada.
+    let zc = zone_caller();
+    if (zc != 0) {
+        let zs = (sel >> 8) & 255;
+        if (zs != 0 && zs != zc + 1) { return zone_other_denied(24); }
+        sel = (sel - (sel & 0xFF00)) | ((zc + 1) << 8);
+    }
     if (trace_lock() == 0) { return 0 - 16; }
     let used = tr_used;
     if (used > 64) { used = 64; }

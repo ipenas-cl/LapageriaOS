@@ -93,6 +93,35 @@ cede la CPU 6 veces. Un archivo global con el mismo nombre que el relativo
 del programa le veda ese nombre a la zona (`-12`): por eso la zona global
 no escribe `q`.
 
+## Procesos de otras zonas (OB-02, etapa 7)
+
+Un proceso de una zona distinta de 0 no ve, no señala y no traza a los
+procesos de otra zona. La zona global lo ve todo. Hay dos syscalls nuevas y
+las de trazas se acotan:
+
+| Syscall | Qué hace | Máscara |
+|---|---|---|
+| 25 `proc_stat(pid)` | `(pid << 8) \| (zona << 4) \| estado` (1 listo, 2 corriendo, 4 dormido); `pid` 0 es el propio | `zone sched` |
+| 26 `proc_kill(pid)` | da de baja a otro proceso: sus páginas y su cupo de zona vuelven. `-22` si es el propio | `zone sched` |
+| 23 `trace_ctl` | fuera de la global solo las operaciones 4 (cuántas sondas) y 5 (nombre); las demás (prender, apagar, leer contador, vaciar, estado) dan `-1` | `zone trace` |
+| 24 `trace_read` | fuera de la global el filtro de zona es siempre el propio; pedir otra zona da `-1`, y un pid de otra zona no encuentra nada (0 registros) | `zone trace` |
+
+`zone sched nombre` agrega 4, 25 y 26; `zone trace nombre` agrega 23 y 24. Una
+zona nueva no tiene ninguna.
+
+Un pid que existe en otra zona y uno que no existe dan lo mismo: `-3`, sin
+distinguirse. Si existe, el intento deja `zone-deny` (sonda 19) con `a` =
+syscall (25, 26, 23 o 24) y `b` = 4, con el pid y la zona de quien lo
+intentó; no suma `niega` ni `fuga`.
+
+La prueba es `tests/qemu_iso_test.sh` (`make qemu-iso-test`, también en
+`make qemu-test`), con dos copias del programa `par` (`zone pair`, modos
+`c`, `s` y `g`): 14 intentos negados entre `za` y `zb` (7 por proceso), los
+permitidos con la propia zona, la misma zona dos veces (se ven y uno mata al
+otro, sin ningún `zone-deny`) y la global contra `za` (ve, lee la traza de
+esa zona y la mata). En los tres `zone pair ok`: no queda una página ni un
+cupo.
+
 `zone ls` muestra `pre`, `cap`, `proc`, `pag`, `niega`, `fuga` y `max`.
 `max` es la marca de agua de `pag`: lo más alto que llegó la zona desde
 que se creó. Nunca pasa de `cap`; si pasara, la cuota falló.

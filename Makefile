@@ -8,6 +8,7 @@
 #   qemu-tcp-test  Solo la prueba de TCP (tests/qemu_tcp_test.sh).
 #   qemu-trace-test  Solo la prueba de trazas (tests/qemu_trace_test.sh).
 #   qemu-zswitch-test  Solo el cambio de zona en switch_to (tests/qemu_zswitch_test.sh).
+#   qemu-iso-test  Solo el aislamiento entre zonas (tests/qemu_iso_test.sh).
 #   debug      Igual que qemu, y espera a gdb en tcp::1234 (-s -S).
 #   clean      Borra build/.
 #   help       Muestra esta lista.
@@ -131,7 +132,7 @@ COPIHUE_KERNEL_SRC = $(KERNEL_SRC)/copihue/console.lap \
                      $(KERNEL_SRC)/copihue/shell.lap \
                      $(KERNEL_SRC)/copihue/kernel.lap
 
-.PHONY: all qemu qemu-test qemu-udp-test qemu-tcp-test qemu-trace-test qemu-zswitch-test debug clean help
+.PHONY: all qemu qemu-test qemu-udp-test qemu-tcp-test qemu-trace-test qemu-zswitch-test qemu-iso-test debug clean help
 
 # Imagen de arranque: LBA 0 etapa 1, LBA 1 etapa 2, LBA KERNEL_LBA el kernel.
 all: $(OS_IMAGE)
@@ -346,6 +347,7 @@ qemu-test: $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_tcp_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_trace_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_zswitch_test.sh $(OS_IMAGE)
+	$(TESTS_DIR)/qemu_iso_test.sh $(OS_IMAGE)
 	COPIHUE=$(abspath $(COPIHUE)) $(TESTS_DIR)/stage2_big_test.sh $(BUILD_DIR)
 
 # Solo la red por IRQ y UDP. Usa una copia nueva del disco de datos.
@@ -363,6 +365,10 @@ qemu-trace-test: $(OS_IMAGE)
 # Solo el cambio de zona en switch_to (OB-02). Usa una copia nueva del disco.
 qemu-zswitch-test: $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_zswitch_test.sh $(OS_IMAGE)
+
+# Solo el aislamiento entre zonas (OB-02, etapa 7). Usa una copia nueva del disco.
+qemu-iso-test: $(OS_IMAGE)
+	$(TESTS_DIR)/qemu_iso_test.sh $(OS_IMAGE)
 
 # La imagen es un binario plano: gdb no tiene tabla de símbolos ELF.
 debug: $(OS_IMAGE) $(DATA_IMG)
@@ -389,6 +395,7 @@ help:
 	@echo "  make qemu-tcp-test  Solo la prueba de TCP (tests/qemu_tcp_test.sh)."
 	@echo "  make qemu-trace-test  Solo la prueba de trazas (tests/qemu_trace_test.sh)."
 	@echo "  make qemu-zswitch-test  Solo el cambio de zona en switch_to (tests/qemu_zswitch_test.sh)."
+	@echo "  make qemu-iso-test  Solo el aislamiento entre zonas (tests/qemu_iso_test.sh)."
 	@echo "  make debug      Igual que qemu, esperando gdb en tcp::1234."
 	@echo "  make clean      Borra build/."
 	@echo "  make help       Esta lista."

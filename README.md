@@ -229,7 +229,7 @@ echo. Polling del bit DD. Sin TCP ni UDP. El detalle está en
 
 ### 7. Zonas y observabilidad — parcial, en la imagen
 
-`zone` aísla procesos con tope de páginas, máscara de syscalls (niega por defecto), prefijo de archivos y tope de procesos. La zona 0 es la global. El detalle está en [docs/zonas.md](docs/zonas.md).
+`zone` aísla procesos con tope de páginas, máscara de syscalls (niega por defecto), prefijo de archivos y tope de procesos. La zona 0 es la global. Un proceso de una zona no ve, no señala ni traza a los de otra (`tests/qemu_iso_test.sh`), y el cambio de zona en cada cambio de contexto tiene su prueba (`tests/qemu_zswitch_test.sh`). El detalle está en [docs/zonas.md](docs/zonas.md).
 
 `trace` tiene once sondas estáticas (syscall de entrada y de salida, cambio de contexto, `#PF`, tick del PIT, alloc y free de páginas, lectura y escritura de bloques, paquetes recibidos y enviados) y un anillo fijo de 32 eventos. Apagada, la sonda es un chequeo. El detalle está en [docs/trace.md](docs/trace.md). VGA sigue duplicada en COM1, con `ticks`, `kbd_irqs` y la línea de cada excepción.
 

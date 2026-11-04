@@ -90,6 +90,18 @@ syscall fn sys_user(nr: i64, ch: i64, a2: i64, a3: i64, a4: i64, a5: i64) -> i64
         if (tr_en[1] != 0) { trace_hit(1, proc_pid[cur_i], nr, r); }
         return r;
     }
+    // 25 proc_stat, 26 proc_kill (zone.lap): solo procesos de la propia zona,
+    // salvo la global.
+    if (nr == 25) {
+        let r = zone_sys_pstat(ch);
+        if (tr_en[1] != 0) { trace_hit(1, proc_pid[cur_i], nr, r); }
+        return r;
+    }
+    if (nr == 26) {
+        let r = zone_sys_pkill(ch);
+        if (tr_en[1] != 0) { trace_hit(1, proc_pid[cur_i], nr, r); }
+        return r;
+    }
     if (tr_en[1] != 0) { trace_hit(1, proc_pid[cur_i], nr, 0); }
     return 0;
 }

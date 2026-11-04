@@ -1,27 +1,147 @@
 // par: dos copias de este programa, una por zona, corren a la vez con
 // `zone pair` (copihue --flat 0x400000). Cada copia lee su modo del
-// archivo `q` de su zona (0x401800 nombre, 0x401C00 datos) y hace lo suyo:
+// archivo `q` de su zona (0x401800 nombre, 0x401C00 datos; la zona global
+// lo lee de `g`) y hace lo suyo:
 //
 //   'y' cede la CPU 6 veces (syscall 4) y sale. Cada cesión es un cambio de
 //       contexto entre zonas distintas (OB-02).
+//   'w' cede hasta 200 veces; espera a que otro lo mate.
+//   'c' dos zonas distintas, ninguna global. Intenta ver (25), señalar (26)
+//       y tracear (23, 24) a la otra, y hace lo permitido con la propia.
+//   's' la misma zona dos veces. El pid 1 ve, lee la traza y mata al pid 2;
+//       el pid 2 solo ve al pid 1.
+//   'g' la zona global contra una zona normal (pid 1 global): ve, lee la
+//       traza de la otra zona y la mata.
 //
+// Cada proceso deja una cadena de '1' (bien) y '0' (mal) en el archivo
+// `r<pid>` de su zona; el shell la lee con `fs cat`. Las zonas son la 1 y la
+// 2 cuando son dos zonas distintas (la contraria es 3 - zona).
+//
+// El orden en que corren los dos no está fijado (el PIT también cambia de
+// proceso). Para que el otro siga vivo mientras uno intenta algo, cada uno
+// cede la CPU antes de empezar y, en 'c', sigue cediéndola al terminar.
 // Sin cadenas ni globales: un let global cae en la página de código.
 
-fn run() {
-    let m: i64 = *(0x401C00 as *u8);
-    m = m & 255;
-    if (m == 121) {
-        let i: i64 = 0;
-        while (i < 6) {
-            syscall(4);
-            i = i + 1;
-        }
+fn ck(i: i64, c: i64) {
+    let v: i64 = 48;
+    if (c != 0) { v = 49; }
+    *((0x401C00 + i) as *u8) = v as u8;
+}
+
+fn yields(n: i64) {
+    let i: i64 = 0;
+    while (i < n) {
+        syscall(4);
+        i = i + 1;
     }
 }
 
-// El modo por defecto es 'y': un archivo `q` que no se puede leer (la zona
-// global no tiene prefijo, y un nombre que existe fuera de una zona le
-// está vedado) deja ahí la 'y' de abajo.
+// Deja los n resultados de 0x401C00 en el archivo r<pid>.
+fn put_result(pid: i64, n: i64) {
+    *(0x401800 as *u8) = 114;
+    *(0x401801 as *u8) = (48 + pid) as u8;
+    *(0x401802 as *u8) = 0;
+    syscall(6, n);
+}
+
+// trace_read al buffer 0x401000 (hasta 8 registros de 56 bytes).
+fn rd(sel: i64) -> i64 {
+    return syscall(24, 0x401000, 8, sel);
+}
+
+// Los n registros de 0x401000 son de la zona z (campo zona, offset 24).
+fn zones_are(n: i64, z: i64) -> i64 {
+    let i: i64 = 0;
+    while (i < n) {
+        if (*((0x401000 + i * 56 + 24) as *i64) != z) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn do_c(s: i64) {
+    let pid: i64 = (s >> 8) & 255;
+    let own: i64 = (s >> 4) & 15;
+    let o: i64 = 3 - pid;
+    let f: i64 = 3 - own;
+    ck(0, s >= 0);
+    yields(1);
+    ck(1, syscall(25, o) == 0 - 3);
+    ck(2, syscall(26, o) == 0 - 3);
+    ck(3, rd((f + 1) << 8) == 0 - 1);
+    ck(4, rd((own + 1) << 8) >= 0);
+    yields(3);
+    let n: i64 = rd(0);
+    ck(5, n >= 1 && zones_are(n, own) == 1);
+    ck(6, syscall(23, 0, 255, 0) == 0 - 1);
+    ck(7, syscall(23, 2, 0, 0) == 0 - 1);
+    ck(8, syscall(23, 3, 0, 0) == 0 - 1);
+    ck(9, syscall(23, 1, 0, 0) == 0 - 1);
+    ck(10, syscall(23, 4, 0, 0) == 20);
+    ck(11, syscall(23, 5, 0, 0x401700) >= 0);
+    ck(12, rd((o + 1) << 16) == 0);
+    put_result(pid, 13);
+    yields(200);
+}
+
+fn do_s(s: i64) {
+    let pid: i64 = (s >> 8) & 255;
+    let own: i64 = (s >> 4) & 15;
+    ck(0, s >= 0);
+    if (pid == 2) {
+        ck(1, syscall(25, 1) >= 0);
+        put_result(pid, 2);
+        yields(200);
+        return;
+    }
+    yields(1);
+    let t: i64 = syscall(25, 2);
+    ck(1, t >= 0 && ((t >> 4) & 15) == own);
+    let n: i64 = rd(0);
+    ck(2, n >= 1 && zones_are(n, own) == 1);
+    ck(3, syscall(26, 2) == 0);
+    ck(4, syscall(25, 2) == 0 - 3);
+    ck(5, syscall(26, 1) == 0 - 22);
+    put_result(pid, 6);
+}
+
+fn do_g(s: i64) {
+    ck(0, s >= 0 && ((s >> 4) & 15) == 0);
+    yields(1);
+    let t: i64 = syscall(25, 2);
+    ck(1, t >= 0 && ((t >> 4) & 15) == 1);
+    let n: i64 = rd(2 << 8);
+    ck(2, n >= 1 && zones_are(n, 1) == 1);
+    ck(3, rd(0) >= 1);
+    ck(4, syscall(23, 1, 2, 0) >= 0);
+    ck(5, syscall(26, 2) == 0);
+    ck(6, syscall(25, 2) == 0 - 3);
+    put_result(1, 7);
+}
+
+fn run() {
+    let s: i64 = syscall(25, 0);
+    let m: i64 = *(0x401C00 as *u8);
+    m = m & 255;
+    if (s >= 0 && ((s >> 4) & 15) == 0) {
+        // Zona global: el modo está en `g`, si existe.
+        *(0x401C00 as *u8) = 121;
+        *(0x401800 as *u8) = 103;
+        *(0x401801 as *u8) = 0;
+        syscall(7, 64);
+        m = *(0x401C00 as *u8);
+        m = m & 255;
+    }
+    if (m == 121) { yields(6); }
+    if (m == 119) { yields(200); }
+    if (m == 99) { do_c(s); }
+    if (m == 115) { do_s(s); }
+    if (m == 103) { do_g(s); }
+}
+
+// El modo por defecto es 'y': un archivo que no se puede leer deja ahí la
+// 'y' de abajo (la zona global no tiene prefijo, y un nombre que existe
+// fuera de una zona le está vedado).
 naked fn _start() {
     *(0x401C00 as *u8) = 121;
     *(0x401800 as *u8) = 113;

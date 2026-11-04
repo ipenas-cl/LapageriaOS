@@ -625,3 +625,28 @@ trabajo. Dos notas, ninguna con contorno:
 
        fn emit(c: i64) { syscall(1, c); }
        fn _start() { let s: *u8 = "ok\n"; emit(s[0]); syscall(5); }
+
+## OB-02 (marcas rdtsc, cambio de zona, aislamiento), con Copihue v0.42.5
+
+Sin `asm()` nuevo y sin contornos nuevos. Lo de v0.42.5 que el kernel usa y
+que **corrió en QEMU 8.2.2** (`make qemu-test`): `irq_save()` /
+`irq_restore(f)` (en las secciones críticas y en las trazas), `div_raw` y
+`rem_raw` (los ataques `r` y `m` dan #DE por divisor cero, con el `idiv`
+en el RIP), `cx = n * 256` en `bits 16` (la etapa 2 carga el kernel de
+1 MiB de la prueba grande), `0 - *(… as *u8)` en un `let` de `i64` (el
+ataque `z` sigue dando #DE, o sea el divisor es -1 y no 255) y `rdtsc()`
+(las marcas crecen en los 32 `pit` seguidos). No se probó `read_rflags()`
+ni `rdrand` / `rdseed`: `qemu64` no tiene `rdrand`. El ISN de TCP (RD-02,
+pedido 1) sigue sembrándose con el PIT, los ticks, el CMOS y la MAC; con
+`rdtsc()` disponible se puede mejorar, y no se tocó en este cambio.
+
+Dos notas, ninguna con contorno:
+
+1. `tr_ring[slot].tsc = rdtsc() as i64;` y `irq_restore(tr_fl_tmp as u64)`
+   piden el `as`: `rdtsc()` e `irq_save()` devuelven `u64` y el campo y la
+   variable de las trazas son `i64`. Es coherente con el resto; se anota
+   porque el mensaje no sugiere el cast.
+2. Un programa de anillo 3 de unos 3 KB (`par.lap`, 3265 bytes) hace crecer
+   el kernel unos 24 KB al embeberse (`par_img.lap`, 4 bytes por asignación;
+   ver RD-02, pedido 2). No bloquea nada, pero el kernel pasó de 714 a 770
+   sectores en este cambio entre el pin nuevo, `par` y las rutas nuevas.

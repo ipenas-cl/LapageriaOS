@@ -17,6 +17,18 @@ contorno: `irq_save()` / `irq_restore(f)` en las secciones críticas con
 `div_raw` / `rem_raw` en dos ataques nuevos, `r` y `m` (#DE por divisor cero;
 `z` sigue con `INT64_MIN / -1`). Detalle en `docs/PEDIDOS_COPIHUE.md`.
 
+OB-02, etapa 7, aislamiento entre zonas: un proceso de una zona no ve, no
+señala ni traza a los de otra. Syscalls nuevas 25 `proc_stat` y 26
+`proc_kill` (`zone sched` las da junto con `yield`); `trace_read` (24) fuera de
+la zona global filtra siempre por la propia zona y niega pedir otra (`-1`);
+`trace_ctl` (23) solo contesta las operaciones 4 y 5 (`zone trace` da 23 y
+24). Un pid de otra zona da `-3`, igual que uno que no existe, y deja
+`zone-deny` con `b` = 4. Prueba `tests/qemu_iso_test.sh` (`make
+qemu-iso-test`, en `make qemu-test`): 14 intentos negados, los permitidos,
+la misma zona y la global. `par` crece (3265 bytes): el kernel pasa de 722 a
+770 sectores y `tests/stage2_big_test.sh` compara desde `0x4A0000` (antes
+`0x490000`; la `.bss` llega a `0x487745`).
+
 OB-02, cambio de zona en `switch_to`: `zone sched` (da `yield` a una zona),
 `zone par` y `zone pair za zb programa` (dos copias del programa `par` a la
 vez, una por zona), con los contadores `zsw_n` / `zsw_chg` y
