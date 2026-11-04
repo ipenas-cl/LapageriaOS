@@ -8,6 +8,17 @@ para ese commit es `legacy-tempo`.
 
 ## 0.8
 
+CP-01: el compilador fijado sube de v0.31.0 a v0.34.1 (commit
+`330ec195b27c8cd66aa1cf5ee5113c767a1ea5ca`). No hubo cambios de código
+en `src/`: `make` compila igual. `kernel.bin` mide 157775 bytes (309
+sectores, igual que con v0.31.0) y `stage2.bin` pasa de 1789 a 1805
+bytes (máximo 4096): v0.34.1 agrega `push`/`pop` de `edx` y `ebx` en
+`bits 16`/`bits 32`. El banner del shell dice v0.34.1 (misma
+longitud). El `Makefile` mide tamaños con `wc -c < archivo | tr -d ' '`
+en vez de `stat -c %s`, para que corra en macOS y en Linux. El arranque
+en QEMU no se probó con esta versión; queda para el CI. Lo que sigue
+describe la imagen con v0.31.0.
+
 Kernel en Copihue v0.31.0 (commit
 `495bb4b54d3fba77ed83aa51c0d2362ea9ebd621`). `git ls-remote` devuelve
 ese commit para el tag, para `HEAD` y para `refs/heads/main`. `git -C

@@ -84,7 +84,7 @@ QEMU_CPU = -cpu qemu64
 # existir antes de esas reglas: si no, la etapa 1 y la etapa 2 no esperan
 # al compilador (el CI de la etapa 2 falló así la primera vez).
 COPIHUE_REPO   ?= https://github.com/ipenas-cl/copihue.git
-COPIHUE_COMMIT ?= v0.31.0
+COPIHUE_COMMIT ?= v0.34.1
 COPIHUE_DIR     = $(BUILD_DIR)/copihue
 COPIHUE       ?= $(COPIHUE_DIR)/copihue
 
@@ -134,7 +134,7 @@ $(BOOTLOADER): $(BOOT_SRC)/boot.lap $(COPIHUE) | $(BUILD_DIR)
 	@grep -q 'dw $(STAGE2_ORG), 0;' $<
 	@grep -q 'jmp $(STAGE2_ORG)' $<
 	$(abspath $(COPIHUE)) --boot -o $@ $<
-	@test $$(stat -c %s $@) -eq 512
+	@test $$(wc -c < $@ | tr -d ' ') -eq 512
 	@test "$$(tail -c 2 $@ | od -An -tx1 | tr -d ' \n')" = "55aa"
 
 # El conteo del DAP sale del tamaño de kernel.bin. Sin este prerequisito
@@ -145,7 +145,7 @@ $(STAGE2): $(BOOT_SRC)/stage2.lap $(KERNEL) $(COPIHUE) | $(BUILD_DIR)
 	  test $(KERNEL_LBA) -eq $$((1 + $(STAGE2_SECTORS))); \
 	  grep -q 'dq $(KERNEL_LBA);' $<; \
 	  grep -q 'dw 0; // KERNEL_SECTORS' $<; \
-	  size=$$(stat -c %s $(KERNEL)); \
+	  size=$$(wc -c < $(KERNEL) | tr -d ' '); \
 	  sectors=$$(( (size + 511) / 512 )); \
 	  echo "kernel.bin: $$size bytes, $$sectors sectors (max $(KERNEL_MAX_SECTORS))"; \
 	  test $$sectors -ge 1; \
@@ -153,7 +153,7 @@ $(STAGE2): $(BOOT_SRC)/stage2.lap $(KERNEL) $(COPIHUE) | $(BUILD_DIR)
 	  sed 's/^    dw 0; \/\/ KERNEL_SECTORS$$/    dw '"$$sectors"'; \/\/ KERNEL_SECTORS/' $< > $(BUILD_DIR)/stage2.lap; \
 	  grep -q "^    dw $$sectors; // KERNEL_SECTORS$$" $(BUILD_DIR)/stage2.lap; \
 	  $(abspath $(COPIHUE)) --flat $(STAGE2_ORG) -o $@ $(BUILD_DIR)/stage2.lap; \
-	  st2=$$(stat -c %s $@); \
+	  st2=$$(wc -c < $@ | tr -d ' '); \
 	  echo "stage2.bin: $$st2 bytes (max $$(($(STAGE2_SECTORS) * 512)))"; \
 	  test $$st2 -le $$(($(STAGE2_SECTORS) * 512)) || { echo "stage2 too large for its sectors"; rm -f $@; exit 1; }; \
 	  lo=$$(printf '%02x' $$((sectors & 255))); \
@@ -179,7 +179,7 @@ $(KERNEL): $(COPIHUE_KERNEL_SRC) $(COPIHUE) | $(BUILD_DIR)
 	$(abspath $(COPIHUE)) --flat 0xFFFFFFFF80010000 -S -o $(BUILD_DIR)/kernel.asm $(KERNEL_SRC)/copihue/kernel.lap
 	nasm -f bin -o $@ $(BUILD_DIR)/kernel.asm
 	@set -eu; \
-	  size=$$(stat -c %s $@); \
+	  size=$$(wc -c < $@ | tr -d ' '); \
 	  bss=$$(awk '/^__bss_start:/{s=1; next} /^__bss_end:/{s=0} s && /resb /{b += $$NF} s && /resw /{b += $$NF * 2} s && /resd /{b += $$NF * 4} s && /resq /{b += $$NF * 8} END{print b + 0}' $(BUILD_DIR)/kernel.asm); \
 	  end=$$(( $(KERNEL_LOAD_ADDR) + size + bss )); \
 	  printf 'kernel.bin: %s bytes, bss %s, image end 0x%x (max 0x%x)\n' "$$size" "$$bss" "$$end" "$(KERNEL_IMAGE_END)"; \

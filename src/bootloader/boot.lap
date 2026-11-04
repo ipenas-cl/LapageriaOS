@@ -16,7 +16,7 @@
 //
 // `dw 8`, `dw 0x8200` and `jmp 0x8200` are checked against the Makefile.
 //
-// Copihue v0.31.0. lodsb avanza si solo con DF en claro. clear_df
+// Copihue v0.34.1. lodsb avanza si solo con DF en claro. clear_df
 // lo apaga con cld() antes de leer el disco. Las llamadas de aquí
 // no llevan argumentos.
 

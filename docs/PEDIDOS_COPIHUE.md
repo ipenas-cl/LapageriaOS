@@ -2,12 +2,13 @@
 
 Lapageria rosea es el nombre científico del copihue; antes AtomicOS.
 
-Compilador fijado en el Makefile: v0.31.0, commit
-`495bb4b54d3fba77ed83aa51c0d2362ea9ebd621`. El tag es ligero: `git
-ls-remote` devuelve ese commit para `refs/tags/v0.31.0`, para `HEAD`
-y para `refs/heads/main`. `git -C build/copihue rev-parse HEAD`
-después del `make` también, y `copihue --version` imprime `Copihue
-0.31.0`.
+Compilador fijado en el Makefile: v0.34.1, commit
+`330ec195b27c8cd66aa1cf5ee5113c767a1ea5ca`. `git ls-remote` devuelve
+ese commit para `refs/tags/v0.34.1`, y `git -C build/copihue rev-parse
+HEAD` después del `make` también. No se comprobó `HEAD` ni
+`refs/heads/main` del remoto, ni la salida de `copihue --version`.
+Sin pedidos nuevos al subir desde v0.31.0: el kernel compila sin
+cambios de código.
 
 ## Cerrado en v0.27.0 y v0.27.1
 
