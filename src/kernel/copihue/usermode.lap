@@ -102,6 +102,12 @@ syscall fn sys_user(nr: i64, ch: i64, a2: i64, a3: i64, a4: i64, a5: i64) -> i64
         if (tr_en[1] != 0) { trace_hit(1, proc_pid[cur_i], nr, r); }
         return r;
     }
+    // 27 zone_destroy (zone.lap): solo la zona 0.
+    if (nr == 27) {
+        let r = zone_sys_destroy();
+        if (tr_en[1] != 0) { trace_hit(1, proc_pid[cur_i], nr, r); }
+        return r;
+    }
     if (tr_en[1] != 0) { trace_hit(1, proc_pid[cur_i], nr, 0); }
     return 0;
 }

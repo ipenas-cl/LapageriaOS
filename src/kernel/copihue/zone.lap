@@ -1,10 +1,12 @@
 // Zonas ligeras. La zona 0 es la global (shell y kernel). Una zona
-// nueva niega toda syscall que no esté en su máscara, no ve nombres
-// fuera de su prefijo y no pasa de su tope de páginas ni de procesos.
-// El prefijo lo agrega el kernel: el programa manda un nombre relativo.
+// nueva niega toda syscall que no esté en su máscara, ve el sistema de
+// archivos solo desde su raíz (/zonas/<nombre>, que `zone create` crea) y
+// no pasa de su tope de páginas ni de procesos. El kernel antepone la
+// raíz: el programa manda un nombre relativo. Un ".." o una ruta
+// absoluta se niegan con -1 y suben `niega`. docs/zonas.md.
 //
-// Nombre y prefijo son 16 bytes por zona. ZoneStr lo mide; zone_layout
-// lo chequea. El programa sigue dejando el nombre en 0x401800.
+// El nombre es de 16 bytes por zona. ZoneStr lo mide; zone_layout lo
+// chequea. El programa sigue dejando el nombre en 0x401800.
 
 packed struct ZoneStr {
     b: [u8; 16]
@@ -20,9 +22,8 @@ let zone_maxproc: [i64; 8];
 let zone_niega: [i64; 8];
 let zone_fuga: [i64; 8];
 let zone_name: [ZoneStr; 8];
-let zone_prefix: [ZoneStr; 8];
 let zone_raw: [u8; 16];
-let zone_path: [u8; 16];
+let zone_path: [u8; 64];
 let zone_io: [u8; 64];
 let zone_errno: i64 = 0;
 let build_zone: i64 = 0;
@@ -44,19 +45,17 @@ fn zone_user_mask() -> i64 {
     return m;
 }
 
-fn zone_set_str(which: i64, z: i64, s: *u8) -> i64 {
+fn zone_set_name(z: i64, s: *u8) -> i64 {
     let i = 0;
     while (i < 16) {
-        if (which == 0) { zone_name[z].b[i] = 0; }
-        else { zone_prefix[z].b[i] = 0; }
+        zone_name[z].b[i] = 0;
         i = i + 1;
     }
     i = 0;
     while (i < 15) {
         let c = s[i] & 255;
         if (c == 0) { return 1; }
-        if (which == 0) { zone_name[z].b[i] = c; }
-        else { zone_prefix[z].b[i] = c; }
+        zone_name[z].b[i] = c;
         i = i + 1;
     }
     return 0;
@@ -69,31 +68,6 @@ fn zone_eq_name(z: i64, s: *u8) -> i64 {
         let b = s[i] & 255;
         if (a != b) { return 0; }
         if (a == 0) { return 1; }
-        i = i + 1;
-    }
-    return 1;
-}
-
-fn zone_eq_pre(z: i64, s: *u8) -> i64 {
-    let i = 0;
-    while (i < 16) {
-        let a = zone_prefix[z].b[i] & 255;
-        let b = s[i] & 255;
-        if (a != b) { return 0; }
-        if (a == 0) { return 1; }
-        i = i + 1;
-    }
-    return 1;
-}
-
-fn zone_has_prefix(z: i64, s: *u8) -> i64 {
-    let c0 = zone_prefix[z].b[0] & 255;
-    if (c0 == 0) { return 0; }
-    let i = 0;
-    while (i < 16) {
-        let c = zone_prefix[z].b[i] & 255;
-        if (c == 0) { return 1; }
-        if ((s[i] & 255) != c) { return 0; }
         i = i + 1;
     }
     return 1;
@@ -127,43 +101,6 @@ fn zone_ident_ok(s: *u8) -> i64 {
     return 1;
 }
 
-fn zone_pre_ok(s: *u8) -> i64 {
-    let i = 0;
-    while (i < 8) {
-        let c = s[i] & 255;
-        if (c == 0) {
-            if (i == 0) { return 0; }
-            return 1;
-        }
-        if (c < 33 || c > 126) { return 0; }
-        if (c == 46 || c == 92) { return 0; }
-        i = i + 1;
-    }
-    if ((s[8] & 255) != 0) { return 0; }
-    return 1;
-}
-
-fn zone_pre_overlap(z: i64, s: *u8) -> i64 {
-    if (zone_has_prefix(z, s) != 0) { return 1; }
-    let i = 0;
-    while (i < 16) {
-        let c = s[i] & 255;
-        if (c == 0) { return 1; }
-        if ((zone_prefix[z].b[i] & 255) != c) { return 0; }
-        i = i + 1;
-    }
-    return 1;
-}
-
-fn zone_pre_clash(s: *u8) -> i64 {
-    let i = 1;
-    while (i < 8) {
-        if (zone_live[i] != 0 && zone_pre_overlap(i, s) != 0) { return 1; }
-        i = i + 1;
-    }
-    return 0;
-}
-
 fn zone_layout() -> i64 {
     if (sizeof(ZoneStr) != 16) { return 0; }
     if (offsetof(ZoneStr, b) != 0) { return 0; }
@@ -184,7 +121,7 @@ fn zone_init() -> i64 {
     zone_nproc[0] = 0;
     zone_niega[0] = 0;
     zone_fuga[0] = 0;
-    zone_set_str(0, 0, "global");
+    zone_set_name(0, "global");
     return 0;
 }
 
@@ -281,87 +218,85 @@ fn zone_read_name() -> i64 {
     return 0;
 }
 
-fn zone_rel_ok() -> i64 {
-    return zone_ident_ok(zone_raw);
-}
-
-fn zone_other_prefix(z: i64) -> i64 {
+// Raíz de la zona: el directorio /zonas/<nombre>. El programa manda un
+// nombre relativo a esa raíz y el kernel arma la ruta completa en
+// zone_path. La zona global no tiene raíz propia: ve todo el árbol.
+fn zone_root_path(z: i64) -> i64 {
     let i = 0;
-    while (i < 8) {
-        if (i != z && zone_live[i] != 0 && zone_has_prefix(i, zone_raw) != 0) { return 1; }
+    let pre: *u8 = "/zonas/";
+    while (i < 7) {
+        zone_path[i] = pre[i];
         i = i + 1;
-    }
-    return 0;
-}
-
-fn zone_blocks(z: i64) -> i64 {
-    let r = fs_open();
-    if (r != 0) { return 0 - r; }
-    if (fs_find(zone_raw) < 0) { return 0; }
-    if (zone_has_prefix(z, zone_raw) != 0) { return 0; }
-    return 1;
-}
-
-fn zone_join(z: i64) -> i64 {
-    let i = 0;
-    while (i < 16) {
-        zone_path[i] = 0;
-        i = i + 1;
-    }
-    i = 0;
-    let p = 0;
-    let stop = 0;
-    let c = 0;
-    while (p < 8 && stop == 0) {
-        c = zone_prefix[z].b[p] & 255;
-        if (c == 0) { stop = 1; }
-        else {
-            if (i >= 15) { return 0 - 12; }
-            zone_path[i] = c as u8;
-            i = i + 1;
-            p = p + 1;
-        }
     }
     let j = 0;
-    stop = 0;
-    while (j < 8 && stop == 0) {
-        c = zone_raw[j] & 255;
-        if (c == 0) { stop = 1; }
+    while (j < 8) {
+        let c = zone_name[z].b[j] & 255;
+        if (c == 0) { j = 8; }
         else {
-            if (i >= 15) { return 0 - 12; }
             zone_path[i] = c as u8;
             i = i + 1;
             j = j + 1;
         }
     }
     zone_path[i] = 0;
+    return i;
+}
+
+// Un nombre de zona es válido si son componentes de 1 a 15 bytes
+// imprimibles, separados por una sola '/', sin "." ni "..", sin '/' al
+// principio (ruta absoluta) ni al final. Todo lo demás se niega.
+fn zone_rel_ok() -> i64 {
+    let i = 0;
+    let n = 0;
+    while (i < 16) {
+        let c = zone_raw[i] & 255;
+        if (c == 0 || c == 47) {
+            if (n == 0) { return 0; }
+            if (n == 1 && (zone_raw[i - 1] & 255) == 46) { return 0; }
+            if (n == 2 && (zone_raw[i - 1] & 255) == 46 && (zone_raw[i - 2] & 255) == 46) { return 0; }
+            if (c == 0) { return 1; }
+            n = 0;
+        } else {
+            if (c < 33 || c > 126) { return 0; }
+            n = n + 1;
+        }
+        i = i + 1;
+    }
     return 0;
 }
 
-fn zone_resolve_in(z: i64) -> i64 {
+// Una negación de ruta cuenta en `niega`, deja la sonda 19 con b = 3 y
+// devuelve -1, igual que una syscall fuera de la máscara.
+fn zone_path_denied(z: i64) -> i64 {
+    if (z > 0 && z < 8) { zone_niega[z] = zone_niega[z] + 1; }
+    if (tr_en[19] != 0) { trace_hit(19, proc_pid[cur_i], 3, 0); }
+    return 0 - 1;
+}
+
+// Deja en zone_path la ruta del archivo que pide la zona z. 0, o -1 si se
+// niega. La zona 0 pasa el nombre tal cual.
+fn zone_resolve(z: i64) -> i64 {
+    let i = 0;
     if (z <= 0) {
-        let i = 0;
         while (i < 16) {
             zone_path[i] = zone_raw[i];
             i = i + 1;
         }
+        zone_path[16] = 0;
         return 0;
     }
-    if (zone_rel_ok() == 0) { return 0 - 12; }
-    if (zone_other_prefix(z) != 0) { return 0 - 12; }
-    let b = zone_blocks(z);
-    if (b < 0) { return b; }
-    if (b != 0) { return 0 - 12; }
-    if (zone_join(z) != 0) { return 0 - 12; }
-    if (zone_has_prefix(z, zone_path) == 0) { return 0 - 12; }
-    return 0;
-}
-
-// Negación de ruta: la sonda 19 lleva el código 3 (ruta) y el errno.
-fn zone_resolve(z: i64) -> i64 {
-    let r = zone_resolve_in(z);
-    if (r != 0 && tr_en[19] != 0) { trace_hit(19, proc_pid[cur_i], 3, 0 - r); }
-    return r;
+    if (zone_rel_ok() == 0) { return zone_path_denied(z); }
+    let n = zone_root_path(z);
+    zone_path[n] = 47;
+    n = n + 1;
+    i = 0;
+    while (i < 16) {
+        let c = zone_raw[i] & 255;
+        zone_path[n + i] = c as u8;
+        if (c == 0) { return 0; }
+        i = i + 1;
+    }
+    return zone_path_denied(z);
 }
 
 fn zone_read_data(n: i64) -> i64 {
@@ -389,10 +324,14 @@ fn zone_write_data(n: i64) -> i64 {
 
 fn zone_sys_write(len: i64) -> i64 {
     if (len < 1 || len > 64) { return 0 - 9; }
-    if (zone_read_name() != 0) { return 0 - 12; }
     let z = 0;
     if (sched_on != 0) { z = proc_zone[cur_i]; }
-    if (zone_resolve(z) != 0) { return 0 - 12; }
+    if (zone_read_name() != 0) {
+        if (z > 0) { return zone_path_denied(z); }
+        return 0 - 12;
+    }
+    let g = zone_resolve(z);
+    if (g != 0) { return g; }
     if (zone_read_data(len) != 0) { return 0 - 9; }
     let r = fs_write(zone_path, zone_io, len);
     if (r != 0) { return 0 - r; }
@@ -403,9 +342,12 @@ fn zone_sys_read(max: i64) -> i64 {
     let m = max;
     if (m < 0) { return 0 - 9; }
     if (m > 64) { m = 64; }
-    if (zone_read_name() != 0) { return 0 - 12; }
     let z = 0;
     if (sched_on != 0) { z = proc_zone[cur_i]; }
+    if (zone_read_name() != 0) {
+        if (z > 0) { return zone_path_denied(z); }
+        return 0 - 12;
+    }
     let g = zone_resolve(z);
     if (g != 0) { return g; }
     let n = fs_read(zone_path, zone_io, m);
@@ -455,21 +397,75 @@ fn zone_sys_set(target: i64) -> i64 {
     return 0;
 }
 
-fn zone_puts_at(which: i64, z: i64) -> i64 {
+// Libera la ranura de la zona z. 0, 11 si no existe (o es la global) y 16
+// si todavía tiene procesos vivos. Los archivos de /zonas/<nombre> quedan
+// donde estaban: crear otra zona con ese nombre los vuelve a ver.
+fn zone_destroy_z(z: i64) -> i64 {
+    if (z <= 0 || z >= 8) { return 11; }
+    if (zone_live[z] == 0) { return 11; }
+    if (zone_nproc[z] > 0) { return 16; }
     let i = 0;
-    let any = 0;
-    while (i < 16) {
-        let c = 0;
-        if (which == 0) { c = zone_name[z].b[i] & 255; }
-        else { c = zone_prefix[z].b[i] & 255; }
-        if (c == 0) { i = 16; }
-        else {
-            putc(c);
-            any = 1;
-            i = i + 1;
-        }
+    while (i < 2) {
+        if (proc_state[i] != 0 && proc_zone[i] == z) { return 16; }
+        i = i + 1;
     }
-    if (any == 0) { putc('-'); }
+    zone_live[z] = 0;
+    zone_cap[z] = 0;
+    zone_mask[z] = 0;
+    zone_pages[z] = 0;
+    zone_hi[z] = 0;
+    zone_maxproc[z] = 0;
+    zone_niega[z] = 0;
+    zone_fuga[z] = 0;
+    i = 0;
+    while (i < 16) {
+        zone_name[z].b[i] = 0;
+        i = i + 1;
+    }
+    return 0;
+}
+
+// 27 zone_destroy: el nombre de la zona va en 0x401800. Solo un proceso de
+// la zona 0 (la máscara de las demás no lleva la 27). 0, -11 si no existe,
+// -16 si tiene procesos vivos.
+fn zone_sys_destroy() -> i64 {
+    if (sched_on == 0) { return 0 - 2; }
+    if (proc_zone[cur_i] != 0) { return 0 - 2; }
+    if (zone_read_name() != 0) { return 0 - 12; }
+    let z = zone_by_name(zone_raw);
+    let r = zone_destroy_z(z);
+    if (r == 16) { puts("zone busy\n"); }
+    if (r != 0) { return 0 - r; }
+    puts("zone destroyed ");
+    put_int(z);
+    putc('\n');
+    return 0;
+}
+
+fn zone_destroy_cmd(pos: i64) -> i64 {
+    let p = fs_scan(pos, fs_name);
+    if (p < 0) { return zone_fail(11); }
+    let z = zone_by_name(fs_name);
+    let r = zone_destroy_z(z);
+    if (r == 16) {
+        puts("zone busy\n");
+        return 0;
+    }
+    if (r != 0) { return zone_fail(r); }
+    puts("zone destroyed ");
+    put_int(z);
+    putc('\n');
+    return 0;
+}
+
+fn zone_puts_name(z: i64) -> i64 {
+    let i = 0;
+    while (i < 16) {
+        let c = zone_name[z].b[i] & 255;
+        if (c == 0) { return 0; }
+        putc(c);
+        i = i + 1;
+    }
     return 0;
 }
 
@@ -477,9 +473,13 @@ fn zone_show(z: i64) -> i64 {
     puts("zone ");
     put_int(z);
     putc(' ');
-    zone_puts_at(0, z);
-    puts(" pre=");
-    zone_puts_at(1, z);
+    zone_puts_name(z);
+    puts(" root=");
+    if (z == 0) { putc('/'); }
+    else {
+        zone_root_path(z);
+        puts(zone_path);
+    }
     puts(" cap=");
     put_int(zone_cap[z]);
     puts(" proc=");
@@ -507,15 +507,21 @@ fn zone_ls() -> i64 {
     return 0;
 }
 
+// Crea /zonas y /zonas/<nombre> si no están. Un directorio que ya existe
+// sirve (una zona destruida deja el suyo). 0 o un código de fs.
+fn zone_mkroot(z: i64) -> i64 {
+    let r = fs_ensure_dir("/zonas");
+    if (r != 0) { return r; }
+    zone_root_path(z);
+    return fs_ensure_dir(zone_path);
+}
+
+// zone create <nombre> <páginas>: la zona queda con raíz /zonas/<nombre>.
 fn zone_create(pos: i64) -> i64 {
     let p = fs_scan(pos, fs_name);
     if (p < 0) { return zone_fail(11); }
-    p = fs_scan(p, fs_name2);
-    if (p < 0) { return zone_fail(11); }
     if (zone_ident_ok(fs_name) == 0) { return zone_fail(11); }
-    if (zone_pre_ok(fs_name2) == 0) { return zone_fail(11); }
     if (zone_by_name(fs_name) >= 0) { return zone_fail(11); }
-    if (zone_pre_clash(fs_name2) != 0) { return zone_fail(11); }
     parse_pos = p;
     let pages = parse_int();
     if (pages < 1 || pages > 4096) { return zone_fail(11); }
@@ -526,6 +532,12 @@ fn zone_create(pos: i64) -> i64 {
         z = z + 1;
     }
     if (slot < 0) { return zone_fail(6); }
+    zone_set_name(slot, fs_name);
+    let r = zone_mkroot(slot);
+    if (r != 0) {
+        zone_set_name(slot, "");
+        return zone_fail(r);
+    }
     zone_live[slot] = 1;
     zone_cap[slot] = pages;
     zone_pages[slot] = 0;
@@ -535,8 +547,6 @@ fn zone_create(pos: i64) -> i64 {
     zone_maxproc[slot] = 2;
     zone_niega[slot] = 0;
     zone_fuga[slot] = 0;
-    zone_set_str(0, slot, fs_name);
-    zone_set_str(1, slot, fs_name2);
     puts("zone created ");
     put_int(slot);
     putc('\n');
@@ -825,6 +835,7 @@ fn cmd_zone() -> i64 {
     let pos = fs_scan(4, fs_sub);
     if (pos < 0) { return zone_fail(11); }
     if (fs_is("create")) { return zone_create(pos); }
+    if (fs_is("destroy")) { return zone_destroy_cmd(pos); }
     if (fs_is("ls")) { return zone_ls(); }
     if (fs_is("exec")) { return zone_exec_cmd(pos); }
     if (fs_is("net")) { return zone_net(pos); }
