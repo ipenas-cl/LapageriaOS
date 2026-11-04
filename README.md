@@ -120,7 +120,7 @@ qemu-system-x86_64 -cpu qemu64 -drive format=raw,file=build/lapageriaos.img \
     -display none -serial stdio
 ```
 
-El compilador está fijado en el Makefile (`COPIHUE_COMMIT ?= v0.42.4`, commit `795252ce322f12d1b14274f5b9bec7cb3a6ac2c9`, repositorio `https://github.com/ipenas-cl/copihue.git`). `make` lo construye en `build/copihue`. Para un binario ya compilado:
+El compilador está fijado en el Makefile (`COPIHUE_COMMIT ?= v0.42.5`, commit `ea898c6c2be6f1a1686cf06c5050c31e726ef177`, repositorio `https://github.com/ipenas-cl/copihue.git`). `make` lo construye en `build/copihue`. Para un binario ya compilado:
 
 ```bash
 make COPIHUE=/ruta/al/copihue all

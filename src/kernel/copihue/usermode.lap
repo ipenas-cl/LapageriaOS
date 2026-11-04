@@ -186,7 +186,7 @@ fn enter_user() -> i64 {
     pdpt[0] = pdpt[0] | 4;
     write_cr3(read_cr3());
     user_ran = 1;
-    cli();
+    let iflags: u64 = irq_save();
     // Mismo truco que sched_go: la etiqueta es el regreso del #PF.
     if (save_context(&shell_ctx) == 0) {
         shell_ctx.rip = label_addr(after_user);
@@ -199,7 +199,7 @@ fn enter_user() -> i64 {
     }
     label after_user;
     shell_ctx.rip = 0;
-    sti();
+    irq_restore(iflags);
     puts("user returned\n");
     return 0;
 }

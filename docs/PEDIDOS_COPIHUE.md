@@ -2,10 +2,11 @@
 
 Lapageria rosea es el nombre científico del copihue; antes AtomicOS.
 
-Compilador fijado en el Makefile: v0.42.4, commit
-`795252ce322f12d1b14274f5b9bec7cb3a6ac2c9`. `git ls-remote` devuelve
-ese commit para `refs/tags/v0.42.4`, y `git -C build/copihue rev-parse
-HEAD` después del `make` también. No se comprobó `HEAD` ni
+Compilador fijado en el Makefile: v0.42.5, commit
+`ea898c6c2be6f1a1686cf06c5050c31e726ef177`. `git ls-remote` devuelve
+ese commit para `refs/tags/v0.42.5^{}` (el objeto de la etiqueta es
+`d0d5b4239ee524336d7b6ff2c0a32553483afc46`), y `git -C build/copihue
+rev-parse HEAD` después del `make` también. No se comprobó `HEAD` ni
 `refs/heads/main` del remoto, ni la salida de `copihue --version`.
 Sin pedidos nuevos al subir desde v0.31.0: el kernel compila sin
 cambios de código. RD-01 parte 2 (UDP completo, recv bloqueante) tampoco
@@ -564,6 +565,21 @@ que corregir.
    da -1. Contorno en `src/user/ataque.lap`. Pedido: promover a `i64`
    el resultado de una resta cuyo destino es `i64`, o avisar del recorte.
 
+**Resuelto en v0.42.5** (los tres):
+
+1. `div_raw(a, b)` y `rem_raw(a, b)`. `/` y `%` siguen con guarda. El
+   ataque `r` (`div_raw(1, z)`) y el `m` (`rem_raw(1, z)`) de
+   `src/user/ataque.lap` dan #DE por divisor cero, con `z` leído de
+   memoria; `tests/qemu_shell_test.sh` exige vec 0, sin código de error
+   y el `idiv` en el RIP, igual que `z`.
+2. `cx = n * 256;` compila en `bits 16`. `stage2.lap` ya no usa `ecx`
+   en la copia con INT 15h AH=87h (sí en `get_e820` y en los bucles,
+   donde nunca fue contorno).
+3. `let d: i64 = 0 - *(0x401C20 as *u8);` da -1. El `ataque` `z` lo usa
+   directo y se quitó el local intermedio. El changelog de v0.42.5 dice
+   que en campos y arreglos el recorte sigue; en este árbol no hay
+   ningún `0 - *u8` ni `0 - p[i]` en esas posiciones.
+
 ## Leer RFLAGS.IF (RD-01)
 
 Código que corre tanto en el hilo del shell (IF en 1) como dentro de una
@@ -574,6 +590,19 @@ de Copihue lista `pushfd`/`popfd`; no los probé en este kernel). En `net.lap` s
 (`net_*_locked` para el hilo; las otras sin cli/sti) y con que `net_tx`
 no duerma nunca. Pedido: `read_rflags()` o un par `irq_save()` /
 `irq_restore(flags)` en `--flat` de 64 bits.
+
+**Resuelto en v0.42.5.** `irq_save()` devuelve RFLAGS (`u64`) y hace `cli`;
+`irq_restore(f)` es `popfq`. Se usan en las secciones críticas con `cli()`
+/ `sti()` de `ata`, `net`, `tcp` (`tcp test`), `nx`, `hh`, `usermode`,
+`sched`, `exec` y `zone`, y en `trace_save_if` / `trace_restore_if`, que
+dejan de ser `naked` con `pushfd` / `popfd`. Dos cosas que ahí cambian
+por el anidamiento: `sched_go` restaura los flags que encontró, así que
+`exec`, `exec2`, `zone exec` y `sched` (que ya hacen `irq_save` antes de
+llamarlo) restauran después de `sched_go()`. Quedan con `sti()` /
+`cli()` a mano, porque no son una sección crítica sino una espera con
+`hlt`: `udp_recv` (`udp.lap`) y `tcp_sleep` (`tcp.lap`); y los de
+arranque o de excepción (`idt_init`, `cpu_fault`, `kmain`, `boot.lap`,
+`stage2.lap`), donde IF ya se sabe.
 
 ## OB-01 (trazas), con Copihue v0.42.4
 

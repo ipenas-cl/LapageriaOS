@@ -8,6 +8,15 @@ para ese commit es `legacy-tempo`.
 
 ## 0.8
 
+Copihue sube de v0.42.4 a v0.42.5 (commit
+`ea898c6c2be6f1a1686cf06c5050c31e726ef177`). Se usa lo nuevo donde había
+contorno: `irq_save()` / `irq_restore(f)` en las secciones críticas con
+`cli()` / `sti()` (`ata`, `net`, `tcp`, `nx`, `hh`, `usermode`, `sched`,
+`exec`, `zone`) y en `trace_save_if` / `trace_restore_if`;
+`cx = n * 256;` en `stage2.lap`; `0 - *(… as *u8)` directo en `ataque.lap`;
+`div_raw` / `rem_raw` en dos ataques nuevos, `r` y `m` (#DE por divisor cero;
+`z` sigue con `INT64_MIN / -1`). Detalle en `docs/PEDIDOS_COPIHUE.md`.
+
 Copihue sube de v0.34.1 a v0.42.4 (commit
 `795252ce322f12d1b14274f5b9bec7cb3a6ac2c9`). Sin cambios de código salvo
 `src/user/ataque.lap`: los ataques 3 y 4 ya no necesitan la dirección en un

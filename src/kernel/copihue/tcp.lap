@@ -2505,9 +2505,9 @@ fn cmd_tcp() -> i64 {
     let pos = fs_scan(3, fs_sub);
     if (pos < 0) { return 0; }
     if (fs_is("test")) {
-        cli();
+        let iflags: u64 = irq_save();
         let r = tcp_selftest();
-        sti();
+        irq_restore(iflags);
         return r;
     }
     if (fs_is("plant")) { return tcp_plant(); }

@@ -155,10 +155,10 @@ fn hh_retire() -> i64 {
 }
 
 fn nx_init() -> i64 {
-    cli();
+    let iflags: u64 = irq_save();
     if (nx_cpu_ok() == 0) {
         puts("nx fail cpuid\n");
-        sti();
+        irq_restore(iflags);
         return 0;
     }
     let nxe = 1;
@@ -166,13 +166,13 @@ fn nx_init() -> i64 {
     wrmsr(0xC0000080, rdmsr(0xC0000080) | nxe);
     if (nx_efer_on() == 0) {
         puts("nx fail efer\n");
-        sti();
+        irq_restore(iflags);
         return 0;
     }
     puts("nx efer on\n");
     if (nx_split() == 0) {
         puts("nx fail split\n");
-        sti();
+        irq_restore(iflags);
         return 0;
     }
     let wp = 1;
@@ -181,20 +181,20 @@ fn nx_init() -> i64 {
     write_cr3(read_cr3());
     if (nx_wp_on() == 0) {
         puts("nx fail wp\n");
-        sti();
+        irq_restore(iflags);
         return 0;
     }
     puts("nx wp on\n");
     if (hh_retire() == 0) {
         puts("hh fail\n");
-        sti();
+        irq_restore(iflags);
         return 0;
     }
     puts("hh on text=");
     put_hex64(nx_text_lo);
     puts("\n");
     nx_on = 1;
-    sti();
+    irq_restore(iflags);
     return 1;
 }
 
@@ -328,7 +328,7 @@ fn nx_probe_fetch() -> i64 {
     nx_last_kind = 0;
     nx_last_err = 0;
     nx_last_cr2 = 0;
-    cli();
+    let iflags: u64 = irq_save();
     if (save_context(&nx_ctx) == 0) {
         nx_ctx.rip = label_addr(after_nx_fetch);
         nx_probe = 1;
@@ -336,7 +336,7 @@ fn nx_probe_fetch() -> i64 {
     }
     label after_nx_fetch;
     nx_probe = 0;
-    sti();
+    irq_restore(iflags);
     if (nx_last_kind != 1 || nx_err_fetch(nx_last_err) == 0 || nx_last_cr2 != page) {
         puts("nx fail fetch\n");
         return 0;
@@ -362,7 +362,7 @@ fn nx_probe_write() -> i64 {
     nx_last_kind = 0;
     nx_last_err = 0;
     nx_last_cr2 = 0;
-    cli();
+    let iflags: u64 = irq_save();
     if (save_context(&nx_ctx) == 0) {
         nx_ctx.rip = label_addr(after_nx_write);
         nx_probe = 1;
@@ -370,7 +370,7 @@ fn nx_probe_write() -> i64 {
     }
     label after_nx_write;
     nx_probe = 0;
-    sti();
+    irq_restore(iflags);
     if (nx_last_kind != 2 || nx_err_write(nx_last_err) == 0 || nx_last_cr2 != nx_text_lo) {
         p[0] = (old) as u8;
         puts("nx fail write\n");
@@ -490,7 +490,7 @@ fn nx_test_user() -> i64 {
     }
     nx_clear_if(proc_ksp[0]);
     nx_clear_if(proc_ksp[1]);
-    cli();
+    let iflags: u64 = irq_save();
     if (save_context(&shell_ctx) == 0) {
         shell_ctx.rip = label_addr(after_nx_user);
         cur_i = 0;
@@ -511,7 +511,7 @@ fn nx_test_user() -> i64 {
     write_cr3(0x1000);
     tss.rsp0 = 0x86000;
     set_syscall_stack(0x81000);
-    sti();
+    irq_restore(iflags);
     release_proc(0);
     release_proc(1);
     if (pmm_free != mem) {

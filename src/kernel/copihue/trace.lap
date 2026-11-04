@@ -10,8 +10,8 @@
 //
 // Dentro de una interrupción no se puede hacer sti() a ciegas: el
 // syscall llega con IF en 0 (SFMASK) y el PIT también. trace_save_if
-// hace pushfd (en 64 bits es pushfq), cli y recién ahí pop, y
-// trace_restore_if devuelve esos flags. Un anidamiento (una #PF en
+// es irq_save() (lee RFLAGS y hace cli) y trace_restore_if es
+// irq_restore con esos flags. Un anidamiento (una #PF en
 // medio del registro) deja los flags en una pila corta y, si el
 // anillo ya está tomado, cuenta el evento como perdido y sale. No
 // hay espera: no se cuelga. El registro es TrEv; trace_layout exige
@@ -47,17 +47,12 @@ let volatile tr_head: i64 = 0;
 let volatile tr_used: i64 = 0;
 let volatile tr_lost: i64 = 0;
 
-naked fn trace_save_if() {
-    pushfd();
-    cli();
-    pop(rax);
-    tr_fl_tmp = rax;
+fn trace_save_if() {
+    tr_fl_tmp = irq_save() as i64;
 }
 
-naked fn trace_restore_if() {
-    rax = tr_fl_tmp;
-    push(rax);
-    popfd();
+fn trace_restore_if() {
+    irq_restore(tr_fl_tmp as u64);
 }
 
 fn trace_unlock_flags() -> i64 {

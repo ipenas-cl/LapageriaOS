@@ -138,7 +138,9 @@ queda con `pag=0` y `proc=0/`.
 | a | leer una dirección no canónica | #GP (vec 13) |
 | b | leer una página de usuario inexistente (`0x500000`) | #PF `0x4` |
 | u | `ud2` | #UD, vec 6, sin código de error, addr = RIP de `ud2` |
-| z | `INT64_MIN / -1` (Copihue define `x / 0` como 0) | #DE, vec 0, addr = RIP del `idiv` |
+| z | `INT64_MIN / -1` (`/` tiene guarda para `x / 0`) | #DE, vec 0, addr = RIP del `idiv` |
+| r | `div_raw(1, 0)` (divisor cero sin guarda) | #DE, vec 0, addr = RIP del `idiv` |
+| m | `rem_raw(1, 0)` (divisor cero sin guarda) | #DE, vec 0, addr = RIP del `idiv` |
 | i | `int 3` | #GP vec 13 `err=0x1a` (3·8+2): la puerta 3 es DPL 0, no #BP |
 
 **Bug encontrado y arreglado.** Antes de este cambio, el modo 1 (y todos

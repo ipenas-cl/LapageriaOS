@@ -16,7 +16,9 @@
 //   'b' leer una página de usuario que no existe
 //   'd' punteros del kernel como argumento de las syscalls 6 y 7
 //   'u' ud2 (#UD)
-//   'z' INT64_MIN / -1 (#DE; Copihue define x / 0 como 0)
+//   'z' INT64_MIN / -1 (#DE; `/` tiene guarda para x / 0)
+//   'r' div_raw(1, 0) (#DE por divisor cero)
+//   'm' rem_raw(1, 0) (#DE por divisor cero)
 //   'i' int 3 (la puerta de la IDT es DPL 0: da #GP, no #BP)
 //
 // Cada ataque tiene que matar al proceso con un fallo, así que el mensaje
@@ -132,14 +134,26 @@ fn attack(m: i64) {
     // SG-02: excepciones de CPU que no son #PF ni #GP de memoria.
     if (m == 117) { ud2(); }
     if (m == 122) {
-        // Copihue define x / 0 como 0 (test rbx,rbx antes del idiv): no hay
-        // #DE por divisor cero. INT64_MIN / -1 sí desborda el cociente y
-        // el idiv da #DE. Los operandos salen de memoria, no del compilador.
+        // `/` tiene guarda (x / 0 es 0). INT64_MIN / -1 desborda el
+        // cociente y el idiv da #DE. Los operandos salen de memoria. El
+        // `0 - *u8` toma el ancho de d (i64): vale -1, no 255.
         *(0x401C20 as *u8) = 1;
         let one: i64 = *(0x401C20 as *u8);
-        let d: i64 = 0 - one;
+        let d: i64 = 0 - *(0x401C20 as *u8);
         let n: i64 = one << 63;
         x = n / d;
+    }
+    // Divisor cero sin guarda: div_raw / rem_raw dejan el idiv pelado y
+    // el #DE sale por b == 0.
+    if (m == 114) {
+        *(0x401C20 as *u8) = 0;
+        let z: i64 = *(0x401C20 as *u8);
+        x = div_raw(1, z);
+    }
+    if (m == 109) {
+        *(0x401C20 as *u8) = 0;
+        let z: i64 = *(0x401C20 as *u8);
+        x = rem_raw(1, z);
     }
     if (m == 105) { int(3); }
     if (x == 123456) { emit(88); }

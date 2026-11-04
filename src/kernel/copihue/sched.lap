@@ -538,7 +538,7 @@ fn dump_tables() -> i64 {
 }
 
 fn sched_go() -> i64 {
-    cli();
+    let iflags: u64 = irq_save();
     // save_context devuelve 0. Se pisa rip con la etiqueta: resume_shell
     // vuelve ahí, con este marco, y save_context no devuelve 1.
     if (save_context(&shell_ctx) == 0) {
@@ -559,7 +559,7 @@ fn sched_go() -> i64 {
     write_cr3(0x1000);
     tss.rsp0 = 0x86000;
     set_syscall_stack(0x81000);
-    sti();
+    irq_restore(iflags);
     putc('\n');
     puts("run end\n");
     return 0;
@@ -701,13 +701,13 @@ naked fn prog_b_end() {
 }
 
 fn sched_demo() -> i64 {
-    cli();
+    let iflags: u64 = irq_save();
     // `nx` también libera procesos. Esta línea es la de esta corrida.
     released_ok = 0;
     build_zone = 0;
     charge_zone = 0;
     if (shared_init() == 0) {
-        sti();
+        irq_restore(iflags);
         puts("sched fail\n");
         return 0;
     }
@@ -716,7 +716,7 @@ fn sched_demo() -> i64 {
     let nb = &prog_b_end - &prog_b;
     if (build_proc(0, &prog_a, na, 1) == 0 || build_proc(1, &prog_b, nb, 0) == 0) {
         write_cr3(0x1000);
-        sti();
+        irq_restore(iflags);
         puts("sched fail\n");
         return 0;
     }
@@ -725,11 +725,12 @@ fn sched_demo() -> i64 {
     dump_tables();
     if (alias_both() == 0) {
         write_cr3(0x1000);
-        sti();
+        irq_restore(iflags);
         puts("sched fail\n");
         return 0;
     }
     sched_go();
+    irq_restore(iflags);
     sched_summary();
     return 0;
 }

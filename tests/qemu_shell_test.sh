@@ -881,6 +881,8 @@ exc_run() {
 }
 exc_run u 6 0x00000000 '0f0b'
 exc_run z 0 0x00000000 '(48)?f7'
+exc_run r 0 0x00000000 '(48)?f7'
+exc_run m 0 0x00000000 '(48)?f7'
 exc_run i 13 0x0000001a 'cd03'
 typefs "zone ls"
 zk=$(tr -d '\r' < "$SERIAL" | grep '^zone 4 k pre=zk ' | tail -1)

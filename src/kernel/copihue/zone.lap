@@ -577,16 +577,16 @@ fn zone_run(z: i64) -> i64 {
     if (entry == 0) { return 0; }
     if (proc_state[0] != 0) { return zone_fail(4); }
     zone_errno = 0;
-    cli();
+    let iflags: u64 = irq_save();
     if (shared_init() == 0) {
-        sti();
+        irq_restore(iflags);
         return zone_fail(6);
     }
     build_zone = z;
     if (build_proc(0, exec_code as i64, exec_sz, 0) == 0) {
         write_cr3(0x1000);
         release_proc(0);
-        sti();
+        irq_restore(iflags);
         build_zone = 0;
         return zone_fail(zone_errno);
     }
@@ -596,6 +596,7 @@ fn zone_run(z: i64) -> i64 {
     putc('\n');
     forge(0, entry, 0x402000, 0x202);
     sched_go();
+    irq_restore(iflags);
     let after = pmm_free;
     puts("zone mem ");
     put_int(after);
