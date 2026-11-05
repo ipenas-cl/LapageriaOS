@@ -39,6 +39,7 @@ import "tcpeco_img.lap";
 import "tcpcli_img.lap";
 import "tcpmulti_img.lap";
 import "tcphog_img.lap";
+import "tcpsnd_img.lap";
 import "traza_img.lap";
 import "udp.lap";
 import "tcp.lap";

@@ -2493,6 +2493,7 @@ fn tcp_plant() -> i64 {
     if (tcp_plant_one("tcpcli", tcpcli_fill(exec_buf)) != 0) { return 0; }
     if (tcp_plant_one("tcpmulti", tcpmulti_fill(exec_buf)) != 0) { return 0; }
     if (tcp_plant_one("tcphog", tcphog_fill(exec_buf)) != 0) { return 0; }
+    if (tcp_plant_one("tcpsnd", tcpsnd_fill(exec_buf)) != 0) { return 0; }
     puts("tcp plant ok\n");
     return 0;
 }
