@@ -8,6 +8,18 @@ para ese commit es `legacy-tempo`.
 
 ## 0.8
 
+EX-07, marco local de 8 KiB en un AXE1. `src/user/ataque.lap` (`zatk`) suma el
+modo `y`: llama a una función con `let b: [u8; 8192]`. Con el sondeo de pila de
+Copihue v0.44.2 (el pin no cambia, `eaadb447`) el prólogo toca la guarda de la
+pila AXE1 y el proceso muere con `vec=14 err=0x4 addr=0x40Exxx` antes de que
+corra el cuerpo; el kernel y los demás procesos siguen. No hizo falta tocar el
+kernel ni el compilador. `tests/qemu_atk1_test.sh` lo exige (`atk_run y`; ahora
+4 ataques a la guarda en vez de 3) y `make qemu-stab-test` lo repite con la
+batería `atk1`. Documentado en `docs/exec.md` y `docs/zonas.md`.
+`docs/PEDIDOS_COPIHUE.md` deja el sondeo en AXE1 como cerrado y repite los
+pedidos que siguen abiertos (`--axe1`, `align` de un `let`, `const`, costo de
+embeber). Corridas reales y conteos en `patches/RESUMEN.md`.
+
 EX-06, Copihue v0.44.2 y marco local de más de 4 KiB. (1) El pin sube de
 v0.44.1 a v0.44.2 (commit `eaadb4472935a542979ebfbd2f7d3c7ebf719212`). El
 compilador sondea la pila en los prólogos con marco N ≥ 4096: tras `push rbp` /

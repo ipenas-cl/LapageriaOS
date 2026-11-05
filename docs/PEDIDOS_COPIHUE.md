@@ -18,6 +18,27 @@ Sin `asm()` nuevo. Una función de 7 parámetros (`udp_recv`; el séptimo es
 el plazo) compila y la prueba de plazo la ejerce; `udp_park` usa globales
 por prudencia, no porque haya fallado algo.
 
+## EX-07 (marco ≥ 4 KiB en AXE1), con Copihue v0.44.2
+
+**Sondeo de pila en un AXE1: CERRADO, probado.** `zatk` modo `y` (`let b: [u8;
+8192]`, compilado con `--flat 0x400000`, sin `--axe2`) muere con `vec=14 err=0x4
+addr=0x40Exxx`, en la guarda de la pila AXE1, sin tocar el cuerpo; el prólogo
+con sondeo sale también en un `--flat` plano. `tests/qemu_atk1_test.sh` lo exige.
+
+**Siguen ABIERTOS** (EX-07 no cerró ninguno; no hubo pedidos nuevos):
+
+1. **`--axe1`.** `--axe2` solo escribe AXE2; un programa de una página sigue
+   por `scripts/mkaxe.sh` (16 bytes de cabecera, tope de 4080 bytes). Se pide
+   que el compilador arme el AXE1 (magic, tamaño, entrada).
+2. **`const`.** No existe; las constantes de dirección (`0x401800`, `0x40E000`…)
+   se repiten como literales en `ataque.lap`, `atk2.lap` y demás.
+3. **Ubicar un `let`** (`align(4096)` para un `let` o para `.data` / `.bss`). Hoy
+   se ajusta a mano el largo del último `let` (`pag2`: 12 + 4084; `atk2`: 20 + 8172).
+4. **Costo de embeber** programas en el kernel (5 a 6 bytes de kernel por byte
+   de programa no nulo).
+5. Los de EX-04/EX-05 que siguen: `hint: use 'as u8'` en el error de estrechamiento
+   y el aviso de nasm 3.x (`implicit DEFAULT ABS`, que se ve en cada `make`).
+
 ## EX-06 (sondeo de pila), con Copihue v0.44.2
 
 **CERRADO por v0.44.2: sondeo de pila / stack probing (pedido de EX-03, repetido
@@ -31,7 +52,7 @@ E/S y ahora muere en `0x411xxx` (`vec=14 err=0x4`) sin que corra el cuerpo;
 `tests/qemu_axe2_test.sh` lo exige (antes lo informaba). Kernel y programas de
 usuario se recompilaron con v0.44.2 y `make qemu-test` sigue verde.
 
-Sin pedidos nuevos del sondeo. No se probó un marco ≥ 4096 en un AXE1.
+Sin pedidos nuevos del sondeo. El marco ≥ 4096 en un AXE1 se probó en EX-07 (arriba).
 
 ## EX-05 (AXE2 desde el compilador, align(N), guardas en demos), con Copihue v0.44.1
 
