@@ -1,7 +1,8 @@
 // Canal IDE primario, esclavo (QEMU ide index=1, ide0-hd1).
 // El maestro es la imagen de arranque: este driver no la selecciona.
-// PIO, LBA28, un sector de 512 B. El lazo de estado tiene tope:
-// si el disco no responde, se devuelve error y no se queda pegado.
+// PIO, LBA28, un sector de 512 B. La espera del estado tiene tope de
+// tiempo (ticks del PIT, ver ata_wait): si el disco no responde, se
+// devuelve error y no se queda pegado.
 //
 // 0 listo
 // 1 se agotó el tiempo
@@ -28,44 +29,61 @@ fn ata_init() -> i64 {
     return 0;
 }
 
-fn ata_wait_bsy() -> i64 {
+// Una lectura del estado. kind 0: BSY apagado. kind 1: BSY apagado y DRQ
+// prendido. kind 2: BSY apagado y DRQ apagado. ERR/DF con BSY apagado
+// devuelve 2; estado 0xFF devuelve 3; 9 es "todavía no" (no sale de ata_wait).
+fn ata_check(kind: i64) -> i64 {
+    let s = inb(0x1F7);
+    if (s == 0xFF) { return 3; }
+    if ((s & 0x80) != 0) { return 9; }
+    if (kind == 0) { return 0; }
+    if ((s & 0x01) != 0 || (s & 0x20) != 0) { return 2; }
+    if (kind == 1) {
+        if ((s & 0x08) != 0) { return 0; }
+    } else {
+        if ((s & 0x08) == 0) { return 0; }
+    }
+    return 9;
+}
+
+// El disco contesta en tiempo del anfitrión (QEMU completa la E/S del
+// archivo en otro hilo), no en instrucciones del invitado. Un tope en
+// iteraciones de inb mide instrucciones: con -icount el reloj virtual solo
+// avanza al ejecutarlas, así que un anfitrión cargado agota el tope antes de
+// que el disco termine ("exec fail 1", timeout en DRQ o al terminar una
+// escritura). Aquí el tope es de tiempo: unas pocas lecturas de sondeo y,
+// después, hlt hasta el siguiente tick del PIT, que deja avanzar al reloj
+// virtual y al hilo de E/S. 500 ticks a 100 Hz son 5 s.
+// hlt solo se usa con IF=1 y sin planificador; en otro caso (sección con
+// irq_save, proceso de usuario corriendo) queda el tope en iteraciones.
+fn ata_wait(kind: i64) -> i64 {
     let n = 0;
+    while (n < 2000) {
+        let r = ata_check(kind);
+        if (r != 9) { return r; }
+        n = n + 1;
+    }
+    if (sched_on == 0 && (read_rflags() & 0x200) != 0) {
+        let t = ticks;
+        while (ticks - t < 500) {
+            hlt();
+            let r2 = ata_check(kind);
+            if (r2 != 9) { return r2; }
+        }
+        return 1;
+    }
+    n = 0;
     while (n < 200000) {
-        let s = inb(0x1F7);
-        if (s == 0xFF) { return 3; }
-        if ((s & 0x80) == 0) { return 0; }
+        let r3 = ata_check(kind);
+        if (r3 != 9) { return r3; }
         n = n + 1;
     }
     return 1;
 }
 
-fn ata_wait_drq() -> i64 {
-    let n = 0;
-    while (n < 200000) {
-        let s = inb(0x1F7);
-        if (s == 0xFF) { return 3; }
-        if ((s & 0x80) == 0) {
-            if ((s & 0x01) != 0 || (s & 0x20) != 0) { return 2; }
-            if ((s & 0x08) != 0) { return 0; }
-        }
-        n = n + 1;
-    }
-    return 1;
-}
-
-fn ata_wait_done() -> i64 {
-    let n = 0;
-    while (n < 200000) {
-        let s = inb(0x1F7);
-        if (s == 0xFF) { return 3; }
-        if ((s & 0x80) == 0) {
-            if ((s & 0x01) != 0 || (s & 0x20) != 0) { return 2; }
-            if ((s & 0x08) == 0) { return 0; }
-        }
-        n = n + 1;
-    }
-    return 1;
-}
+fn ata_wait_bsy() -> i64 { return ata_wait(0); }
+fn ata_wait_drq() -> i64 { return ata_wait(1); }
+fn ata_wait_done() -> i64 { return ata_wait(2); }
 
 fn ata_select(lba: i64) -> i64 {
     let r = ata_wait_bsy();
