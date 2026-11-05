@@ -1,13 +1,26 @@
-// exec: lee un AXE1 del disco (fs_read, con el CRC del bloque), arma un
-// PML4 nuevo con el asignador que ya usa sched y lo deja corriendo en
-// anillo 3. La cabecera está en docs/exec.md.
+// exec: lee un AXE1 o un AXE2 del disco (fs_read, con el CRC del bloque),
+// arma un PML4 nuevo con el asignador que ya usa sched y lo deja corriendo
+// en anillo 3. Las cabeceras y la distribución de memoria están en
+// docs/exec.md.
 //
-// El salto a anillo 3 es sched_go, que ya guarda el marco del shell.
-// El programa vuelve con el syscall exit.
+// AXE1: una página de código. AXE2 (EX-01): de 1 a 16 páginas, con texto de
+// solo lectura y datos escribibles. El salto a anillo 3 es sched_go, que ya
+// guarda el marco del shell. El programa vuelve con el syscall exit.
 
-let exec_buf: [u8; 4096];
-let exec_code: [u8; 4096];
-let exec_code2: [u8; 4096];
+// Un AXE2 trae hasta 16 páginas (64 KiB) de imagen y 32 bytes de cabecera.
+let exec_buf: [u8; 65568];
+let exec_code: [u8; 65536];
+let exec_code2: [u8; 65536];
+
+// Qué cargó exec_prepare, por ranura: 0 es el programa que acaba de leer
+// (su imagen está en exec_code) y 1 el guardado con exec_stage (exec_code2).
+// kind 1 es AXE1 y 2 es AXE2; sz son los bytes de imagen en el archivo, text
+// los de texto y mem el tamaño en memoria (en un AXE1, text = mem = sz).
+let ex_kind: [i64; 2];
+let ex_sz: [i64; 2];
+let ex_text: [i64; 2];
+let ex_mem: [i64; 2];
+let ex_ent: [i64; 2];
 let exec_sz: i64 = 0;
 
 // Cabecera de 16 bytes. docs/exec.md. El código empieza después.
@@ -17,15 +30,35 @@ packed struct Axe {
     entry: u64
 }
 
+// Cabecera de 32 bytes del AXE2: lo mismo, más los bytes de texto y el
+// tamaño en memoria, y 8 reservados en cero.
+packed struct Axe2 {
+    magic: [u8; 4],
+    size: u32,
+    entry: u64,
+    text: u32,
+    mem: u32,
+    pad: u64
+}
+
 fn axe_layout() -> i64 {
     if (sizeof(Axe) != 16) { return 0; }
     if (offsetof(Axe, size) != 4) { return 0; }
     if (offsetof(Axe, entry) != 8) { return 0; }
+    if (sizeof(Axe2) != 32) { return 0; }
+    if (offsetof(Axe2, size) != 4) { return 0; }
+    if (offsetof(Axe2, entry) != 8) { return 0; }
+    if (offsetof(Axe2, text) != 16) { return 0; }
+    if (offsetof(Axe2, mem) != 20) { return 0; }
     return 1;
 }
 
 fn axe_of(p: *u8) -> *Axe {
     return p as *Axe;
+}
+
+fn axe2_of(p: *u8) -> *Axe2 {
+    return p as *Axe2;
 }
 
 fn exec_fail(r: i64) -> i64 {
@@ -44,11 +77,14 @@ fn exec_is(s: *u8) -> i64 {
     return fs_name[i] == 0;
 }
 
+// 1 si el archivo empieza con AXE1, 2 con AXE2, 0 si no es ninguno.
 fn exec_magic() -> i64 {
     let h: *Axe = axe_of(exec_buf);
     if (h.magic[0] != 0x41 || h.magic[1] != 0x58) { return 0; }
-    if (h.magic[2] != 0x45 || h.magic[3] != 0x31) { return 0; }
-    return 1;
+    if (h.magic[2] != 0x45) { return 0; }
+    if (h.magic[3] == 0x31) { return 1; }
+    if (h.magic[3] == 0x32) { return 2; }
+    return 0;
 }
 
 // Escribe hola (válido), malo (magic en cero) y gordo (tamaño 65535).
@@ -71,8 +107,80 @@ fn exec_plant() -> i64 {
     return 0;
 }
 
+// Byte k de las páginas de datos de `grande` (src/user/grande.lap lo repite).
+fn big_pat(k: i64) -> i64 {
+    return (k * 7 + (k >> 8) + 3) & 255;
+}
+
+// Arma en exec_buf un AXE2 de `size` bytes de imagen. La primera página es el
+// código de `grande` (un AXE1 que grande_fill deja en exec_code2) y el resto
+// lleva big_pat. Texto = el código, memoria = size + una página de bss.
+fn big_make(size: i64) -> i64 {
+    let n = grande_fill(exec_code2);
+    if (n < 17 || n > 4096) { return exec_fail(9); }
+    let csz = n - 16;
+    let i = 0;
+    while (i < 32 + size) {
+        exec_buf[i] = 0;
+        i = i + 1;
+    }
+    exec_buf[0] = 0x41;
+    exec_buf[1] = 0x58;
+    exec_buf[2] = 0x45;
+    exec_buf[3] = 0x32;
+    let h: *Axe2 = axe2_of(exec_buf);
+    h.size = size as u32;
+    h.entry = 0x400000 as u64;
+    h.text = csz as u32;
+    h.mem = (size + 4096) as u32;
+    i = 0;
+    while (i < csz) {
+        exec_buf[32 + i] = exec_code2[16 + i];
+        i = i + 1;
+    }
+    i = 4096;
+    while (i < size) {
+        exec_buf[32 + i] = big_pat(i) as u8;
+        i = i + 1;
+    }
+    return csz;
+}
+
+// `exec bigplant`: escribe en la raíz un AXE2 de 3 páginas más una de bss
+// (`grande`), el mismo con texto de 2 páginas (`grandew`, la segunda página
+// pasa a ser de solo lectura) y cuatro cabeceras malas.
+fn exec_plant_big() -> i64 {
+    let csz = big_make(12288);
+    if (csz == 0) { return 0; }
+    let h: *Axe2 = axe2_of(exec_buf);
+    let r = fs_write("grande", exec_buf, 32 + 12288);
+    if (r != 0) { return exec_fail(r); }
+    h.text = 8192;
+    r = fs_write("grandew", exec_buf, 32 + 12288);
+    if (r != 0) { return exec_fail(r); }
+    h.text = csz as u32;
+    h.mem = 65537;
+    r = fs_write("gbad1", exec_buf, 32 + 12288);
+    if (r != 0) { return exec_fail(r); }
+    h.mem = 16384;
+    h.text = 0;
+    r = fs_write("gbad2", exec_buf, 32 + 12288);
+    if (r != 0) { return exec_fail(r); }
+    h.text = csz as u32;
+    h.entry = 0x401000 as u64;
+    r = fs_write("gbad3", exec_buf, 32 + 12288);
+    if (r != 0) { return exec_fail(r); }
+    h.entry = 0x400000 as u64;
+    r = fs_write("gbad4", exec_buf, 32 + 4096);
+    if (r != 0) { return exec_fail(r); }
+    puts("exec big plant ok\n");
+    return 0;
+}
+
+// Lee `fs_name` y valida la cabecera. Deja la imagen en exec_code y su
+// descriptor en la ranura 0. Devuelve la entrada, o 0 tras imprimir el error.
 fn exec_prepare() -> i64 {
-    let n = fs_read(fs_name, exec_buf, 4096);
+    let n = fs_read(fs_name, exec_buf, 65568);
     if (n < 0) {
         if (n == 0 - 5) {
             puts("exec corrupt\n");
@@ -84,7 +192,8 @@ fn exec_prepare() -> i64 {
         puts("exec bad size\n");
         return 0;
     }
-    if (exec_magic() == 0) {
+    let kind = exec_magic();
+    if (kind == 0) {
         puts("exec bad magic\n");
         return 0;
     }
@@ -94,24 +203,92 @@ fn exec_prepare() -> i64 {
     }
     let h: *Axe = axe_of(exec_buf);
     let sz = h.size;
-    let room = n - 16;
-    if (sz <= 0 || sz > 4080 || sz > room) {
-        puts("exec bad size\n");
-        return 0;
-    }
+    let hdr = 16;
+    let text = sz;
+    let mem = sz;
     let entry = h.entry;
-    let end = 0x400000 + sz;
-    if (entry < 0x400000 || entry >= 0x401000 || entry >= end) {
-        puts("exec bad entry\n");
-        return 0;
+    if (kind == 1) {
+        let room = n - 16;
+        if (sz <= 0 || sz > 4080 || sz > room) {
+            puts("exec bad size\n");
+            return 0;
+        }
+        let end = 0x400000 + sz;
+        if (entry < 0x400000 || entry >= 0x401000 || entry >= end) {
+            puts("exec bad entry\n");
+            return 0;
+        }
+    } else {
+        hdr = 32;
+        if (n < 32) {
+            puts("exec bad size\n");
+            return 0;
+        }
+        let h2: *Axe2 = axe2_of(exec_buf);
+        text = h2.text;
+        mem = h2.mem;
+        let room2 = n - 32;
+        if (sz <= 0 || sz > 65536 || sz > room2) {
+            puts("exec bad size\n");
+            return 0;
+        }
+        if (mem < sz || mem > 65536 || text <= 0 || text > sz) {
+            puts("exec bad size\n");
+            return 0;
+        }
+        if (entry < 0x400000 || entry >= 0x400000 + text) {
+            puts("exec bad entry\n");
+            return 0;
+        }
     }
     let i = 0;
     while (i < sz) {
-        exec_code[i] = exec_buf[16 + i];
+        exec_code[i] = exec_buf[hdr + i];
         i = i + 1;
     }
+    ex_kind[0] = kind;
+    ex_sz[0] = sz;
+    ex_text[0] = text;
+    ex_mem[0] = mem;
+    ex_ent[0] = entry;
     exec_sz = sz;
     return entry;
+}
+
+// Pasa el programa de la ranura 0 a la 1 (imagen y descriptor), para poder
+// leer otro encima. exec2 y `zone pair` lo usan.
+fn exec_stage() -> i64 {
+    let sz = ex_sz[0];
+    let i = 0;
+    while (i < sz) {
+        exec_code2[i] = exec_code[i];
+        i = i + 1;
+    }
+    ex_kind[1] = ex_kind[0];
+    ex_sz[1] = sz;
+    ex_text[1] = ex_text[0];
+    ex_mem[1] = ex_mem[0];
+    ex_ent[1] = ex_ent[0];
+    return 0;
+}
+
+// Arma el proceso pi con el programa de la ranura s y lo deja listo para
+// sched_go: el marco con su entrada y la pila que le toca (0x402000 en un
+// AXE1, 0x412000 en un AXE2), y la salida por líneas. 1, o 0 si no hubo
+// páginas (zone_errno dice por qué; el que llama libera).
+fn exec_build(pi: i64, s: i64) -> i64 {
+    let code = exec_code as i64;
+    if (s == 1) { code = exec_code2 as i64; }
+    if (ex_kind[s] == 2) {
+        if (build_image(pi, code, ex_sz[s], ex_text[s], ex_mem[s]) == 0) { return 0; }
+        proc_lbuf[pi] = 1;
+        forge(pi, ex_ent[s], 0x412000, 0x202);
+        return 1;
+    }
+    if (build_proc(pi, code, ex_sz[s], 0) == 0) { return 0; }
+    proc_lbuf[pi] = 1;
+    forge(pi, ex_ent[s], 0x402000, 0x202);
+    return 1;
 }
 
 fn exec_run() -> i64 {
@@ -125,14 +302,13 @@ fn exec_run() -> i64 {
         irq_restore(iflags);
         return exec_fail(6);
     }
-    if (build_proc(0, exec_code as i64, exec_sz, 0) == 0) {
+    if (exec_build(0, 0) == 0) {
         write_cr3(0x1000);
         release_proc(0);
         irq_restore(iflags);
         build_zone = 0;
         return exec_fail(6);
     }
-    forge(0, entry, 0x402000, 0x202);
     sched_go();
     irq_restore(iflags);
     build_zone = 0;
@@ -150,12 +326,7 @@ fn exec2_run(pos: i64) -> i64 {
     charge_zone = 0;
     let ea = exec_prepare();
     if (ea == 0) { return 0; }
-    let sza = exec_sz;
-    let i = 0;
-    while (i < sza) {
-        exec_code2[i] = exec_code[i];
-        i = i + 1;
-    }
+    exec_stage();
     fs_copy(fs_name, fs_name2, 16);
     let eb = exec_prepare();
     if (eb == 0) { return 0; }
@@ -164,7 +335,8 @@ fn exec2_run(pos: i64) -> i64 {
         irq_restore(iflags);
         return exec_fail(6);
     }
-    if (build_proc(0, exec_code2 as i64, sza, 0) == 0 || build_proc(1, exec_code as i64, exec_sz, 0) == 0) {
+    // El proceso 0 es el primero que se nombró (ranura 1) y el 1 el segundo.
+    if (exec_build(0, 1) == 0 || exec_build(1, 0) == 0) {
         write_cr3(0x1000);
         release_proc(0);
         release_proc(1);
@@ -172,8 +344,6 @@ fn exec2_run(pos: i64) -> i64 {
         build_zone = 0;
         return exec_fail(6);
     }
-    forge(0, ea, 0x402000, 0x202);
-    forge(1, eb, 0x402000, 0x202);
     sched_go();
     irq_restore(iflags);
     build_zone = 0;
@@ -191,5 +361,6 @@ fn cmd_exec() -> i64 {
     let pos = fs_scan(4, fs_name);
     if (pos < 0) { return exec_fail(11); }
     if (exec_is("plant")) { return exec_plant(); }
+    if (exec_is("bigplant")) { return exec_plant_big(); }
     return exec_run();
 }

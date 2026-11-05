@@ -5,6 +5,7 @@
 #   qemu       Arranca esa imagen en QEMU con consola curses (teclado PS/2).
 #   qemu-test  Arranque sin pantalla: sendkey y comprobaciones por COM1.
 #   qemu-udp-test  Solo la prueba de red por IRQ y UDP (tests/qemu_udp_test.sh).
+#   qemu-big-test  Solo programas de varias páginas, AXE2 (tests/qemu_big_test.sh).
 #   qemu-tcp-test  Solo la prueba de TCP (tests/qemu_tcp_test.sh).
 #   qemu-trace-test  Solo la prueba de trazas (tests/qemu_trace_test.sh).
 #   qemu-zswitch-test  Solo el cambio de zona en switch_to (tests/qemu_zswitch_test.sh).
@@ -118,6 +119,7 @@ COPIHUE_KERNEL_SRC = $(KERNEL_SRC)/copihue/console.lap \
                      $(KERNEL_SRC)/copihue/blk.lap \
                      $(KERNEL_SRC)/copihue/fs.lap \
                      $(KERNEL_SRC)/copihue/exec_img.lap \
+                     $(KERNEL_SRC)/copihue/grande_img.lap \
                      $(KERNEL_SRC)/copihue/exec.lap \
                      $(KERNEL_SRC)/copihue/zone_img.lap \
                      $(KERNEL_SRC)/copihue/atk_img.lap \
@@ -139,7 +141,7 @@ COPIHUE_KERNEL_SRC = $(KERNEL_SRC)/copihue/console.lap \
                      $(KERNEL_SRC)/copihue/shell.lap \
                      $(KERNEL_SRC)/copihue/kernel.lap
 
-.PHONY: all qemu qemu-test qemu-udp-test qemu-tcp-test qemu-trace-test qemu-zswitch-test qemu-iso-test qemu-fs2-test qemu-fs3-test qemu-ata-test qemu-cpu-test debug clean help
+.PHONY: all qemu qemu-test qemu-big-test qemu-udp-test qemu-tcp-test qemu-trace-test qemu-zswitch-test qemu-iso-test qemu-fs2-test qemu-fs3-test qemu-ata-test qemu-cpu-test debug clean help
 
 # Imagen de arranque: LBA 0 etapa 1, LBA 1 etapa 2, LBA KERNEL_LBA el kernel.
 all: $(OS_IMAGE)
@@ -235,6 +237,16 @@ EXEC_IMG = $(KERNEL_SRC)/copihue/exec_img.lap
 $(EXEC_IMG): src/user/hola.lap scripts/mkaxe.sh $(COPIHUE) | $(BUILD_DIR)
 	$(abspath $(COPIHUE)) --flat 0x400000 -o $(USER_BIN) src/user/hola.lap
 	scripts/mkaxe.sh $(USER_BIN) $(USER_AXE) $@
+
+# Programa de varias páginas (EX-01). mkaxe.sh lo deja como AXE1 con su código;
+# `exec bigplant` lo reempaca como AXE2 de 3 páginas más bss. Ver docs/exec.md.
+GRANDE_BIN = $(BUILD_DIR)/grande.bin
+GRANDE_AXE = $(BUILD_DIR)/grande.axe
+GRANDE_IMG = $(KERNEL_SRC)/copihue/grande_img.lap
+
+$(GRANDE_IMG): src/user/grande.lap scripts/mkaxe.sh $(COPIHUE) | $(BUILD_DIR)
+	$(abspath $(COPIHUE)) --flat 0x400000 -o $(GRANDE_BIN) src/user/grande.lap
+	scripts/mkaxe.sh $(GRANDE_BIN) $(GRANDE_AXE) $@ grande_fill
 
 # Programa de la zona. Misma cabecera AXE1; zone plant lo escribe como ztest.
 ZONE_BIN = $(BUILD_DIR)/zona.bin
@@ -361,6 +373,7 @@ qemu-test: $(OS_IMAGE)
 	dd if=/dev/zero of=$(DATA_IMG) bs=512 count=$(DATA_SECTORS) status=none
 	$(TESTS_DIR)/qemu_shell_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_udp_test.sh $(OS_IMAGE)
+	$(TESTS_DIR)/qemu_big_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_tcp_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_trace_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_zswitch_test.sh $(OS_IMAGE)
@@ -375,6 +388,10 @@ qemu-test: $(OS_IMAGE)
 # Solo la red por IRQ y UDP. Usa una copia nueva del disco de datos.
 qemu-udp-test: $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_udp_test.sh $(OS_IMAGE)
+
+# Solo programas de varias páginas (EX-01). Usa copias nuevas de imagen y disco.
+qemu-big-test: $(OS_IMAGE)
+	$(TESTS_DIR)/qemu_big_test.sh $(OS_IMAGE)
 
 # Solo TCP (RD-02). Usa una copia nueva del disco de datos.
 qemu-tcp-test: $(OS_IMAGE)
@@ -420,7 +437,7 @@ debug: $(OS_IMAGE) $(DATA_IMG)
 
 clean:
 	rm -rf $(BUILD_DIR)
-	rm -f $(KERNEL_SRC)/copihue/exec_img.lap $(KERNEL_SRC)/copihue/zone_img.lap $(KERNEL_SRC)/copihue/atk_img.lap $(KERNEL_SRC)/copihue/par_img.lap $(KERNEL_SRC)/copihue/parcpu_img.lap $(KERNEL_SRC)/copihue/udpeco_img.lap $(KERNEL_SRC)/copihue/udpdos_img.lap $(KERNEL_SRC)/copihue/udpwait_img.lap $(KERNEL_SRC)/copihue/tcpeco_img.lap $(KERNEL_SRC)/copihue/tcpcli_img.lap $(KERNEL_SRC)/copihue/tcpmulti_img.lap $(KERNEL_SRC)/copihue/tcphog_img.lap $(KERNEL_SRC)/copihue/traza_img.lap
+	rm -f $(KERNEL_SRC)/copihue/exec_img.lap $(KERNEL_SRC)/copihue/grande_img.lap $(KERNEL_SRC)/copihue/zone_img.lap $(KERNEL_SRC)/copihue/atk_img.lap $(KERNEL_SRC)/copihue/par_img.lap $(KERNEL_SRC)/copihue/parcpu_img.lap $(KERNEL_SRC)/copihue/udpeco_img.lap $(KERNEL_SRC)/copihue/udpdos_img.lap $(KERNEL_SRC)/copihue/udpwait_img.lap $(KERNEL_SRC)/copihue/tcpeco_img.lap $(KERNEL_SRC)/copihue/tcpcli_img.lap $(KERNEL_SRC)/copihue/tcpmulti_img.lap $(KERNEL_SRC)/copihue/tcphog_img.lap $(KERNEL_SRC)/copihue/traza_img.lap
 
 help:
 	@echo "LapageriaOS $(VERSION) — kernel y arranque en Copihue $(COPIHUE_COMMIT)"
@@ -436,6 +453,7 @@ help:
 	@echo "                  Y la red por IRQ con UDP (eco con socat y hostfwd, zonas,"
 	@echo "                  recv bloqueante, dos procesos, ráfaga, ICMP unreachable)."
 	@echo "  make qemu-udp-test  Solo esa prueba de red (tests/qemu_udp_test.sh)."
+	@echo "  make qemu-big-test  Solo programas de varias páginas, AXE2 (tests/qemu_big_test.sh)."
 	@echo "  make qemu-tcp-test  Solo la prueba de TCP (tests/qemu_tcp_test.sh)."
 	@echo "  make qemu-trace-test  Solo la prueba de trazas (tests/qemu_trace_test.sh)."
 	@echo "  make qemu-zswitch-test  Solo el cambio de zona en switch_to (tests/qemu_zswitch_test.sh)."

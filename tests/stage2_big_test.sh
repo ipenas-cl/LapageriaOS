@@ -14,8 +14,6 @@ set -u
 B=${1:-build}
 COP=${COPIHUE:-$B/copihue/copihue}
 SECT=2048
-OFF=$((0xB0000))
-LEN=$((SECT * 512 - OFF))
 TMP=$(mktemp -d)
 QPID=""
 cleanup() {
@@ -34,9 +32,14 @@ for f in "$B/kernel.bin" "$B/boot.bin" "$B/stage2.lap" "$COP"; do
     [ -e "$f" ] || fail "falta $f"
 done
 ksize=$(wc -c < "$B/kernel.bin" | tr -d ' ')
-# La .bss (hasta 256 KiB; hoy unos 247 KiB) sigue al archivo y el kernel la limpia: lo que se
-# compara empieza más allá.
-[ $((ksize + 262144)) -lt "$OFF" ] || fail "kernel.bin ($ksize bytes) llega a la zona que se compara"
+# La .bss sigue al archivo y el kernel la limpia: lo que se compara empieza
+# más allá, en el siguiente múltiplo de 64 KiB (EX-01: los búferes de AXE2
+# subieron la .bss a unos 430 KiB, así que ya no se compara desde 0xB0000
+# fijo). El tamaño sale de kernel.asm, igual que en el Makefile.
+bss=$(awk '/^__bss_start:/{s=1; next} /^__bss_end:/{s=0} s && /resb /{b += $NF} s && /resw /{b += $NF * 2} s && /resd /{b += $NF * 4} s && /resq /{b += $NF * 8} END{print b + 0}' "$B/kernel.asm")
+OFF=$(( ((ksize + bss + 65535) / 65536) * 65536 ))
+LEN=$((SECT * 512 - OFF))
+[ "$LEN" -ge 65536 ] || fail "kernel.bin ($ksize bytes) y .bss ($bss) no dejan un trozo de 64 KiB que comparar"
 total=$((SECT * 512))
 dd if=/dev/urandom of="$TMP/pad.bin" bs=512 count=$SECT status=none
 cat "$B/kernel.bin" "$TMP/pad.bin" > "$TMP/big0.bin"

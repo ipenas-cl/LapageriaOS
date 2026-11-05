@@ -8,6 +8,36 @@ para ese commit es `legacy-tempo`.
 
 ## 0.8
 
+EX-01, programas de modo usuario de varias páginas y `qemu_udp_test` estable.
+(1) `exec2: udpdos no abrió sus sockets` (PR 45, primera corrida) era una
+carrera: la syscall 1 escribe un carácter y el PIT puede cortar a un proceso a
+mitad de línea, así que con `exec2` salía `udp dos listenudp ptr denied` y la
+marca de la prueba dejaba de ser una línea. Se reprodujo en `main` con
+`-icount shift=7`, 6 a la vez: en 12 corridas, una dio la misma línea y otra
+`woke 0 -> 0` (la prueba suponía que el despertar por llegada ocurría siempre);
+en otras 6, una dio `no line 'udp listen'`. Ahora la salida de los programas del disco va
+por líneas enteras (`usermode.lap`: búfer por proceso, vaciado en el `\n` con
+interrupciones apagadas y antes de cualquier mensaje del kernel sobre el
+proceso; las demos de `sched` siguen carácter a carácter porque su prueba usa
+la mezcla de letras). `udp_recv` imprime `udp block <puerto>` al dormir y la
+prueba manda cada datagrama al ver esa línea (sin interrupciones entre la
+marca y el sueño, así que `blk` y `woke` ya no dependen de quién llegó
+primero); el único que cuenta `woke` es el que durmió primero y se le manda
+primero. `tests/qemu_udp_test.sh` copia la imagen (corridas en paralelo) y
+acepta `QEMU_EXTRA`. Con shift=7 aparecía además `exec fail 1` / `exec fail 8`
+en `udp plant` (timeout ATA: 5 s virtuales son 39 millones de instrucciones);
+el tope pasa a 60 s del contador del PIT. (2) AXE2: `exec` carga programas de 1
+a 16 páginas (cabecera de 32 bytes con bytes de texto y tamaño en memoria; texto
+de solo lectura y ejecutable, datos y bss de lectura y escritura sin ejecución).
+La página de E/S pasa a `0x410000`, sola; la pila a `0x411000` y las páginas de
+la syscall 8 a `0x412000`. Los AXE1 siguen como estaban (`0x401000`, `0x402000`).
+Los búferes de las syscalls 6, 7 y 27 se buscan con `uio_base()` y los rangos
+de UDP, TCP y trazas se validan por regiones (`uptr_range_ok`). Un proceso
+puede tomar hasta 32 páginas (eran 16). Programa de prueba `src/user/grande.lap`
+y `tests/qemu_big_test.sh` (`make qemu-big-test`, también en `make qemu-test`).
+Pedidos nuevos al lenguaje en `docs/PEDIDOS_COPIHUE.md` (EX-01). Detalle en
+`docs/exec.md`.
+
 OB-03, espacio en `par`, `zone ls` con CPU y cierre de la etapa 7.
 `par.bin` estaba en 4078 de los 4080 bytes que admite `mkaxe.sh`. El modo de
 CPU por zona (`k<d>`) pasa a un programa propio, `src/user/parcpu.lap`

@@ -738,7 +738,8 @@ estaba previsto. Dos incomodidades:
 
 Nada bloqueó la tarea; compiló sin `asm()` nuevo. Dos notas:
 
-1. **Programas de anillo 3 de una sola página (sigue abierto).** `par.bin`
+1. **Programas de anillo 3 de una sola página (el cargador lo resolvió en
+   EX-01; ver la sección de abajo).** `par.bin`
    estaba en 4078 de 4080 bytes. Se eligió dividir el programa (`par` y
    `parcpu`) y no subir el tope: el límite no es solo de `mkaxe.sh`. El
    código del proceso es una página de 4 KiB en `0x400000`, y `0x401000`
@@ -752,3 +753,39 @@ Nada bloqueó la tarea; compiló sin `asm()` nuevo. Dos notas:
    el modo `k`.
 2. **Sin `const`.** `parcpu` repite los topes de lectura (2000000 y 1000) como
    literales. Mismo pedido de RD-03.
+
+## EX-01 (AXE2, programas de varias páginas), con Copihue v0.42.5
+
+Nada del lenguaje bloqueó la tarea: el cargador, el layout y la prueba se
+escribieron con lo que ya había (`packed struct` de 32 bytes con `sizeof` y
+`offsetof`, `else if`, `as u32`/`as u8`, arreglos globales de 64 KiB).
+Pedidos que sí salieron, cada uno con su contorno:
+
+1. **Un programa `--flat` no puede declarar datos ni bss.** No hay forma de que
+   `copihue --flat 0x400000` entregue un binario con una sección de datos
+   inicializados, ni de decir cuánta bss necesita (el kernel sí la cuenta:
+   `__bss_start` / `__bss_end` en `kernel.asm`, que el `Makefile` lee con
+   `awk`). Contorno: `grande.lap` direcciona sus páginas de datos con
+   constantes (`0x400000 + k`), el patrón de las páginas 2 y 3 lo escribe el
+   kernel al armar el archivo (`big_make`, `exec.lap`) y el tamaño en memoria
+   lo fija la cabecera AXE2 (`mem`). No se probó si un `let` global en un
+   programa de usuario cae después del código en `--flat`. Pedido: una opción
+   que escriba un AXE2 completo (texto, datos y tamaño de bss) o que al menos
+   imprima el tamaño de bss, y una forma de dejar un arreglo global
+   inicializado.
+2. **Sin alineación de una función a una página.** No se puede forzar que una
+   función empiece en `0x401000` para tener código real en una segunda página
+   de texto; por eso el texto de `grande` es una sola página y `grandew`
+   (texto de 2 páginas) solo prueba que la segunda página queda de solo
+   lectura. Pedido: `align(4096)` o un `org` dentro de un archivo.
+3. **El tope de 4080 bytes sigue en `mkaxe.sh`.** El cargador acepta hasta 64
+   KiB, pero el único camino de un programa compilado al disco es
+   `mkaxe.sh`, que embebe el AXE1 en el kernel con una asignación de 4 bytes
+   (unos 20 bytes de código cada una), y solo empaca AXE1. Un programa
+   compilado de más de una página de código necesita un modo `--axe2` de
+   `mkaxe.sh` (no se hizo: el kernel pagaría ~5 bytes por byte de programa) o
+   un cargador desde el anfitrión. Es el mismo pedido de OB-03: una salida que
+   no pague 4 bytes por asignación al embeber. `par` y `parcpu` no se
+   reunieron.
+4. **Sin `const`** (igual que arriba): `0x410000`, `0x411000` y `0x412000`
+   son literales repetidos en `sched.lap`, `exec.lap` y `udp.lap`.

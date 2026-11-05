@@ -6,7 +6,9 @@
 // absoluta se niegan con -1 y suben `niega`. docs/zonas.md.
 //
 // El nombre es de 16 bytes por zona. ZoneStr lo mide; zone_layout lo
-// chequea. El programa sigue dejando el nombre en 0x401800.
+// chequea. El programa deja el nombre en la página de E/S + 0x800 y los
+// datos en + 0xC00 (uio_base, sched.lap): 0x401800 y 0x401C00 en un AXE1,
+// 0x410800 y 0x410C00 en un AXE2.
 
 packed struct ZoneStr {
     b: [u8; 16]
@@ -205,7 +207,7 @@ fn zone_gate(nr: i64) -> i64 {
 }
 
 fn zone_read_name() -> i64 {
-    let u: *ZoneStr = 0x401800 as *ZoneStr;
+    let u: *ZoneStr = (uio_base() + 0x800) as *ZoneStr;
     let i = 0;
     let saw = 0;
     while (i < 16) {
@@ -301,7 +303,7 @@ fn zone_resolve(z: i64) -> i64 {
 
 fn zone_read_data(n: i64) -> i64 {
     if (n < 0 || n > 64) { return 0 - 9; }
-    let p: *u8 = 0x401C00;
+    let p: *u8 = (uio_base() + 0xC00) as *u8;
     let i = 0;
     while (i < n) {
         zone_io[i] = p[i];
@@ -311,7 +313,7 @@ fn zone_read_data(n: i64) -> i64 {
 }
 
 fn zone_write_data(n: i64) -> i64 {
-    let p: *u8 = 0x401C00;
+    let p: *u8 = (uio_base() + 0xC00) as *u8;
     let i = 0;
     let m = n;
     if (m > 64) { m = 64; }
@@ -426,7 +428,7 @@ fn zone_destroy_z(z: i64) -> i64 {
     return 0;
 }
 
-// 27 zone_destroy: el nombre de la zona va en 0x401800. Solo un proceso de
+// 27 zone_destroy: el nombre de la zona va en la página de E/S + 0x800. Solo un proceso de
 // la zona 0 (la máscara de las demás no lleva la 27). 0, -11 si no existe,
 // -16 si tiene procesos vivos.
 fn zone_sys_destroy() -> i64 {
@@ -599,7 +601,7 @@ fn zone_run(z: i64) -> i64 {
         return zone_fail(6);
     }
     build_zone = z;
-    if (build_proc(0, exec_code as i64, exec_sz, 0) == 0) {
+    if (exec_build(0, 0) == 0) {
         write_cr3(0x1000);
         release_proc(0);
         irq_restore(iflags);
@@ -610,7 +612,6 @@ fn zone_run(z: i64) -> i64 {
     puts("zone used ");
     put_int(zone_pages[z]);
     putc('\n');
-    forge(0, entry, 0x402000, 0x202);
     sched_go();
     irq_restore(iflags);
     let after = pmm_free;
@@ -786,12 +787,7 @@ fn zone_pair_run(pos: i64) -> i64 {
     let entry = exec_prepare();
     if (entry == 0) { return 0; }
     if (proc_state[0] != 0 || proc_state[1] != 0) { return zone_fail(4); }
-    let sz = exec_sz;
-    let i = 0;
-    while (i < sz) {
-        exec_code2[i] = exec_code[i];
-        i = i + 1;
-    }
+    exec_stage();
     zone_errno = 0;
     let iflags: u64 = irq_save();
     if (shared_init() == 0) {
@@ -801,7 +797,7 @@ fn zone_pair_run(pos: i64) -> i64 {
     // Después de shared_init: la primera vez toma dos páginas que se quedan.
     let before = pmm_free;
     build_zone = za;
-    if (build_proc(0, exec_code as i64, sz, 0) == 0) {
+    if (exec_build(0, 0) == 0) {
         write_cr3(0x1000);
         release_proc(0);
         irq_restore(iflags);
@@ -809,7 +805,7 @@ fn zone_pair_run(pos: i64) -> i64 {
         return zone_fail(zone_errno);
     }
     build_zone = zb;
-    if (build_proc(1, exec_code2 as i64, sz, 0) == 0) {
+    if (exec_build(1, 1) == 0) {
         write_cr3(0x1000);
         release_proc(0);
         release_proc(1);
@@ -818,8 +814,6 @@ fn zone_pair_run(pos: i64) -> i64 {
         return zone_fail(zone_errno);
     }
     build_zone = 0;
-    forge(0, entry, 0x402000, 0x202);
-    forge(1, entry, 0x402000, 0x202);
     zcpu_window_start();
     zsw_n = 0;
     zsw_chg = 0;

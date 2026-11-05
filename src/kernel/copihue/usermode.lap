@@ -7,6 +7,41 @@
 
 let user_ran: i64 = 0;
 
+// Salida de anillo 3 por líneas (EX-01). La syscall 1 escribe un carácter;
+// con dos procesos y el PIT repartiendo la CPU, las líneas de uno y otro se
+// mezclaban a mitad de palabra (`udp dos listenudp ptr denied`) y una marca
+// de la prueba dejaba de ser una línea. Cada proceso junta sus caracteres en
+// su búfer y los saca de una vez al llegar un '\n' (o al llenarse). La
+// syscall corre con IF=0, así que el vaciado no se parte. Solo vale para
+// los procesos con proc_lbuf (los programas del disco): las demos de `sched`
+// quieren la mezcla. Lo que quede sin
+// '\n' se vacía antes de cualquier mensaje del kernel sobre ese proceso
+// (falla, muerte, salida): uline_flush.
+let uline: [u8; 256];
+let uline_n: [i64; 2];
+
+fn uline_flush(pi: i64) -> i64 {
+    if (pi < 0 || pi > 1) { return 0; }
+    let n = uline_n[pi];
+    let i = 0;
+    while (i < n) {
+        putc(uline[pi * 128 + i]);
+        i = i + 1;
+    }
+    uline_n[pi] = 0;
+    return n;
+}
+
+fn uline_putc(ch: i64) -> i64 {
+    let pi = cur_i;
+    if (pi < 0 || pi > 1 || proc_lbuf[pi] == 0) { putc(ch); return 0; }
+    let n = uline_n[pi];
+    uline[pi * 128 + n] = (ch & 255) as u8;
+    uline_n[pi] = n + 1;
+    if ((ch & 255) == 10 || n + 1 >= 128) { uline_flush(pi); }
+    return 0;
+}
+
 syscall fn sys_user(nr: i64, ch: i64, a2: i64, a3: i64, a4: i64, a5: i64) -> i64 {
     // sys-enter: número y argumento. sys-exit: número y resultado.
     // yield y exit no vuelven, así que no hay sys-exit de esas dos.
@@ -17,7 +52,7 @@ syscall fn sys_user(nr: i64, ch: i64, a2: i64, a3: i64, a4: i64, a5: i64) -> i64
         return g;
     }
     if (nr == 1) {
-        putc(ch);
+        uline_putc(ch);
         if (tr_en[1] != 0) { trace_hit(1, proc_pid[cur_i], nr, 0); }
         return 0;
     }
