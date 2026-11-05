@@ -305,13 +305,19 @@ $(ZONE_IMG): src/user/zona.lap scripts/mkaxe.sh $(COPIHUE) | $(BUILD_DIR)
 
 # Programa de ataque de la zona (SG-01 parte 2). `zone atk` lo escribe
 # como zatk. Ver docs/zonas.md.
-ATK_BIN = $(BUILD_DIR)/ataque.bin
+#
+# EX-08: el compilador (v0.44.3) arma el AXE1 entero con `--axe1` (cabecera de
+# 16 bytes, tamaño, entrada). scripts/chksizes.sh compara --sizes y
+# `mkaxe.sh -a` valida la cabecera y deja el .lap. zatk no tiene `let` globales:
+# data=0 y bss=0 (la cabecera AXE1 no separa texto y datos).
 ATK_AXE = $(BUILD_DIR)/ataque.axe
+ATK_SIZES = $(BUILD_DIR)/ataque.sizes
 ATK_IMG = $(KERNEL_SRC)/copihue/atk_img.lap
 
-$(ATK_IMG): src/user/ataque.lap scripts/mkaxe.sh $(COPIHUE) | $(BUILD_DIR)
-	$(abspath $(COPIHUE)) --flat 0x400000 -o $(ATK_BIN) src/user/ataque.lap
-	scripts/mkaxe.sh $(ATK_BIN) $(ATK_AXE) $@ atk_fill
+$(ATK_IMG): src/user/ataque.lap scripts/mkaxe.sh scripts/chksizes.sh $(COPIHUE) | $(BUILD_DIR)
+	$(abspath $(COPIHUE)) --flat 0x400000 --axe1 --sizes -o $(ATK_AXE) src/user/ataque.lap > $(ATK_SIZES)
+	scripts/chksizes.sh $(ATK_SIZES) data=0 bss=0 entry=0x400000
+	scripts/mkaxe.sh -a $(ATK_AXE) $@ atk_fill
 
 # Programa de pares de zonas (OB-02). `zone par` lo escribe como par y
 # `zone pair za zb par` corre dos copias a la vez, una en cada zona.
