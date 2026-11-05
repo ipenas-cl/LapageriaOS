@@ -27,6 +27,16 @@ y espera el enlace (≤ 200 ms) en un puerto sin DET 3. (2) La prueba UEFI cuelg
 el SATA de un `-device ahci` explícito, como `qemu-ahci-fs-test`. No se pudo
 reproducir el fallo de Ubuntu aquí (ver RESUMEN).
 
+HR-03e, diagnóstico del CI rojo de `qemu-uefi-blk-test`. (1) Si `ahci_init`
+falla dentro de `blk_set_dev(2)`, `ahci_dbg` imprime líneas `ahci dbg ...`: el
+código real de AHCI (`blk_open` devuelve el del ATA, 3, y lo ocultaba), la
+etapa de `ahci_init`, la página de DMA, y por cada controlador dispositivo,
+función, ID, ABAR, CAP, GHC, PI, BOHC y por puerto SSTS, SIG, CMD, TFD, SERR.
+Solo sale en fallo. (2) `ahci_handoff`: traspaso BIOS/SO (BOHC) si CAP2.BOH.
+(3) CI instala `ovmf` explícito, lista `/usr/share/OVMF` y falla si el Makefile
+no halla firmware (`make ovmf-info`). Causa del `dev=none` en Ubuntu: sin
+confirmar (ver RESUMEN).
+
 EX-09, pin de Copihue v0.44.4 (`dd708bc`). (1) `f(x)[0] = v` y `*f(x) = v` con
 `-> *volatile u32` emiten el store volatile al ancho del pointee; asignar a un
 no-lvalue (`f(1) = 5`) es error de compilación con archivo y línea. Cierra el
