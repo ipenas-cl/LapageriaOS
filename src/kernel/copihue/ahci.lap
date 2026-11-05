@@ -26,6 +26,8 @@
 let AHCI_ABAR: i64 = 0x10100000;
 // 10 s del PIT (1.193182 MHz). Los discos SATA de QEMU contestan en ms.
 let AHCI_PIT_TIMEOUT: i64 = 11931820;
+// Cuentas del PIT por milisegundo.
+let AHCI_MS: i64 = 1193;
 
 let ahci_dev: i64 = 0;
 let ahci_fun: i64 = 0;
@@ -38,7 +40,8 @@ let ahci_pa: i64 = 0;
 let ahci_sectors: i64 = 0;
 let ahci_ready: i64 = 0;
 // Hasta dónde llegó ahci_init (para ahci_dbg): 1 buscar controlador, 2 BAR,
-// 3 puerto con disco, 4 página de DMA, 5 parar el puerto, 6 TFD, 7 IDENTIFY.
+// 3 página de DMA, 4 puerto con disco (FRE, enlace, FIS D2H, firma), 5 limpiar
+// SERR/IS, 6 TFD y ST, 7 IDENTIFY. (Hasta HR-03e: 3 puerto, 4 página, 5 parar el puerto.)
 let ahci_stage: i64 = 0;
 let ahci_buf: [u8; 512];
 let ahci_out: [u8; 512];
@@ -70,13 +73,14 @@ fn ahci_m(off: i64) -> *volatile u32 {
     return (ahci_pa + off) as *volatile u32;
 }
 
-// Espera a que (registro del puerto & mask) == want. 0 listo, 1 tiempo.
-fn ahci_spin(reg: i64, mask: i64, want: i64) -> i64 {
+// Espera hasta `ticks` cuentas del PIT a que (registro & mask) == want. `off`
+// es el desplazamiento absoluto dentro del ABAR. 0 listo, 1 tiempo.
+fn ahci_spinoff(off: i64, mask: i64, want: i64, ticks: i64) -> i64 {
     let prev = ata_pit_read();
     let acc = 0;
     let n = 0;
-    while (acc < AHCI_PIT_TIMEOUT) {
-        if ((ahci_pr(reg) & mask) == want) { return 0; }
+    while (acc < ticks) {
+        if ((ahci_rd(off) & mask) == want) { return 0; }
         n = n + 1;
         if ((n & 15) == 0) {
             let cur = ata_pit_read();
@@ -88,6 +92,12 @@ fn ahci_spin(reg: i64, mask: i64, want: i64) -> i64 {
     }
     return 1;
 }
+
+// Lo mismo sobre un registro del puerto elegido, con el tope largo.
+fn ahci_spin(reg: i64, mask: i64, want: i64) -> i64 {
+    return ahci_spinoff(ahci_preg(reg), mask, want, AHCI_PIT_TIMEOUT);
+}
+
 
 // Busca el controlador AHCI número `skip` (0 = el primero) en el bus 0. Bajo
 // q35 el ICH9 trae uno integrado (casi siempre vacío) y `-device ahci` suma
@@ -145,6 +155,11 @@ fn ahci_map_bar() -> i64 {
         off = off + 4096;
     }
     ahci_mmio = AHCI_ABAR;
+    // Si el BAR no quedó donde se pidió, CAP lee todo unos: no es un HBA.
+    if (ahci_rd(0x00) == 0xFFFFFFFF) {
+        ahci_mmio = 0;
+        return 5;
+    }
     return 0;
 }
 
@@ -161,52 +176,66 @@ fn ahci_stop() -> i64 {
     return 0;
 }
 
-// Espera (tope ~200 ms del PIT) a que el puerto elegido tenga enlace: DET 3.
-fn ahci_wait_link() -> i64 {
-    let prev = ata_pit_read();
-    let acc = 0;
-    let n = 0;
-    while (acc < 238636) {
-        if ((ahci_pr(0x28) & 15) == 3) { return 0; }
-        n = n + 1;
-        if ((n & 15) == 0) {
-            let cur = ata_pit_read();
-            let d = prev - cur;
-            if (d < 0) { d = d + ATA_PIT_PERIOD; }
-            acc = acc + d;
-            prev = cur;
-        }
-    }
-    return 1;
-}
-
-// Si el firmware dejó el puerto sin enlace (DET != 3), lo reinicia con COMRESET
-// (PxSCTL.DET = 1, luego 0) y espera el enlace. Un puerto vacío paga el tope.
-fn ahci_link_up() -> i64 {
-    if ((ahci_pr(0x28) & 15) == 3) { return 0; }
-    // Con el motor de FIS detenido no hay riesgo de que el reset pise un DMA.
-    ahci_stop();
+// COMRESET (PxSCTL.DET = 1 al menos 1 ms, luego 0) y espera de hasta `ticks`
+// a que el puerto elegido tenga enlace (DET 3). Con ST en 0. La pausa de 2 ms
+// es una espera que no se cumple nunca (CAP & 0 == 1).
+fn ahci_comreset(ticks: i64) -> i64 {
     ahci_pw(0x2C, 0x301);
-    let i = 0;
-    while (i < 20000) {
-        ahci_pr(0x28);
-        i = i + 1;
-    }
+    ahci_spinoff(0x00, 0, 1, AHCI_MS * 2);
     ahci_pw(0x2C, 0x300);
-    return ahci_wait_link();
+    let r = ahci_spinoff(ahci_preg(0x28), 15, 3, ticks);
+    // El reset deja PxSERR.DIAG.X: se limpia para que entren los FIS que siguen.
+    ahci_pw(0x30, 0xFFFFFFFF);
+    return r;
 }
 
-// Primer puerto implementado con un disco SATA (DET 3, IPM 1, firma 0x101).
+// Deja el puerto elegido sin motor de comandos y con la recepción de FIS
+// encendida: lista de comandos y FIS recibido en la página de DMA, SERR e IS
+// limpios, PxCMD.FRE (y SUD, POD) y espera a PxCMD.FR. Sin FRE el HBA no
+// guarda el FIS D2H que sigue a un reset y PxSIG se queda en 0xFFFFFFFF y
+// PxTFD en 0x7F aunque el enlace esté arriba (AHCI 1.3 §10.3.1): el firmware
+// de OVMF 2024.02 deja los puertos con PxCMD = 0x6.
+fn ahci_port_fre() -> i64 {
+    if (ahci_stop() != 0) { return 1; }
+    ahci_pw(0x00, ahci_pa);
+    ahci_pw(0x04, 0);
+    ahci_pw(0x08, ahci_pa + 0x400);
+    ahci_pw(0x0C, 0);
+    ahci_pw(0x30, 0xFFFFFFFF);
+    ahci_pw(0x10, 0xFFFFFFFF);
+    ahci_pw(0x14, 0);
+    ahci_pw(0x18, ahci_pr(0x18) | 0x16);
+    // Un HBA que no refleje FR no debe frenar el arranque: el tope es corto.
+    ahci_spinoff(ahci_preg(0x18), 0x4000, 0x4000, 238636);
+    return 0;
+}
+
+// ¿Tiene el puerto elegido un disco SATA listo (DET 3, IPM 1, firma 0x101)?
+// 0 sí; 3 no. Deja el puerto con FRE y sin ST.
+fn ahci_probe() -> i64 {
+    if (ahci_port_fre() != 0) { return 3; }
+    // Sin enlace (DET != 3): COMRESET, ya con FRE, y ~200 ms de espera (lo que
+    // paga un puerto vacío).
+    if ((ahci_pr(0x28) & 15) != 3 && ahci_comreset(AHCI_MS * 200) != 0) { return 3; }
+    // Enlace arriba: esperar BSY y DRQ limpios. Tras un reset PxTFD vale 0x7F
+    // (BSY) hasta que llega el D2H, así que esto también espera a ese FIS. Si
+    // no llega (el enlace ya estaba arriba sin FRE, o el disco tarda), COMRESET.
+    if (ahci_spinoff(ahci_preg(0x20), 0x88, 0, AHCI_MS * 2000) != 0) {
+        ahci_comreset(AHCI_MS * 1000);
+        if (ahci_spinoff(ahci_preg(0x20), 0x88, 0, AHCI_MS * 4000) != 0) { return 3; }
+    }
+    let ssts = ahci_pr(0x28);
+    if ((ssts & 15) == 3 && ((ssts >> 8) & 15) == 1 && ahci_pr(0x24) == 0x101) { return 0; }
+    return 3;
+}
+
+// Primer puerto implementado con un disco SATA.
 fn ahci_find_port() -> i64 {
     let n = 0;
     while (n < 32) {
         if (((ahci_pi >> n) & 1) != 0) {
             ahci_port = n;
-            ahci_link_up();
-            let ssts = ahci_pr(0x28);
-            if ((ssts & 15) == 3 && ((ssts >> 8) & 15) == 1) {
-                if (ahci_pr(0x24) == 0x101) { return 0; }
-            }
+            if (ahci_probe() == 0) { return 0; }
         }
         n = n + 1;
     }
@@ -296,25 +325,12 @@ fn ahci_word(n: i64) -> i64 {
 // Traspaso BIOS/SO (AHCI 1.3 §10.6.3): solo si CAP2.BOH (bit 0). Pide la
 // propiedad (BOHC.OOS, bit 1) y espera a que el firmware suelte BOS (bit 0)
 // y BB (bit 4). QEMU no lo implementa; un firmware que sí lo hace no debe
-// seguir dueño del HBA. Tope ~200 ms del PIT; si no suelta, se sigue igual.
+// seguir dueño del HBA. Tope 2 s del PIT (BB puede tardar hasta 2 s); si no
+// suelta, se sigue igual.
 fn ahci_handoff() -> i64 {
     if ((ahci_rd(0x24) & 1) == 0) { return 0; }
     ahci_wr(0x28, ahci_rd(0x28) | 2);
-    let prev = ata_pit_read();
-    let acc = 0;
-    let n = 0;
-    while (acc < 238636) {
-        if ((ahci_rd(0x28) & 0x11) == 0) { return 0; }
-        n = n + 1;
-        if ((n & 15) == 0) {
-            let cur = ata_pit_read();
-            let d = prev - cur;
-            if (d < 0) { d = d + ATA_PIT_PERIOD; }
-            acc = acc + d;
-            prev = cur;
-        }
-    }
-    return 1;
+    return ahci_spinoff(0x28, 0x11, 0, AHCI_MS * 2000);
 }
 
 // Busca el controlador, arma el puerto y lee IDENTIFY. Idempotente.
@@ -322,15 +338,23 @@ fn ahci_init() -> i64 {
     if (ahci_ready != 0) { return 0; }
     let nth = 0;
     let r = 3;
-    ahci_stage = 1;
     while (r != 0) {
         ahci_stage = 1;
         r = ahci_scan(nth);
         if (r != 0) { return r; }
         ahci_stage = 2;
         r = ahci_map_bar();
-        if (r == 0) {
+        if (r == 0 && ahci_pa == 0) {
+            // La página de DMA se pide antes de buscar el puerto: sondearlo
+            // exige FRE y por tanto el FIS recibido en memoria. Una vez.
             ahci_stage = 3;
+            let pa = alloc_low_page();
+            if (net_pa_ok(pa) == 0) { return 5; }
+            zero_va(pa);
+            ahci_pa = pa;
+        }
+        if (r == 0) {
+            ahci_stage = 4;
             // GHC.AE (bit 31), IE (bit 1) sigue en 0.
             ahci_wr(0x04, 0x80000000);
             ahci_handoff();
@@ -351,20 +375,9 @@ fn ahci_init() -> i64 {
             nth = nth + 1;
         }
     }
-    ahci_stage = 4;
-    ahci_pa = alloc_low_page();
-    if (net_pa_ok(ahci_pa) == 0) { return 5; }
-    zero_va(ahci_pa);
-    ahci_stage = 5;
-    if (ahci_stop() != 0) { return 1; }
-    ahci_pw(0x00, ahci_pa);
-    ahci_pw(0x04, 0);
-    ahci_pw(0x08, ahci_pa + 0x400);
-    ahci_pw(0x0C, 0);
-    ahci_pw(0x30, 0xFFFFFFFF);
-    ahci_pw(0x10, 0xFFFFFFFF);
-    ahci_pw(0x14, 0);
-    ahci_pw(0x18, ahci_pr(0x18) | 0x10);
+    // ahci_probe dejó el puerto con CLB, FB y FRE puestos (y FR esperado), el
+    // D2H recibido y TFD sin BSY/DRQ, y sin ST. Orden de arranque: FRE, FR,
+    // TFD, ST.
     ahci_stage = 6;
     if (ahci_spin(0x20, 0x88, 0) != 0) { return 1; }
     ahci_pw(0x18, ahci_pr(0x18) | 0x1);
@@ -404,22 +417,28 @@ fn ahci_write(lba: i64, src: *u8) -> i64 {
     return ahci_cmd(0xEA, 0);
 }
 
+// " nombre=" y un valor, en hex (kx) o decimal (ki): ahci_dump y ahci_dbg.
+fn ahci_kx(s: *u8, v: i64) -> i64 {
+    puts(s);
+    put_hex(v);
+    return 0;
+}
+
+fn ahci_ki(s: *u8, v: i64) -> i64 {
+    puts(s);
+    put_int(v);
+    return 0;
+}
+
 // Registros del puerto tras un fallo: IS, CMD, TFD, SSTS, SERR, CI.
 fn ahci_dump() -> i64 {
-    puts("ahci regs pa=");
-    put_hex(ahci_pa);
-    puts(" is=");
-    put_hex(ahci_pr(0x10));
-    puts(" cmd=");
-    put_hex(ahci_pr(0x18));
-    puts(" tfd=");
-    put_hex(ahci_pr(0x20));
-    puts(" ssts=");
-    put_hex(ahci_pr(0x28));
-    puts(" serr=");
-    put_hex(ahci_pr(0x30));
-    puts(" ci=");
-    put_hex(ahci_pr(0x38));
+    ahci_kx("ahci regs pa=", ahci_pa);
+    ahci_kx(" is=", ahci_pr(0x10));
+    ahci_kx(" cmd=", ahci_pr(0x18));
+    ahci_kx(" tfd=", ahci_pr(0x20));
+    ahci_kx(" ssts=", ahci_pr(0x28));
+    ahci_kx(" serr=", ahci_pr(0x30));
+    ahci_kx(" ci=", ahci_pr(0x38));
     putc('\n');
     return 0;
 }
@@ -431,64 +450,42 @@ fn ahci_dump() -> i64 {
 // implementado con SSTS, SIG, CMD, TFD y SERR. Vuelve a abrir cada BAR para
 // leer y lo apaga otra vez; ahci_init lo reconfigura en el próximo intento.
 fn ahci_dbg(r: i64) -> i64 {
-    puts("ahci dbg init r=");
-    put_int(r);
-    puts(" stage=");
-    put_int(ahci_stage);
-    puts(" pa=");
-    put_hex(ahci_pa);
-    puts(" pmmfree=");
-    put_int(pmm_free);
+    ahci_ki("ahci dbg init r=", r);
+    ahci_ki(" stage=", ahci_stage);
+    ahci_kx(" pa=", ahci_pa);
+    ahci_ki(" pmmfree=", pmm_free);
     putc('\n');
     let sd = ahci_dev;
     let sf = ahci_fun;
     let sp = ahci_port;
     let k = 0;
     while (ahci_scan(k) == 0) {
-        puts("ahci dbg ctl=");
-        put_int(k);
-        puts(" dev=");
-        put_int(ahci_dev);
-        puts(" fun=");
-        put_int(ahci_fun);
-        puts(" id=");
-        put_hex(ahci_vid);
-        putc(':');
-        put_hex(ahci_did);
+        ahci_ki("ahci dbg ctl=", k);
+        ahci_ki(" dev=", ahci_dev);
+        ahci_ki(" fun=", ahci_fun);
+        ahci_kx(" id=", ahci_vid);
+        ahci_kx(":", ahci_did);
         let m = ahci_map_bar();
-        puts(" map=");
-        put_int(m);
+        ahci_ki(" map=", m);
         if (m == 0) {
-            puts(" abar=");
-            put_hex(ahci_mmio);
-            puts(" cap=");
-            put_hex(ahci_rd(0x00));
-            puts(" ghc=");
-            put_hex(ahci_rd(0x04));
-            puts(" pi=");
-            put_hex(ahci_rd(0x0C));
-            puts(" bohc=");
-            put_hex(ahci_rd(0x28));
+            ahci_kx(" abar=", ahci_mmio);
+            ahci_kx(" cap=", ahci_rd(0x00));
+            ahci_kx(" ghc=", ahci_rd(0x04));
+            ahci_kx(" pi=", ahci_rd(0x0C));
+            ahci_kx(" bohc=", ahci_rd(0x28));
             putc('\n');
             let pi = ahci_rd(0x0C);
             let n = 0;
             while (n < 32) {
                 if (((pi >> n) & 1) != 0) {
                     ahci_port = n;
-                    puts("ahci dbg ctl=");
-                    put_int(k);
-                    puts(" port=");
-                    put_int(n);
-                    puts(" ssts=");
-                    put_hex(ahci_pr(0x28));
-                    puts(" sig=");
-                    put_hex(ahci_pr(0x24));
-                    puts(" cmd=");
-                    put_hex(ahci_pr(0x18));
-                    puts(" tfd=");
-                    put_hex(ahci_pr(0x20));
-                    puts(" serr=");
-                    put_hex(ahci_pr(0x30));
+                    ahci_ki("ahci dbg ctl=", k);
+                    ahci_ki(" port=", n);
+                    ahci_kx(" ssts=", ahci_pr(0x28));
+                    ahci_kx(" sig=", ahci_pr(0x24));
+                    ahci_kx(" cmd=", ahci_pr(0x18));
+                    ahci_kx(" tfd=", ahci_pr(0x20));
+                    ahci_kx(" serr=", ahci_pr(0x30));
                     putc('\n');
                 }
                 n = n + 1;
@@ -499,8 +496,7 @@ fn ahci_dbg(r: i64) -> i64 {
         }
         k = k + 1;
     }
-    puts("ahci dbg ctrls=");
-    put_int(k);
+    ahci_ki("ahci dbg ctrls=", k);
     putc('\n');
     ahci_dev = sd;
     ahci_fun = sf;
