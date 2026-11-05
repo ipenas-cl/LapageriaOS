@@ -10,7 +10,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y nasm qemu-system-x86 socat
+      # ovmf explícito: antes solo llegaba como paquete recomendado de qemu-system-x86.
+      - run: sudo apt-get update && sudo apt-get install -y nasm qemu-system-x86 socat ovmf
+      - name: Firmware UEFI (qué instaló el paquete ovmf y cuál elige el Makefile)
+        run: |
+          qemu-system-x86_64 --version | head -1
+          dpkg -s ovmf | grep -E '^(Package|Version)'
+          ls -l /usr/share/OVMF /usr/share/qemu 2>&1 || true
+          make ovmf-info
+          # Sin firmware el Makefile hace SKIP del arranque UEFI: en CI eso es un fallo.
+          test -n "$(make -s ovmf-info | sed -n 's/^OVMF_CODE=//p')"
       - name: Build image (fetches Copihue at the tag pinned in the Makefile)
         run: make all
       - name: Boot smoke test in QEMU (10s)

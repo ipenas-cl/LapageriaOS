@@ -162,7 +162,7 @@ COPIHUE_KERNEL_SRC = $(KERNEL_SRC)/copihue/console.lap \
                      $(KERNEL_SRC)/copihue/shell.lap \
                      $(KERNEL_SRC)/copihue/kernel.lap
 
-.PHONY: all qemu qemu-test qemu-shell-test mkaxe-test qemu-axe2-test qemu-atk1-test qemu-fast-test qemu-burst-test qemu-stab-test qemu-big-test qemu-udp-test qemu-tcp-test qemu-trace-test qemu-zswitch-test qemu-iso-test qemu-fs2-test qemu-fs3-test qemu-ata-test qemu-ahci-test qemu-ahci-fs-test uefi-image uefi-pe-test qemu-uefi qemu-uefi-check qemu-uefi-test qemu-uefi-blk-test qemu-cpu-test debug clean help
+.PHONY: all ovmf-info qemu qemu-testqemu-shell-test mkaxe-test qemu-axe2-test qemu-atk1-test qemu-fast-test qemu-burst-test qemu-stab-test qemu-big-test qemu-udp-test qemu-tcp-test qemu-trace-test qemu-zswitch-test qemu-iso-test qemu-fs2-test qemu-fs3-test qemu-ata-test qemu-ahci-test qemu-ahci-fs-test uefi-image uefi-pe-test qemu-uefi qemu-uefi-check qemu-uefi-test qemu-uefi-blk-test qemu-cpu-test debug clean help
 
 # Imagen de arranque: LBA 0 etapa 1, LBA 1 etapa 2, LBA KERNEL_LBA el kernel.
 all: $(OS_IMAGE)
@@ -467,6 +467,10 @@ OVMF_VARS ?= $(firstword $(wildcard \
     /usr/share/edk2/x64/OVMF_VARS.4m.fd))
 OVMF_BIOS ?=
 export OVMF_CODE OVMF_VARS OVMF_BIOS
+
+# Qué firmware eligió el Makefile (lo imprime el job de CI antes de las pruebas).
+ovmf-info:
+	@echo "OVMF_CODE=$(OVMF_CODE)"; echo "OVMF_VARS=$(OVMF_VARS)"; echo "OVMF_BIOS=$(OVMF_BIOS)"
 
 $(UEFI_STUB): src/uefi/loader.lap $(COPIHUE) | $(BUILD_DIR)
 	mkdir -p $(UEFI_DIR)
