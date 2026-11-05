@@ -8,6 +8,16 @@ para ese commit es `legacy-tempo`.
 
 ## 0.8
 
+EX-08, pin de Copihue v0.44.3 (`ad9fd12`). (1) `zatk` se arma con
+`copihue --flat 0x400000 --axe1 --sizes`; el AXE1 es idéntico byte por byte al
+de `mkaxe.sh` y los ataques de AXE1, incluido el marco de 8 KiB, siguen en
+verde. `mkaxe.sh -a` acepta ahora AXE1 y AXE2 (`tests/mkaxe_test.sh` con casos
+nuevos). (2) `src/user/cal.lap`: `const N` en `[T; N]` y dos `align(4096) let`
+(datos en `0x401000`, bss en `0x402000`, comprobado con `--sizes` y corriendo
+en `exec cal`). (3) `make copihue-gaps-test` confirma que `f(x)[0] = v` se
+descarta sin aviso (pedido de prioridad alta). Kernel: 531240 bytes, 1038
+sectores (antes 523044 y 1022). Los otros AXE1 siguen armados a mano.
+
 HR-01, primera tajada de hardware moderno (UEFI, AHCI, NVMe). El camino BIOS +
 ATA no cambia. (1) UEFI: `src/uefi/stub.lap` es una aplicación EFI en Copihue,
 independiente de la posición, que escribe por COM1 y por `ConOut` y apaga con

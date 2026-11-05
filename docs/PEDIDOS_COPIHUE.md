@@ -2,11 +2,11 @@
 
 Lapageria rosea es el nombre científico del copihue; antes AtomicOS.
 
-Compilador fijado en el Makefile: v0.44.2, commit
-`eaadb4472935a542979ebfbd2f7d3c7ebf719212` (EX-06). `git -C build/copihue
-rev-parse HEAD` después del `make` devuelve ese commit. No se comprobó
-`git ls-remote` ni el objeto de la etiqueta, ni `HEAD` o `refs/heads/main`
-del remoto, ni la salida de `copihue --version`. En EX-05 el pin era v0.44.1
+Compilador fijado en el Makefile: v0.44.3, commit
+`ad9fd12372966073ecceea279c82e2b8b15a9262` (EX-08). `git ls-remote` de la
+etiqueta `v0.44.3` devolvió ese commit y `git -C build/copihue rev-parse HEAD`
+después del `make` también. Hasta EX-07 el pin era v0.44.2
+(`eaadb4472935a542979ebfbd2f7d3c7ebf719212`). En EX-05 el pin era v0.44.1
 (`20c46c72ecec4d3190cf5c7ad8a534a259c92b7f`) y hasta EX-04 v0.42.5
 (`ea898c6c2be6f1a1686cf06c5050c31e726ef177`); cada sección de más
 abajo dice con qué versión se escribió.
@@ -17,6 +17,62 @@ pidió nada: `syscall fn` con 6 parámetros, `syscall(n, a1..a5)` en anillo
 Sin `asm()` nuevo. Una función de 7 parámetros (`udp_recv`; el séptimo es
 el plazo) compila y la prueba de plazo la ejerce; `udp_park` usa globales
 por prudencia, no porque haya fallado algo.
+
+## EX-08 (pin v0.44.3: `--axe1`, `const`, `align(4096) let`)
+
+**CERRADOS, integrados y probados** (pedidos de EX-07, puntos 1 a 3):
+
+- **`--axe1`.** `zatk` (`src/user/ataque.lap`) sale ahora de
+  `copihue --flat 0x400000 --axe1 --sizes`: 16 bytes de cabecera, tamaño de
+  imagen, entrada. El archivo es **byte por byte igual** al que armaba
+  `mkaxe.sh` a mano (2288 bytes: 16 + 2272, entrada `0x400000`; `cmp` contra el
+  de antes). `mkaxe.sh -a` ahora acepta AXE1 y AXE2 (el magic decide), valida
+  la cabecera y deja el `.lap`. La entrada y la E/S (`0x401000`) calzan con lo
+  que espera el kernel: no hubo desajuste. Los 16 ataques de AXE1 y los 4 de la guarda, incluido
+  `zatk y` (marco de 8 KiB, sondeo de pila, `0x40Exxx`), pasan con el archivo
+  del compilador. Los demás AXE1 (hola, zona, par, udp, tcp…) siguen por
+  `mkaxe.sh` a mano: se pasó uno, no todos.
+- **`const`.** `const N = 8;` sirve como largo de `[T; N]` en globales y
+  locales, en los topes de `while` y como dirección (`const DATA = 0x401000;`
+  en `as *u8`). Sin problemas en `src/user/cal.lap`. Las constantes de dirección
+  de `ataque.lap`, `atk2.lap` y demás **no** se migraron todavía.
+- **`align(4096) let`.** En `--axe2`, `cal.lap` tiene `align(4096) let tab` (con
+  valor) y `align(4096) let zbuf` (bss). `--sizes` da `data_at=0x401000` y
+  `bss_at=0x402000` (el Makefile lo exige con `chksizes.sh`) y `exec cal`, en
+  QEMU, lee y escribe `tab` y `zbuf` por nombre y por dirección: `cal ok`, 9
+  páginas devueltas. El layout es el documentado. `pag2` y `atk2` no se
+  tocaron: siguen con el largo del último `let` ajustado a mano (12 + 4084;
+  20 + 8172).
+
+**Cosas que no se probaron o que no cuadran:**
+
+1. **AXE1 con `let` globales.** La cabecera AXE1 no separa texto y datos y el
+   kernel carga la imagen como una sola página de código (por lo que dice docs/exec.md; no se miró de nuevo el mapa). `--axe1` los acepta
+   mientras quepan en una página; un `let` con valor podría quedar en una página de
+   solo lectura y uno sin valor, fuera de la imagen (hipótesis, no se probó); `zatk` no
+   tiene globales y el Makefile exige `data=0 bss=0`. Se pide que `--axe1`
+   rechace `let` globales (o que el kernel los trate como `AXE2`).
+2. **`align(4096) let` en `--axe1`** no cabe en la página (lo dice la
+   documentación de Copihue, error `--axe1: the image is ...`); no se probó
+   aquí.
+3. **`align(4096) let` en el kernel** (`--flat 0xFFFFFFFF80400000`): no se
+   probó; la alineación depende de que la dirección de carga sea múltiplo de
+   4096 y el kernel no usa `align` hoy.
+4. **`const` en el kernel** (`ATA_PIT_PERIOD`, topes de `parcpu`, etc.): sin
+   migrar. Es trabajo de otra tarea, no un fallo de v0.44.3.
+
+**ABIERTO, PRIORIDAD ALTA: `f(x)[0] = v` se descarta sin aviso** (HR-01 punto 1).
+Confirmado en v0.44.3 con `make copihue-gaps-test`
+(`tests/copihue_gaps_test.sh`, `tests/copihue/storecall.lap`). Con
+`fn mem(off: i64) -> *u32` y `fn poke() { mem(8)[0] = 5; }` el compilador no da
+error ni aviso y el asm de `poke` es solo `mov rax, 5` / `push rax` / `xor rax,
+rax`: ni siquiera llama a `mem`, y no hay store. Un driver que escribe así deja
+el hardware sin comando y sin diagnóstico. Se pide error de compilación o que
+emita el store. El resto de HR-01 (puntos 2 a 6) sigue abierto sin cambios.
+
+Siguen abiertos de EX-07: el costo de embeber programas en el kernel (el
+kernel pasó de 523044 a 531240 bytes por `cal`), el `hint: use 'as u8'` y el
+aviso de nasm 3.x.
 
 ## HR-01 (UEFI y AHCI), con Copihue v0.44.2
 

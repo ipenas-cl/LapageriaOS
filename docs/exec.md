@@ -288,3 +288,21 @@ lectura falla por checksum y no hay proceso.
 
 `exec plant` escribe `hola`, `malo` y `gordo` en la raíz, después de `fs blocks`
 (el directorio de la raíz guarda hasta 64 entradas; ver fs.md).
+
+## AXE1 y `const` / `align(4096) let` desde el compilador (EX-08)
+
+Con Copihue v0.44.3, `copihue --flat 0x400000 --axe1 [--sizes] -o p.axe p.lap`
+escribe el AXE1 entero: 16 bytes de cabecera (magic, tamaño de la imagen u32,
+entrada u64 = dirección de `_start`) y la imagen, de 1 a 4080 bytes. `zatk`
+(`src/user/ataque.lap`) se arma así (`make`: `--sizes` se compara con
+`scripts/chksizes.sh` y `mkaxe.sh -a` valida la cabecera y deja el `.lap`);
+el archivo es idéntico byte por byte al que armaba `mkaxe.sh` a mano y los
+ataques de AXE1 pasan igual. Los otros AXE1 siguen por `mkaxe.sh`. La cabecera
+AXE1 no separa texto y datos: un AXE1 del compilador no debería tener `let`
+globales (ver `docs/PEDIDOS_COPIHUE.md`, EX-08).
+
+`src/user/cal.lap` (`exec axe2plant` lo escribe como `cal`; `exec cal`) es un
+AXE2 de 3 páginas con `const N = 8;` como largo de `[u8; N]` (globales y local)
+y dos `align(4096) let`: `tab` (con valor) en `0x401000` y `zbuf` (bss) en
+`0x402000`. `--sizes` dice `data_at=0x401000` y `bss_at=0x402000`, y el programa
+las lee por nombre y por dirección. Imprime `cal ok` y devuelve 9 páginas.
