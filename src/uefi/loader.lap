@@ -10,13 +10,14 @@
 // El kernel es el mismo binario plano que carga el camino BIOS. Ver
 // docs/hr02-uefi-ahci.md para lo que esto NO resuelve (VGA, ACPI, Secure Boot).
 //
-// Se compila con `copihue --flat 0x1000` y src/uefi/pe.asm lo envuelve en un
-// PE32+ (BOOTX64.EFI, subsistema 10). 0x1000 es el RVA de .text; el entry es el
-// primer byte (`_start`).
+// Se compila con `copihue --flat 0x1000 --pic` y src/uefi/pe.asm lo envuelve en
+// un PE32+ (BOOTX64.EFI, subsistema 10). 0x1000 es el RVA de .text; el entry es
+// el primer byte (`_start`).
 //
-// Independiente de la posición: ninguna global, ninguna cadena de Copihue (esas
-// se direccionan en absoluto). Los datos van en bloques `data` y se alcanzan con
-// `lea reg, [rel etiqueta]` desde funciones `naked`. Lo que el firmware escribe
+// Independiente de la posición (--pic): ninguna global. Los datos van en bloques
+// `data` y se alcanzan con `&bloque` (el compilador emite `lea reg, [rel ..]`).
+// Quedan tres `naked fn`: _start (entrada MS, ver abajo), el trampolín (se copia
+// a 0x7000 y usa `lea [rel]` de sí mismo) y efi_enter. Lo que el firmware escribe
 // por puntero (HandleProtocol, Open, GetMemoryMap...) cae en un bloque de
 // 512 bytes de la pila de _start, que se pasa como `sa`: w[0..63].
 //
