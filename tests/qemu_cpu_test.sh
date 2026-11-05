@@ -234,6 +234,13 @@ windows=$(( (tot + idle + ${totb:-0} + 19) / 20 ))
 [ "$idle" -ge $((solo * 2)) ] || fail "tope duro: idle=$idle contra solo=$solo; esperaba idle >= 2*solo con cuota 5/20"
 echo "ok   tope duro 5/20 con za sola: tot=$tot solo=$solo idle=$idle en $windows ventanas (tot <= 5*ventanas), thr=$thr; termina sin fuga"
 
+# zone ls (OB-03) muestra la cuota y el uso de cada zona: lo mismo que `zone cpu`.
+typewait "zone ls" 30
+win "zone ls" | grep -qx "zone 1 za root=/zonas/za .* cpu=5/20 tot=$tot" || fail "zone ls sin cpu=5/20 tot=$tot para za: $(win 'zone ls' | tr '\n' '|')"
+win "zone ls" | grep -qx "zone 2 zb root=/zonas/zb .* cpu=0/20 tot=$totb" || fail "zone ls sin cpu=0/20 tot=$totb para zb: $(win 'zone ls' | tr '\n' '|')"
+win "zone ls" | grep -qx "zone 0 global root=/ .* cpu=0/20 tot=[0-9]*" || fail "zone ls sin cpu de la global: $(win 'zone ls' | tr '\n' '|')"
+echo "ok   zone ls: cuota y uso de CPU por zona (za cpu=5/20 tot=$tot, zb cpu=0/20 tot=$totb), iguales a zone cpu"
+
 # 4. Tope de lecturas (OB-03): el modo n9 pide 90 ticks pero lee el contador
 # solo 1000 veces (unos ms), así que no llega y debe salir solo, dejando '0' en
 # r1, mucho antes del plazo de 60 s.
