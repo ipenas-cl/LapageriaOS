@@ -158,6 +158,18 @@ fn do_d(s: i64) {
     put_result(1, 5);
 }
 
+// 'h' gasta CPU: 100 millones de vueltas sin una sola syscall, y sale. Sirve
+// para medir la cuota de CPU de la zona (`zone cpu`): lo que importa son los
+// ticks que el kernel le cobra, no cuánto tarda el anfitrión.
+fn hog() {
+    let i: i64 = 0;
+    let s: i64 = 0;
+    while (i < 100000000) {
+        s = s + i;
+        i = i + 1;
+    }
+}
+
 fn run() {
     let s: i64 = syscall(25, 0);
     let m: i64 = *(0x401C00 as *u8);
@@ -177,6 +189,7 @@ fn run() {
     if (m == 115) { do_s(s); }
     if (m == 103) { do_g(s); }
     if (m == 100) { do_d(s); }
+    if (m == 104) { hog(); }
 }
 
 // El modo por defecto es 'y': un archivo que no se puede leer deja ahí la

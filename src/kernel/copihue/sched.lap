@@ -189,12 +189,83 @@ fn switch_to(n: i64) -> i64 {
     return 0;
 }
 
+// ---- cuota de CPU por zona (FS-04/3, docs/zonas.md) ----
+// Ventana fija de 20 ticks del PIT. zcpu_q[z] son los ticks por ventana que
+// la zona z puede gastar (0 = sin límite); zcpu_use[z] los que lleva en la
+// ventana. Un tick se le cobra a la zona del proceso que corría. Con la
+// cuota gastada, la zona cede la CPU al otro proceso hasta que la ventana
+// se renueva (en el tick 20). Si no hay otro proceso listo, sigue corriendo:
+// no hay tarea ociosa a la que dejar la CPU.
+// Todo se mide en ticks (no en tiempo del anfitrión), y los contadores son
+// los que mira la prueba: zcpu_tot (ticks cobrados), zcpu_cont (los cobrados
+// con otro proceso listo) y zcpu_thr (veces que la cuota la sacó de la CPU).
+let zcpu_q: [i64; 8];
+let zcpu_use: [i64; 8];
+let zcpu_tot: [i64; 8];
+let zcpu_cont: [i64; 8];
+let zcpu_thr: [i64; 8];
+let volatile zcpu_win: i64 = 0;
+
+fn zcpu_throttled(z: i64) -> i64 {
+    if (z < 1 || z >= 8) { return 0; }
+    if (zcpu_q[z] <= 0) { return 0; }
+    return zcpu_use[z] >= zcpu_q[z];
+}
+
+fn zcpu_reset(z: i64) -> i64 {
+    zcpu_q[z] = 0;
+    zcpu_use[z] = 0;
+    zcpu_tot[z] = 0;
+    zcpu_cont[z] = 0;
+    zcpu_thr[z] = 0;
+    return 0;
+}
+
+// Ventana nueva: la corrida empieza con todas las zonas sin gasto.
+fn zcpu_window_start() -> i64 {
+    zcpu_win = 0;
+    let i = 0;
+    while (i < 8) {
+        zcpu_use[i] = 0;
+        i = i + 1;
+    }
+    return 0;
+}
+
+// Un tick del PIT con el planificador prendido: cobra al proceso que corría
+// y renueva la ventana cada 20 ticks.
+fn zcpu_tick() -> i64 {
+    if (proc_state[cur_i] == 2) {
+        let z = proc_zone[cur_i];
+        if (z >= 0 && z < 8) {
+            zcpu_use[z] = zcpu_use[z] + 1;
+            zcpu_tot[z] = zcpu_tot[z] + 1;
+            if (other_runnable(cur_i) >= 0) { zcpu_cont[z] = zcpu_cont[z] + 1; }
+        }
+    }
+    zcpu_win = zcpu_win + 1;
+    if (zcpu_win >= 20) {
+        zcpu_win = 0;
+        let i = 0;
+        while (i < 8) {
+            zcpu_use[i] = 0;
+            i = i + 1;
+        }
+    }
+    return 0;
+}
+
 fn timer_should_switch() -> i64 {
     if (sched_on == 0) { return 0; }
     if ((saved_cs & 3) != 3) { return 0; }
     let n = other_runnable(cur_i);
     if (n < 0) { return 0; }
     if (proc_ksp[n] == 0) { return 0; }
+    // El otro agotó su cuota y yo no: sigo yo. Si es al revés, me saco.
+    if (zcpu_throttled(proc_zone[n]) != 0 && zcpu_throttled(proc_zone[cur_i]) == 0) { return 0; }
+    if (zcpu_throttled(proc_zone[cur_i]) != 0 && zcpu_throttled(proc_zone[n]) == 0) {
+        zcpu_thr[proc_zone[cur_i]] = zcpu_thr[proc_zone[cur_i]] + 1;
+    }
     proc_ksp[cur_i] = saved_ksp;
     switch_to(n);
     nswitch_timer = nswitch_timer + 1;
@@ -219,6 +290,8 @@ fn user_rbp() -> i64 {
 fn yield_current() -> i64 {
     let n = other_runnable(cur_i);
     if (n < 0 || proc_ksp[n] == 0) { return 0; }
+    // No se cede a una zona con la cuota agotada si la mía no la agotó.
+    if (zcpu_throttled(proc_zone[n]) != 0 && zcpu_throttled(proc_zone[cur_i]) == 0) { return 0; }
     read_user_ctx();
     uctx_rfl = uctx_rfl | 0x202;
     let urbp = user_rbp();

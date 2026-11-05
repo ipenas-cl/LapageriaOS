@@ -8,6 +8,17 @@ para ese commit es `legacy-tempo`.
 
 ## 0.8
 
+FS-04. (1) El `exec fail 1` con `-icount shift=4` era un timeout ATA: las
+esperas del estado (BSY, DRQ, fin de escritura) acababan a las 200000
+lecturas de `inb`, que miden instrucciones, mientras QEMU completa la E/S en
+tiempo del anfitrión; con varias QEMU a la vez el tope se agotaba antes que
+el disco. Ahora se espera por ticks del PIT con `hlt` (5 s). Prueba
+`tests/qemu_ata_test.sh`. (2) `fs rm -r` rechaza `/`, `/zonas`,
+`/zonas/<nombre>` y rutas con `.`, `..` o componentes vacíos; nuevo
+`zone rm <nombre> <ruta>` (borrado dentro de la raíz de la zona). (3) Cuota
+de CPU por zona: `zone cpu <nombre> <n>` (n ticks por ventana de 20), con
+contadores y `tests/qemu_cpu_test.sh`.
+
 FS-03, estabilidad de pruebas, migración y borrado (`docs/fs.md`).
 `tests/qemu_iso_test.sh` ya no es una carrera: el modo `s` de `par` mataba al
 pid 2 tras una sola cesión dando por hecho que ya había escrito `r2`; si el PIT

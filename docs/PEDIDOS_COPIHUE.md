@@ -16,6 +16,19 @@ Sin `asm()` nuevo. Una función de 7 parámetros (`udp_recv`; el séptimo es
 el plazo) compila y la prueba de plazo la ejerce; `udp_park` usa globales
 por prudencia, no porque haya fallado algo.
 
+## FS-04 (espera ATA por ticks, `fs rm -r` con guardas, cuota de CPU), con Copihue v0.42.5
+
+Sin pedidos que bloqueen nada; `read_rflags()` (para saber si IF está
+prendido antes de un `hlt`) compiló a la primera. Dos puntos:
+
+1. **Sin `const` / constantes con nombre.** Los valores del driver ATA (tope de
+   500 ticks, ventana de 20 ticks de la cuota) están como literales repetidos,
+   igual que en FS-03. Sigue valiendo el pedido de RD-03.
+2. **Sin optimización de bucles ni de locales.** Un bucle de tres líneas
+   (`par.lap`, modo `h`) cuesta unos 120 bytes de código; `par` queda en 4052
+   bytes de los 4080 que admite `mkaxe.sh`. Un modo nuevo en `par` ya no cabe:
+   haría falta otro programa o un `.axe` de más de una página.
+
 ## FS-03 (migración v1 a v2, `fs snap rm`, `fs rm -r`), con Copihue v0.42.5
 
 Sin pedidos nuevos y sin contornos: `fs_migrate`, `fs_snap_remove` y
