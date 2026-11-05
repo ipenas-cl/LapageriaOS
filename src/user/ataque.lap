@@ -26,6 +26,8 @@
 //   's' desbordar la pila con una recursión sin fin (cae en la guarda)
 //   't' leer el primer byte de la guarda
 //   'v' rsp dentro de la guarda y un push
+//   'y' marco local de 8 KiB: desde Copihue v0.44.2 el prólogo sondea la pila
+//       de a una página y cae en la guarda (0x40Exxx) antes de que corra el cuerpo
 //
 // Cada ataque tiene que matar al proceso con un fallo, así que el mensaje
 // `atk survived` solo sale si el kernel NO lo negó. Los mensajes comparten
@@ -49,6 +51,15 @@ naked fn jump_to(a: i64) {
 naked fn sp_push(a: i64) {
     rsp = rdi;
     push(0);
+}
+
+// Marco local de 8 KiB: más de una página bajo el tope de la pila (0x410000).
+// Con el sondeo de v0.44.2 el prólogo toca 0x40Exxx, la guarda, y el proceso
+// muere en #PF antes de que corra el cuerpo.
+fn big_frame() -> i64 {
+    let b: [u8; 8192];
+    b[0] = 1;
+    return b[0];
 }
 
 // Recursión sin fin: cada marco guarda n en la pila.
@@ -177,6 +188,7 @@ fn attack(m: i64) {
     if (m == 115) { x = deep(0); }
     if (m == 116) { x = *(0x40E000 as *u8); }
     if (m == 118) { sp_push(0x40E800); }
+    if (m == 121) { x = big_frame(); }
     if (x == 123456) { emit(88); }
     say_survived();
 }

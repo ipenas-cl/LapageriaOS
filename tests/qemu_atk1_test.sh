@@ -179,6 +179,10 @@ base_n=$attack_n
 atk_run s 14 0x00000006 '0x000000000040e[0-9a-f]{3}'
 atk_run t 14 0x00000004 0x000000000040e000
 atk_run v 14 0x00000006 0x000000000040e7f8
+# EX-07: marco local de 8 KiB. Desde Copihue v0.44.2 el prólogo sondea la pila de
+# a una página: el segundo sondeo toca 0x40Exxx y es un #PF antes de que corra el
+# cuerpo (el `or` sobre una página sin mapa da err=0x4, como en AXE2).
+atk_run y 14 0x00000004 '0x000000000040e[0-9a-f]{3}'
 guard_n=$((attack_n - base_n))
 typewait "zone ls" 100
 zk=$(tr -d '\r' < "$SERIAL" | grep -E '^zone [0-9]+ k root=/zonas/k ' | tail -1)
@@ -188,9 +192,9 @@ printf '%s\n' "$zk" | grep -q 'proc=0/' || fail "zone k kept a process after bei
 typewait "echo vivo2" 50
 has "vivo2" || fail "shell did not answer after the attacks"
 [ "$base_n" = 16 ] || fail "esperaba 16 ataques AXE1 de base, corrieron $base_n"
-[ "$guard_n" = 3 ] || fail "esperaba 3 ataques a la guarda, corrieron $guard_n"
+[ "$guard_n" = 4 ] || fail "esperaba 4 ataques a la guarda, corrieron $guard_n"
 echo "ok   ring 3 vs AXE1: $base_n ataques (leer/escribir kernel, ejecutar kernel, ejecutar pila y página NX, escribir su código, no canónica, sin mapa, #UD, #DE x3, int 3) mataron solo al proceso"
-echo "ok   guarda de la pila AXE1 (0x40E000): recursión sin fin, leer la guarda y push con rsp en ella ($guard_n ataques) mataron solo al proceso, zona k sin páginas"
+echo "ok   guarda de la pila AXE1 (0x40E000): recursión sin fin, leer la guarda, push con rsp en ella y marco local de 8 KiB con el sondeo de v0.44.2 ($guard_n ataques) mataron solo al proceso, zona k sin páginas"
 
 # EX-04: el desborde mata solo a ese proceso. exec2 corre dos AXE1 a la vez en la
 # zona 0, zatk en modo 's' (recursión sin fin) y hola; hola termina bien y
