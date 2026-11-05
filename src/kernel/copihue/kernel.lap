@@ -23,6 +23,7 @@ import "blk.lap";
 import "fs.lap";
 import "exec_img.lap";
 import "grande_img.lap";
+import "pag2_img.lap";
 import "exec.lap";
 import "zone_img.lap";
 import "atk_img.lap";

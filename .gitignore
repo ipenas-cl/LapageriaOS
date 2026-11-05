@@ -5,6 +5,7 @@ build/
 # Bytes del ejecutable de usuario, generados por scripts/mkaxe.sh.
 src/kernel/copihue/exec_img.lap
 src/kernel/copihue/grande_img.lap
+src/kernel/copihue/pag2_img.lap
 src/kernel/copihue/zone_img.lap
 src/kernel/copihue/atk_img.lap
 src/kernel/copihue/par_img.lap

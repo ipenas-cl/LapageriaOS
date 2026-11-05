@@ -177,6 +177,18 @@ fn exec_plant_big() -> i64 {
     return 0;
 }
 
+// `exec axe2plant` (EX-02): escribe en la raíz `pag2`, el AXE2 que armó
+// scripts/mkaxe.sh con texto, datos y bss (src/user/pag2.lap). Los bytes de
+// pag2_fill llegan tal cual: la cabecera la hizo mkaxe, no el kernel.
+fn exec_plant_axe2() -> i64 {
+    let n = pag2_fill(exec_buf);
+    if (n < 33 || n > 65568) { return exec_fail(9); }
+    let r = fs_write("pag2", exec_buf, n);
+    if (r != 0) { return exec_fail(r); }
+    puts("exec axe2 plant ok\n");
+    return 0;
+}
+
 // Lee `fs_name` y valida la cabecera. Deja la imagen en exec_code y su
 // descriptor en la ranura 0. Devuelve la entrada, o 0 tras imprimir el error.
 fn exec_prepare() -> i64 {
@@ -362,5 +374,6 @@ fn cmd_exec() -> i64 {
     if (pos < 0) { return exec_fail(11); }
     if (exec_is("plant")) { return exec_plant(); }
     if (exec_is("bigplant")) { return exec_plant_big(); }
+    if (exec_is("axe2plant")) { return exec_plant_axe2(); }
     return exec_run();
 }

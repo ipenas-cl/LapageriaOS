@@ -1,0 +1,156 @@
+// Programa de dos páginas de imagen más bss (EX-02). copihue --flat 0x400000.
+// Corre como AXE2 armado por scripts/mkaxe.sh: el compilador todavía no
+// emite datos ni bss en --flat (docs/PEDIDOS_COPIHUE.md), así que este
+// código es solo el texto y las páginas de datos las pone el empaquetador:
+//
+//   0x400000  texto (esta página): lectura y ejecución, sin escritura
+//   0x401000  datos (build/pag2.dat, 4096 bytes): lectura y escritura, NX
+//   0x402000  bss: en cero, sin archivo; lectura y escritura, NX
+//   0x410000  página de E/S      0x411000  pila
+//
+// La página de datos trae "SEG2" en el byte 0, DE AD BE EF en el 0x800, 0x5A
+// en el último (0xFFF) y ceros en el resto. Pasos:
+//
+//   1 lee los marcadores de la segunda página
+//   2 comprueba que el resto de la segunda página está en cero
+//   3 escribe la segunda página entera y la lee de vuelta
+//   4 comprueba que la página de bss está en cero
+//   5 escribe la bss y la lee de vuelta
+//   6 comprueba que la escritura en la bss no tocó la segunda página
+//   7 escribe y lee la página de E/S (0x410000)
+//
+// Imprime `pag2 ok`, o `pag2 fail N` con el paso que falló. Sin cadenas:
+// cada mensaje va por la syscall 1, de a 8 bytes (say8).
+
+naked fn emit(c: i64) {
+    rax = 1;
+    syscall();
+}
+
+fn say8(w: i64) {
+    let x: i64 = w;
+    while (x != 0) {
+        emit(x & 255);
+        x = x >> 8;
+    }
+}
+
+fn say_ok() {
+    say8(0x0a6b6f2032676170);
+}
+
+fn say_fail(n: i64) {
+    say8(0x6961662032676170);
+    emit(108);
+    emit(32);
+    emit(48 + n);
+    emit(10);
+}
+
+fn get(a: i64) -> i64 {
+    let p: *u8 = a as *u8;
+    let v: i64 = p[0];
+    return v & 255;
+}
+
+fn put(a: i64, v: i64) {
+    let p: *u8 = a as *u8;
+    p[0] = v as u8;
+}
+
+// 1 si el byte `off` de la página de datos es uno de los marcadores.
+fn marked(off: i64) -> i64 {
+    if (off < 4) { return 1; }
+    if (off >= 0x800 && off < 0x804) { return 1; }
+    if (off == 0xFFF) { return 1; }
+    return 0;
+}
+
+fn check_marks() -> i64 {
+    if (get(0x401000) != 0x53 || get(0x401001) != 0x45) { return 1; }
+    if (get(0x401002) != 0x47 || get(0x401003) != 0x32) { return 1; }
+    if (get(0x401800) != 0xDE || get(0x401801) != 0xAD) { return 1; }
+    if (get(0x401802) != 0xBE || get(0x401803) != 0xEF) { return 1; }
+    if (get(0x401FFF) != 0x5A) { return 1; }
+    return 0;
+}
+
+fn check_rest() -> i64 {
+    let k: i64 = 0;
+    while (k < 4096) {
+        if (marked(k) == 0 && get(0x401000 + k) != 0) { return 2; }
+        k = k + 1;
+    }
+    return 0;
+}
+
+fn write_second() -> i64 {
+    let k: i64 = 0;
+    while (k < 4096) {
+        put(0x401000 + k, (k * 5 + 1) & 255);
+        k = k + 1;
+    }
+    k = 0;
+    while (k < 4096) {
+        if (get(0x401000 + k) != ((k * 5 + 1) & 255)) { return 3; }
+        k = k + 1;
+    }
+    return 0;
+}
+
+fn check_bss() -> i64 {
+    let k: i64 = 0;
+    while (k < 4096) {
+        if (get(0x402000 + k) != 0) { return 4; }
+        k = k + 1;
+    }
+    return 0;
+}
+
+fn write_bss() -> i64 {
+    let k: i64 = 0;
+    while (k < 4096) {
+        put(0x402000 + k, (k ^ 0x3C) & 255);
+        k = k + 1;
+    }
+    k = 0;
+    while (k < 4096) {
+        if (get(0x402000 + k) != ((k ^ 0x3C) & 255)) { return 5; }
+        k = k + 1;
+    }
+    return 0;
+}
+
+fn still_second() -> i64 {
+    let k: i64 = 0;
+    while (k < 4096) {
+        if (get(0x401000 + k) != ((k * 5 + 1) & 255)) { return 6; }
+        k = k + 1;
+    }
+    return 0;
+}
+
+fn io_page() -> i64 {
+    put(0x410000, 0x42);
+    put(0x410FFF, 0x24);
+    if (get(0x410000) != 0x42 || get(0x410FFF) != 0x24) { return 7; }
+    return 0;
+}
+
+fn pag2_main() {
+    let r: i64 = check_marks();
+    if (r == 0) { r = check_rest(); }
+    if (r == 0) { r = write_second(); }
+    if (r == 0) { r = check_bss(); }
+    if (r == 0) { r = write_bss(); }
+    if (r == 0) { r = still_second(); }
+    if (r == 0) { r = io_page(); }
+    if (r == 0) { say_ok(); } else { say_fail(r); }
+}
+
+naked fn _start() {
+    pag2_main();
+    rax = 5;
+    syscall();
+    hlt();
+}
