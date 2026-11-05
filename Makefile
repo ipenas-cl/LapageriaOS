@@ -443,7 +443,7 @@ $(TRAZA_IMG): src/user/traza.lap scripts/mkaxe.sh $(COPIHUE) | $(BUILD_DIR)
 # UEFI (HR-01 stub, HR-02 cargador). Una aplicación EFI en Copihue
 # (src/uefi/loader.lap) envuelta en PE32+ por src/uefi/pe.asm. Lee kernel.bin de
 # la ESP, sale de los servicios de arranque y salta al kernel; ver
-# docs/hr02-uefi-ahci.md. Se compila con --flat 0x1000 (RVA de .text) y es
+# docs/hr02-uefi-ahci.md. Se compila con --flat 0x1000 --pic (RVA de .text) y es
 # independiente de la posición. La ESP es un directorio (fat:rw:), sin mkfs.
 UEFI_DIR = $(BUILD_DIR)/uefi
 UEFI_STUB = $(UEFI_DIR)/loader.bin
@@ -474,8 +474,8 @@ ovmf-info:
 
 $(UEFI_STUB): src/uefi/loader.lap $(COPIHUE) | $(BUILD_DIR)
 	mkdir -p $(UEFI_DIR)
-	$(abspath $(COPIHUE)) --flat 0x1000 -S -o $(UEFI_DIR)/loader.asm $<
-	$(abspath $(COPIHUE)) --flat 0x1000 -o $@ $<
+	$(abspath $(COPIHUE)) --flat 0x1000 --pic -S -o $(UEFI_DIR)/loader.asm $<
+	$(abspath $(COPIHUE)) --flat 0x1000 --pic -o $@ $<
 	@test $$(wc -c < $@ | tr -d ' ') -le 32768 || { echo "uefi loader: pasa de 32 KiB"; rm -f $@; exit 1; }
 
 $(UEFI_EFI): $(UEFI_STUB) src/uefi/pe.asm
