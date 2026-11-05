@@ -14,8 +14,9 @@ parte en el bloque 2.
 
 **Versión 2.** El superbloque dice versión 2. Un disco con versión 1
 (el directorio plano de 7 archivos) se rechaza: el shell imprime
-`fs old version` y no toca nada. `fs format` lo reescribe en versión 2;
-no hay migración, los archivos del disco viejo se pierden.
+`fs old version` y no toca nada. `fs migrate` lo pasa a versión 2 sin
+perder nada (ver [Migración v1 a v2](#migración-v1-a-v2)); `fs format` lo
+reescribe vacío.
 
 ## Superbloque
 
@@ -135,6 +136,9 @@ superbloque, y solo cuando ya hay una copia más nueva.
 | `fs_snapshot(name)` | guarda la raíz actual |
 | `fs_read_snap(snap, ruta, buf, max)` | lee esa raíz, no la viva |
 | `fs_rollback(snap)` | la raíz viva pasa a ser la del snapshot |
+| `fs_snap_remove(snap)` | saca el snapshot y libera lo que solo él mantenía |
+| `fs_remove_tree(ruta)` | saca un archivo o un directorio con todo lo de abajo |
+| `fs_migrate` | pasa un disco versión 1 a versión 2 en el sitio |
 | `fs_scrub` | recorre todo y verifica cada CRC (abajo) |
 
 Los códigos positivos de `fs_write` y compañía, y el valor absoluto de
@@ -159,6 +163,9 @@ Las rutas van con `/`; `fs write /a/b/f hola`.
 | `fs cat <ruta>` | `fs live <texto>`, o `fs empty` |
 | `fs ls [ruta]` | `fs file <nombre>` o `fs dir <nombre>`, uno por línea, en el orden de creación. Sin ruta: la raíz |
 | `fs rm <ruta>` | archivo o directorio vacío. `fs rm ok` |
+| `fs rm -r <ruta>` | borrado recursivo: la carpeta con sus subcarpetas y archivos (o un archivo). `fs rm -r ok`. Libera lo que nadie más usa; lo que un snapshot todavía apunta se queda. `-r` solo es la opción si le sigue una ruta; `/` se rechaza (11) |
+| `fs snap rm <nombre>` | borra el snapshot y libera los bloques que solo él usaba. `fs snap rm ok`; 7 si no existe. `rm` está reservado: no se puede crear un snapshot con ese nombre (11) |
+| `fs migrate` | migra un disco v1 a v2. `fs migrate ok snaps=S files=F`; en un disco que ya es v2, `fs migrate not needed` |
 | `fs stat <ruta>` | `fs stat file size=N blocks=K ino=I first=B` (o `dir`) |
 | `fs snap <nombre>` | guarda la raíz (hasta 8). `fs snap ok` |
 | `fs snap <nombre> <ruta>` | lee la ruta del snapshot: `fs snap <texto>` |
@@ -195,15 +202,61 @@ baja a lo que cuelga de él: esos bloques no se cuentan ni se reportan.
 Un disco de versión 1 o sin formato no se recorre (`fs old version`,
 `fs fail 8`).
 
+## Migración v1 a v2
+
+`fs migrate` convierte en el sitio un disco versión 1: directorio plano de
+hasta 7 archivos de hasta 8 bloques (magic `ADIR`, entradas de 64 bytes),
+la raíz viva y hasta 8 snapshots. Un bloque de datos v1 es el contenido, igual
+que en v2, así que **se reusa sin copiarlo**: cada archivo gana un inodo
+(`AINO`) que apunta a sus bloques y cada raíz gana un directorio v2 con
+las mismas entradas y en el mismo orden.
+
+Pasos, en este orden:
+
+1. Monta la copia v1 viva (la de mayor generación con magic, versión 1 y CRC).
+   Si algún superbloque ya es v2, no hace nada (`fs migrate not needed`); si
+   no hay ninguno, `fs fail 8`.
+2. Valida **todas** las raíces sin escribir: magic del directorio, hasta 7
+   entradas, nombres que v2 acepta (1 a 15 bytes imprimibles, sin `/`, ni `.`
+   ni `..`, no repetidos), tamaño coherente con la cantidad de bloques y cada
+   bloque de datos legible con su CRC. Marca en el bitmap todo lo que usan,
+   así lo que se asigne después no pisa un bloque en uso aunque el bitmap
+   viejo lo diera por libre.
+3. Escribe inodos y directorios v2 solo en bloques libres. Un archivo con el
+   mismo tamaño y los mismos bloques que otro ya convertido comparte su
+   inodo, y una raíz idéntica a otra (un snapshot sin cambios desde entonces)
+   comparte su directorio: lo que v1 compartía sigue compartido.
+4. Apunta la raíz y cada snapshot a su directorio v2, libera con `fs_gc` los
+   directorios v1 que quedaron sin dueño y publica el superbloque v2 con la
+   generación siguiente en la otra copia.
+5. Reescribe la copia v1 vieja como v2 con la generación anterior. Así un
+   disco migrado no conserva ningún superbloque v1 que pudiera volver a
+   montarse como viejo.
+
+Hasta el paso 4 el disco sigue siendo v1 y válido: ningún bloque v1 se toca y
+el superbloque no cambia. Si algo falla o se corta la luz antes de publicar,
+a lo sumo quedan bloques v2 sueltos que v1 da por libres. Códigos de
+`fs migrate`: 5 un bloque con CRC malo, 6 no hay lugar para los inodos, 8 no
+hay fs o la estructura v1 está rota, 11 un nombre que v2 no acepta (v1 no
+validaba los caracteres), más los de ATA. El comando no renombra ni salta
+nada: o migra todo o no toca nada.
+
+El tope de bloques sigue siendo 1024. Una migración con 9 raíces de 7
+archivos necesita, en el peor caso, 63 inodos y 18 bloques de directorio
+libres.
+
 ## Qué no hace
 
-- No migra discos versión 1.
+- No migra de v2 a v1 (no hay vuelta atrás una vez publicado).
 - No hay locks. Los buffers del fs son globales: el shell está bloqueado
   mientras corre `zone exec` o `zone pair`, pero dos procesos de `zone pair`
   que escriban a la vez entran al fs por syscall uno tras otro, sin
   reentrar (un cambio de proceso no ocurre dentro de la syscall).
 - No guarda fechas, permisos ni nombres de más de 15 bytes.
-- Un snapshot no se puede borrar.
+- `fs snap rm` y `fs rm -r` liberan por alcanzabilidad (`fs_gc`): si el
+  barrido encuentra un bloque malo no libera nada y el espacio se filtra
+  hasta que el disco se repare. `fs rm -r` no mira si la carpeta es la raíz de
+  una zona (`/zonas/<nombre>`): igual que `fs rm`, deja a la zona sin raíz.
 - El barrido de `fs_gc` lee todos los directorios e inodos alcanzables en
   cada escritura: cuesta tiempo con muchos archivos.
 
@@ -219,3 +272,37 @@ snapshot que sostiene un archivo borrado, reinicio de QEMU con el mismo
 versión 1 que da `fs old version`. La historia corta de la etapa 5
 (formato, `a` con `v1`, snapshot `s1`, `a` con `v2`, rollback, dos
 bloques, reinicio, `fs corrupt`) sigue en `tests/qemu_shell_test.sh`.
+
+## Prueba FS-03
+
+`make qemu-fs3-test` (también dentro de `make qemu-test`) corre
+`tests/qemu_fs3_test.sh`. El disco v1 se arma con `scripts/mkv1.c` (C, sin
+Python): escenarios `std` (2 snapshots, un archivo que solo vive en un
+snapshot, uno vacío, uno de 8 bloques, 7 archivos vivos), `full` (8
+snapshots, 9 raíces), `badname` (un archivo `x/y`) y `badcrc` (un bloque
+pisado). Comprueba, con las cuentas hechas a mano:
+
+- v1: `fs ls`, `fs write`, `fs scrub` y `fs snap` dicen `fs old version` y no
+  cambian el disco. `fs migrate` da `files=10` y `scrub ok bloques=36` (std)
+  o `files=15` y `bloques=50` (full); los dos superbloques quedan en v2;
+  texto, 600 bytes y 4 KiB (con el CRC que calculó `mkv1`) y los archivos de
+  cada snapshot, intactos; sobrevive a un reinicio; el segundo `migrate` no
+  hace nada; `badname` y `badcrc` se rechazan (11 y 5) con los superbloques
+  byte a byte iguales.
+- `fs snap rm`: tres snapshots que comparten bloques entre sí y con el vivo
+  (archivos de 20 KiB con bloque indirecto). Borrarlos libera 2, 44 y 44
+  bloques (los exclusivos de cada uno); `fs rollback` a lo que quedó trae los
+  archivos intactos después de escribir un archivo grande encima; el scrub
+  final (116) coincide con un disco de control con el mismo contenido y sin
+  snapshots. Ocho snapshots, el noveno falla (6), borrar uno de en medio
+  libera el lugar.
+- `fs rm -r`: árbol de 325 bloques (subcarpetas, 64 y 72 KiB, un directorio
+  de 2 bloques); el scrub vuelve a la cuenta de antes (6). Con un snapshot
+  encima no libera lo que el snapshot usa (333 bloques, el rollback trae los
+  archivos con su patrón) y al borrar el snapshot se libera todo.
+
+Con un segundo argumento (o `V1_KERNEL_IMG`) apuntando a la imagen de un
+kernel anterior a FS-02 (`git worktree add <dir> d122028^` y `make all
+COPIHUE=<copihue>`), agrega la sección D: ese kernel v1 real lee el disco de
+`mkv1` (valida el formato del generador) y escribe un disco v1 que el kernel
+nuevo migra.

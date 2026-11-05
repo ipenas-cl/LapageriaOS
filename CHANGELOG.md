@@ -8,6 +8,19 @@ para ese commit es `legacy-tempo`.
 
 ## 0.8
 
+FS-03, estabilidad de pruebas, migración y borrado (`docs/fs.md`).
+`tests/qemu_iso_test.sh` ya no es una carrera: el modo `s` de `par` mataba al
+pid 2 tras una sola cesión dando por hecho que ya había escrito `r2`; si el PIT
+lo cortaba antes, salía `misma zona, pid 2: [], esperaba [11]` (reproducido
+con `-icount shift=1`). Ahora el pid 1 espera la marca `r2` por polling con
+cesión. `fs migrate` pasa un disco versión 1 a versión 2 en el sitio, sin
+perder archivos ni snapshots (reusa los bloques de datos y publica al final;
+hasta ahí el disco sigue siendo v1). `fs snap rm <nombre>` borra un snapshot
+y libera lo que solo él usaba (`rm` queda reservado como nombre). `fs rm -r
+<ruta>` borra una carpeta con todo lo de abajo. Prueba
+`tests/qemu_fs3_test.sh` (`make qemu-fs3-test`, también en `make qemu-test`),
+con discos v1 de `scripts/mkv1.c` (C) y, opcional, un kernel v1 real.
+
 FS-02, sistema de archivos con directorios, archivos grandes, scrub y raíz
 propia por zona (`docs/fs.md`, `docs/zonas.md`, `docs/disco.md`).
 Superbloque versión 2: árbol de directorios (rutas con `/`, `fs mkdir`,

@@ -68,7 +68,7 @@ fn cmd_help() -> i64 {
     puts("  user            enter ring 3 and syscall\n");
     puts("  sched           two processes, separate pages\n");
     puts("  disk            data disk checksum\n");
-    puts("  fs              archivos, directorios, snapshots, scrub\n");
+    puts("  fs              archivos, directorios, snapshots, scrub, migrate\n");
     puts("  exec <nombre>   programa del disco en anillo 3\n");
     puts("  exec2 <a> <b>   dos programas del disco a la vez\n");
     puts("  zone            zonas: create, ls, exec\n");
@@ -216,6 +216,15 @@ fn cmd_fs() -> i64 {
     if (fs_is("snap")) {
         pos = fs_scan(pos, fs_name);
         if (pos < 0) { return fs_fail(11); }
+        // fs snap rm <nombre>: "rm" no puede ser nombre de snapshot.
+        if (fs_name[0] == 114 && fs_name[1] == 109 && fs_name[2] == 0) {
+            pos = fs_scan(pos, fs_name);
+            if (pos < 0) { return fs_fail(11); }
+            let r = fs_snap_remove(fs_name);
+            if (r != 0) { return fs_fail(r); }
+            puts("fs snap rm ok\n");
+            return 0;
+        }
         let look = pos;
         while (look < line_len && line[look] == ' ') { look = look + 1; }
         if (look < line_len) {
@@ -249,10 +258,28 @@ fn cmd_fs() -> i64 {
     if (fs_is("rm")) {
         pos = fs_scanp(pos, fs_path);
         if (pos < 0) { return fs_fail(11); }
+        // fs rm -r <ruta>: borrado recursivo. "-r" solo es la opción si
+        // viene seguido de una ruta.
+        if (fs_path[0] == 45 && fs_path[1] == 114 && fs_path[2] == 0) {
+            pos = fs_scanp(pos, fs_path);
+            if (pos < 0) { return fs_fail(11); }
+            let rr = fs_remove_tree(fs_path);
+            if (rr != 0) { return fs_fail(rr); }
+            puts("fs rm -r ok\n");
+            return 0;
+        }
         let r = fs_remove(fs_path);
         if (r != 0) { return fs_fail(r); }
         puts("fs rm ok\n");
         return 0;
+    }
+    if (fs_is("migrate")) {
+        let r = fs_migrate();
+        if (r == 15) {
+            puts("fs migrate not needed\n");
+            return 0;
+        }
+        return fs_code(r);
     }
     if (fs_is("scrub")) { return fs_code(fs_scrub()); }
     if (fs_is("leak")) { return fs_code(fs_leak()); }
