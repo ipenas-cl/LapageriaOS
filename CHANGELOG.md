@@ -8,6 +8,15 @@ para ese commit es `legacy-tempo`.
 
 ## 0.8
 
+HR-04, el cargador UEFI usa `ms64 fn` y `--pic` (Copihue v0.44.7). El `naked fn
+efi_call` (puente SysV a Microsoft x64 en asm) se reemplaza por una variable
+`let f: ms64 fn = tabla[i]; f(...)`; no hay `efi_call2` ni `efi_call4` en el árbol.
+`src/uefi/loader.lap` se compila con `--flat 0x1000 --pic` y se quitan los cinco
+`naked fn` que solo hacían `lea` por símbolo (`&bloque` los reemplaza). Quedan
+`_start`, el trampolín y `efi_enter`. `_start` como `ms64 fn` con el búfer local se
+probó y cuelga en QEMU UEFI: ver RESUMEN.md. Kernel sin cambio (535886 bytes);
+`loader.bin` pasa de 5858 a 6227 bytes.
+
 EX-11, pin de Copihue v0.44.7 (`53dfca7`). v0.44.7 trae `--flat ADDR --pic` (código
 RIP-relative); no se usa todavía y `efi_call*` y los `naked fn` con `lea` no se tocan.
 Sin cambios de código: el kernel mide lo mismo (535886 bytes, 1047 sectores). `make
