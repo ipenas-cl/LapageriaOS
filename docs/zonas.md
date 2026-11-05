@@ -91,6 +91,7 @@ Solo responden en la zona 0. Si no, `zone denied`.
 ```
 zone create nombre paginas
 zone destroy nombre
+zone rm nombre ruta
 zone ls
 zone exec zona programa
 zone plant
@@ -102,6 +103,16 @@ lee de la raíz global, no de la de la zona.
 
 `zone ls` muestra `root=/zonas/<nombre>` (`root=/` en la global), `cap`,
 `proc`, `pag`, `niega`, `fuga` y `max`.
+
+## Borrar dentro de la raíz de una zona
+
+`zone rm nombre ruta` (solo desde el shell) borra recursivamente `ruta`, que es
+relativa a `/zonas/<nombre>`. Se niega, sin tocar el disco, con
+`fs rm -r refused: ...`: ruta absoluta (`ruta absoluta fuera de la zona`),
+`.`, `..` o componentes vacíos (`ruta con componente vacio, . o ..`), y la ruta
+vacía, que sería la raíz de la zona (`raiz de la zona`). `zone fail 11` si la
+zona no existe o es `global`. `fs rm -r` desde el shell (zona global) rechaza
+además `/`, `/zonas` y `/zonas/<nombre>`.
 
 ## Destruir una zona
 

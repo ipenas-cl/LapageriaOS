@@ -1339,7 +1339,63 @@ fn fs_migrate() -> i64 {
 // fs_gc, que libera lo que ya no cuelga de la raíz viva ni de un snapshot
 // (subdirectorios, inodos, indirectos y datos), y deja lo que un snapshot
 // todavía usa.
+// Mira `path` por texto, sin tocar el disco. Cuenta componentes en
+// fs_pk_n y deja fs_pk_z en 1 si el primero es "zonas". Devuelve 0 si la
+// ruta es normal y 3 si trae un componente vacío ("//"), "." o "..".
+// Solo se salta un '/' inicial, igual que fs_walk.
+let fs_pk_n: i64;
+let fs_pk_z: i64;
+
+fn fs_path_kind(path: *u8) -> i64 {
+    let pos = 0;
+    fs_pk_n = 0;
+    fs_pk_z = 0;
+    if ((path[0] & 255) == 47) { pos = 1; }
+    while ((path[pos] & 255) != 0) {
+        let s = pos;
+        while ((path[pos] & 255) != 0 && (path[pos] & 255) != 47) { pos = pos + 1; }
+        let n = pos - s;
+        if (n == 0) { return 3; }
+        if (n == 1 && (path[s] & 255) == 46) { return 3; }
+        if (n == 2 && (path[s] & 255) == 46 && (path[s + 1] & 255) == 46) { return 3; }
+        if (fs_pk_n == 0 && n == 5 && (path[s] & 255) == 122 && (path[s + 1] & 255) == 111
+            && (path[s + 2] & 255) == 110 && (path[s + 3] & 255) == 97 && (path[s + 4] & 255) == 115) {
+            fs_pk_z = 1;
+        }
+        fs_pk_n = fs_pk_n + 1;
+        if ((path[pos] & 255) == 47) { pos = pos + 1; }
+    }
+    return 0;
+}
+
+// Qué rechaza `fs rm -r <ruta>` desde el shell (zona global, ve todo el
+// árbol): 0 se puede; 1 la raíz "/" (o ruta vacía); 2 la carpeta /zonas o
+// la raíz de una zona (/zonas/<nombre>); 3 un componente vacío, "." o "..".
+fn fs_rm_guard(path: *u8) -> i64 {
+    let k = fs_path_kind(path);
+    if (k != 0) { return k; }
+    if (fs_pk_n == 0) { return 1; }
+    if (fs_pk_z != 0 && fs_pk_n <= 2) { return 2; }
+    return 0;
+}
+
+// Lo mismo, pero `path` es relativa a la raíz de una zona (`zone rm`): 0
+// se puede; 3 un componente vacío, "." o ".."; 4 ruta absoluta; 5 la raíz
+// de la zona misma (ruta vacía).
+fn fs_rm_guard_rel(path: *u8) -> i64 {
+    if ((path[0] & 255) == 47) { return 4; }
+    let k = fs_path_kind(path);
+    if (k != 0) { return k; }
+    if (fs_pk_n == 0) { return 5; }
+    return 0;
+}
+
+// Devuelve 21 (raíz), 22 (/zonas o raíz de zona) o 23 (componente vacío,
+// "." o "..") antes de mirar el disco; 24 y 25 los pone `zone rm` (ruta
+// absoluta; raíz de la zona).
 fn fs_remove_tree(path: *u8) -> i64 {
+    let g = fs_rm_guard(path);
+    if (g != 0) { return 20 + g; }
     let r = fs_prep(path);
     if (r != 0) { return r; }
     let idx = fs_dt_find(fs_leaf);

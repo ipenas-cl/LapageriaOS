@@ -129,6 +129,18 @@ fn fs_fail(r: i64) -> i64 {
     return r;
 }
 
+// Rechazos de fs_remove_tree (y de `zone rm`): nada se borra.
+fn fs_rm_refused(r: i64) -> i64 {
+    puts("fs rm -r refused: ");
+    if (r == 21) { puts("raiz del sistema"); }
+    if (r == 22) { puts("raiz de zona"); }
+    if (r == 23) { puts("ruta con componente vacio, . o .."); }
+    if (r == 24) { puts("ruta absoluta fuera de la zona"); }
+    if (r == 25) { puts("raiz de la zona"); }
+    putc('\n');
+    return r;
+}
+
 fn fs_show(prefix: *u8, n: i64) -> i64 {
     if (n < 0) {
         if (n == 0 - 5) {
@@ -264,6 +276,7 @@ fn cmd_fs() -> i64 {
             pos = fs_scanp(pos, fs_path);
             if (pos < 0) { return fs_fail(11); }
             let rr = fs_remove_tree(fs_path);
+            if (rr >= 21 && rr <= 25) { return fs_rm_refused(rr); }
             if (rr != 0) { return fs_fail(rr); }
             puts("fs rm -r ok\n");
             return 0;

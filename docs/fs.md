@@ -163,7 +163,7 @@ Las rutas van con `/`; `fs write /a/b/f hola`.
 | `fs cat <ruta>` | `fs live <texto>`, o `fs empty` |
 | `fs ls [ruta]` | `fs file <nombre>` o `fs dir <nombre>`, uno por línea, en el orden de creación. Sin ruta: la raíz |
 | `fs rm <ruta>` | archivo o directorio vacío. `fs rm ok` |
-| `fs rm -r <ruta>` | borrado recursivo: la carpeta con sus subcarpetas y archivos (o un archivo). `fs rm -r ok`. Libera lo que nadie más usa; lo que un snapshot todavía apunta se queda. `-r` solo es la opción si le sigue una ruta; `/` se rechaza (11) |
+| `fs rm -r <ruta>` | borrado recursivo: la carpeta con sus subcarpetas y archivos (o un archivo). `fs rm -r ok`. Libera lo que nadie más usa; lo que un snapshot todavía apunta se queda. `-r` solo es la opción si le sigue una ruta; `/`, `/zonas`, `/zonas/<nombre>` y rutas con `.`, `..` o componentes vacíos se rechazan sin tocar el disco (`fs rm -r refused: raiz del sistema`, `raiz de zona`, `ruta con componente vacio, . o ..`) |
 | `fs snap rm <nombre>` | borra el snapshot y libera los bloques que solo él usaba. `fs snap rm ok`; 7 si no existe. `rm` está reservado: no se puede crear un snapshot con ese nombre (11) |
 | `fs migrate` | migra un disco v1 a v2. `fs migrate ok snaps=S files=F`; en un disco que ya es v2, `fs migrate not needed` |
 | `fs stat <ruta>` | `fs stat file size=N blocks=K ino=I first=B` (o `dir`) |
@@ -255,8 +255,9 @@ libres.
 - No guarda fechas, permisos ni nombres de más de 15 bytes.
 - `fs snap rm` y `fs rm -r` liberan por alcanzabilidad (`fs_gc`): si el
   barrido encuentra un bloque malo no libera nada y el espacio se filtra
-  hasta que el disco se repare. `fs rm -r` no mira si la carpeta es la raíz de
-  una zona (`/zonas/<nombre>`): igual que `fs rm`, deja a la zona sin raíz.
+  hasta que el disco se repare. `fs rm -r` rechaza `/`, `/zonas` y la raíz de
+  una zona (`/zonas/<nombre>`), exista o no. `fs rm` (sin `-r`) de una raíz de
+  zona vacía sí la borra y deja a la zona sin raíz.
 - El barrido de `fs_gc` lee todos los directorios e inodos alcanzables en
   cada escritura: cuesta tiempo con muchos archivos.
 

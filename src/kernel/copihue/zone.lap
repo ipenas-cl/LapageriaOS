@@ -827,6 +827,39 @@ fn zone_pair_run(pos: i64) -> i64 {
     return 0;
 }
 
+// zone rm <nombre> <ruta>: borrado recursivo dentro de la raíz de la zona.
+// La ruta es relativa a /zonas/<nombre>: no puede ser absoluta, traer
+// ".", ".." ni componentes vacíos, ni quedar vacía (sería la raíz de la
+// zona). Lo que pase esas pruebas va a fs_remove_tree con la ruta completa.
+fn zone_rm_cmd(pos: i64) -> i64 {
+    let p = fs_scan(pos, fs_name);
+    if (p < 0) { return zone_fail(11); }
+    let z = zone_by_name(fs_name);
+    if (z < 1) { return zone_fail(11); }
+    p = fs_scanp(p, fs_path);
+    if (p < 0) { return zone_fail(11); }
+    let g = fs_rm_guard_rel(fs_path);
+    if (g != 0) { return fs_rm_refused(20 + g); }
+    // zone_path mide 64: "/zonas/" + nombre + "/" + ruta tiene que caber.
+    let n = zone_root_path(z);
+    let i = 0;
+    while ((fs_path[i] & 255) != 0) { i = i + 1; }
+    if (n + 1 + i > 63) { return zone_fail(11); }
+    zone_path[n] = 47;
+    n = n + 1;
+    i = 0;
+    while ((fs_path[i] & 255) != 0) {
+        zone_path[n + i] = fs_path[i];
+        i = i + 1;
+    }
+    zone_path[n + i] = 0;
+    let r = fs_remove_tree(zone_path);
+    if (r >= 21 && r <= 25) { return fs_rm_refused(r); }
+    if (r != 0) { return fs_fail(r); }
+    puts("zone rm ok\n");
+    return 0;
+}
+
 fn cmd_zone() -> i64 {
     if (zone_shell() == 0) {
         puts("zone denied\n");
@@ -836,6 +869,7 @@ fn cmd_zone() -> i64 {
     if (pos < 0) { return zone_fail(11); }
     if (fs_is("create")) { return zone_create(pos); }
     if (fs_is("destroy")) { return zone_destroy_cmd(pos); }
+    if (fs_is("rm")) { return zone_rm_cmd(pos); }
     if (fs_is("ls")) { return zone_ls(); }
     if (fs_is("exec")) { return zone_exec_cmd(pos); }
     if (fs_is("net")) { return zone_net(pos); }
