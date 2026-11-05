@@ -218,6 +218,15 @@ fn zcpu_throttled(z: i64) -> i64 {
     return zcpu_use[z] >= zcpu_q[z];
 }
 
+// Syscall 28 cpu_ticks: los ticks que se han cobrado a la zona del que llama
+// (zcpu_tot). Solo lee el contador propio; sirve para que un programa gaste
+// CPU hasta cierto número de ticks en vez de cierto número de vueltas.
+fn zcpu_sys_ticks() -> i64 {
+    let z = proc_zone[cur_i];
+    if (z < 0 || z >= 8) { return 0; }
+    return zcpu_tot[z];
+}
+
 fn zcpu_reset(z: i64) -> i64 {
     zcpu_q[z] = 0;
     zcpu_use[z] = 0;

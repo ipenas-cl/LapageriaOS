@@ -176,7 +176,7 @@ mientras otro proceso de `dz` está vivo.
 ## Dos zonas a la vez (OB-02)
 
 ```
-zone sched nombre            agrega la syscall 4 (yield) a la máscara
+zone sched nombre            agrega las syscalls 4 (yield), 25, 26 y 28 a la máscara
 zone par                     escribe el programa par (src/user/par.lap)
 zone pair za zb programa     dos copias del programa, a la vez
 ```
@@ -211,10 +211,11 @@ las de trazas se acotan:
 |---|---|---|
 | 25 `proc_stat(pid)` | `(pid << 8) \| (zona << 4) \| estado` (1 listo, 2 corriendo, 4 dormido); `pid` 0 es el propio | `zone sched` |
 | 26 `proc_kill(pid)` | da de baja a otro proceso: sus páginas y su cupo de zona vuelven. `-22` si es el propio | `zone sched` |
+| 28 `cpu_ticks` | ticks que el kernel ha cobrado a la propia zona (el `tot` de `zone cpu`); solo lee el contador propio. Los programas de prueba lo usan para gastar CPU por ticks y no por vueltas | `zone sched` |
 | 23 `trace_ctl` | fuera de la global solo las operaciones 4 (cuántas sondas) y 5 (nombre); las demás (prender, apagar, leer contador, vaciar, estado) dan `-1` | `zone trace` |
 | 24 `trace_read` | fuera de la global el filtro de zona es siempre el propio; pedir otra zona da `-1`, y un pid de otra zona no encuentra nada (0 registros) | `zone trace` |
 
-`zone sched nombre` agrega 4, 25 y 26; `zone trace nombre` agrega 23 y 24. Una
+`zone sched nombre` agrega 4, 25, 26 y 28; `zone trace nombre` agrega 23 y 24. Una
 zona nueva no tiene ninguna.
 
 Un pid que existe en otra zona y uno que no existe dan lo mismo: `-3`, sin

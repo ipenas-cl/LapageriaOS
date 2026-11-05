@@ -28,9 +28,7 @@
 // Sin cadenas ni globales: un let global cae en la página de código.
 
 fn ck(i: i64, c: i64) {
-    let v: i64 = 48;
-    if (c != 0) { v = 49; }
-    *((0x401C00 + i) as *u8) = v as u8;
+    *((0x401C00 + i) as *u8) = (48 + (c != 0)) as u8;
 }
 
 fn yields(n: i64) {
@@ -158,31 +156,30 @@ fn do_d(s: i64) {
     put_result(1, 5);
 }
 
-// Un dígito de '0' a '9' gasta CPU: 2^(d+19) vueltas sin una sola
-// syscall (d = 0: 0,5 millones; d = 4: 8 millones; d = 7: 67 millones), y sale.
-// Sirve para medir la cuota de CPU de la zona (`zone cpu`): lo que importa son
-// los ticks que el kernel le cobra, no cuánto tarda el anfitrión. El reloj
-// de QEMU con -icount va unas 10 veces más lento por vuelta, así que la
-// prueba elige el dígito según el modo.
-fn hog(n: i64) {
-    let i: i64 = 0;
-    while (i < n) {
-        i = i + 1;
+// Modo 'k' + un dígito d (k6): gasta CPU, sin ceder, hasta que el kernel le
+// haya cobrado a la zona 10*d ticks (syscall 28), y sale. Sirve para medir la
+// cuota de CPU (`zone cpu`): lo que importa son los ticks que el kernel cobra,
+// no cuántas vueltas da el anfitrión, así que el gasto se pide en ticks y da
+// lo mismo en un anfitrión rápido, lento o con -icount. Mira el contador cada
+// 1024 vueltas. Sin tope de lecturas (no cabe): si el contador no avanza la
+// prueba lo nota por su plazo.
+fn hog_ticks(d: i64) {
+    while (syscall(28) < d * 10) {
+        let i: i64 = 0;
+        while (i < 1024) { i = i + 1; }
     }
 }
 
 fn run() {
     let s: i64 = syscall(25, 0);
-    let m: i64 = *(0x401C00 as *u8);
-    m = m & 255;
+    let m: i64 = *(0x401C00 as *u8) & 255;
     if (s >= 0 && ((s >> 4) & 15) == 0) {
         // Zona global: el modo está en `g`, si existe.
         *(0x401C00 as *u8) = 121;
         *(0x401800 as *u8) = 103;
         *(0x401801 as *u8) = 0;
         syscall(7, 64);
-        m = *(0x401C00 as *u8);
-        m = m & 255;
+        m = *(0x401C00 as *u8) & 255;
     }
     if (m == 121) { yields(6); }
     if (m == 119) { yields(200); }
@@ -190,7 +187,7 @@ fn run() {
     if (m == 115) { do_s(s); }
     if (m == 103) { do_g(s); }
     if (m == 100) { do_d(s); }
-    if (m >= 48 && m <= 57) { hog(1 << (m - 29)); }
+    if (m == 107) { hog_ticks(*(0x401C01 as *u8) - 48); }
 }
 
 // El modo por defecto es 'y': un archivo que no se puede leer deja ahí la

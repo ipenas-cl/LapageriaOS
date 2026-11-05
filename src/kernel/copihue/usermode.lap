@@ -108,6 +108,12 @@ syscall fn sys_user(nr: i64, ch: i64, a2: i64, a3: i64, a4: i64, a5: i64) -> i64
         if (tr_en[1] != 0) { trace_hit(1, proc_pid[cur_i], nr, r); }
         return r;
     }
+    // 28 cpu_ticks (sched.lap): ticks cobrados a la propia zona.
+    if (nr == 28) {
+        let r = zcpu_sys_ticks();
+        if (tr_en[1] != 0) { trace_hit(1, proc_pid[cur_i], nr, r); }
+        return r;
+    }
     if (tr_en[1] != 0) { trace_hit(1, proc_pid[cur_i], nr, 0); }
     return 0;
 }

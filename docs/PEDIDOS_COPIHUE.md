@@ -725,5 +725,11 @@ estaba previsto. Dos incomodidades:
    una página aliviaría esto. Además, `hog` ya no acumula `s = s + i` (para
    ahorrar bytes); no se investigó cuánto cambia el costo por vuelta entre
    las dos versiones, por eso la prueba mide ticks cobrados y no vueltas.
+   FS-05b: el modo `k<d>` (gasta CPU hasta `10*d` ticks cobrados, syscall 28)
+   reemplazó al dígito de vueltas, que dependía de la velocidad del anfitrión.
+   Para que cupiera hubo que quitar el modo viejo, juntar `m = ... & 255` en
+   una línea y escribir `ck` sin variable; `par.bin` queda en 4078 bytes de
+   4080. Una variante con un solo bucle y `&&` en el `if` salió unos 40
+   bytes más grande que el bucle doble.
 2. **Sin `const` global** (igual que arriba): `ATA_PIT_PERIOD` y
    `ATA_PIT_TIMEOUT` son `let` globales normales.

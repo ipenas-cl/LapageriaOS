@@ -8,8 +8,10 @@
 #   tot   ticks cobrados a la zona
 #   cont  ticks cobrados con otro proceso listo (los que disputó)
 #   thr   veces que la cuota la sacó de la CPU
-# Se corre `zone pair za zb par` con los dos procesos en modo de gasto de CPU (gastan
-# CPU sin syscalls: 67 millones de vueltas, o 8 con -icount, y salen). Dos corridas:
+# Se corre `zone pair za zb par` con los procesos en modo `k<d>` de par.lap:
+# gastan CPU sin ceder hasta que el kernel ha cobrado 10*d ticks a su zona
+# (syscall 28) y salen. El gasto se pide en ticks, no en vueltas, así que la
+# prueba da lo mismo en un anfitrión rápido, lento o con -icount. Tres corridas:
 #   1. control, sin cuotas: el reparto es por turnos, cont casi igual (±20%),
 #      thr = 0 en las dos.
 #   2. za con cuota 2 de 20, zb sin límite: cont(za) * 4 <= cont(zb) (lo
@@ -135,11 +137,6 @@ read_cpu() {
 }
 cpuf() { win "zone cpu $1" | tr ' ' '\n' | sed -n "s/^$2=//p" | head -1; }
 
-# Dígito de par (modo de gasto de CPU): QEMU con -icount va mucho más lento
-# por vuelta que el TCG normal, y los ticks son de reloj virtual.
-HOG=7
-case "$EXTRA_ARGS${QEMU_EXTRA:-}" in *icount*) HOG=4 ;; esac
-
 start_qemu
 for _ in $(seq 150); do grep -q "lapageria> " "$SERIAL" 2>/dev/null && break; sleep 0.2; done
 grep -q "lapageria> " "$SERIAL" || fail "no shell prompt"
@@ -151,7 +148,7 @@ typewait "zone create za 12" 30
 typewait "zone create zb 12" 30
 for z in za zb; do
     typewait "zone sched $z" 30
-    typewait "fs write /zonas/$z/q $HOG" 30
+    typewait "fs write /zonas/$z/q k4" 30
 done
 
 # Errores de zone cpu.
@@ -176,7 +173,11 @@ read_cpu
 [ "$ta" = 0 ] && [ "$tb" = 0 ] || fail "control: thr za=$ta zb=$tb, esperaba 0 y 0"
 echo "ok   control sin cuotas: cont za=$ca zb=$cb (parejo), thr 0 y 0, los dos terminan"
 
-# 2. za con cuota 2 de 20, zb sin límite.
+# 2. za con cuota 2 de 20, zb sin límite. zb gasta 60 ticks (unos 67 de reloj,
+# 18 de cada 20) y za 10 (5 ventanas, 100 ticks de reloj), así que za sigue viva mientras zb corre
+# y los 60 ticks de zb son disputados, sea cual sea la velocidad del anfitrión.
+typewait "fs write /zonas/za/q k1" 30
+typewait "fs write /zonas/zb/q k6" 30
 typewait "zone cpu za 2" 30
 typewait "zone cpu zb 0" 30
 pair_run za zb
@@ -190,14 +191,14 @@ read_cpu
 echo "ok   cuota 2/20 en za, zb sin límite: cont za=$ca zb=$cb (za*4 <= zb), tot za=$tota zb=$totb, thr za=$ta zb=$tb; los dos terminan sin fuga"
 
 # 3. Tope duro (FS-05/1): za sola con cuota 5 de 20. zb solo cede 6 veces y
-# sale; za gasta CPU (modo $HOG de par) y queda sola. Sin tarea
+# sale; za gasta CPU (modo k4 de par) y queda sola. Sin tarea
 # ociosa seguiría corriendo todo el tiempo; con ella, en cada ventana de 20
 # ticks gasta como mucho 5 y el resto es idle. Se mide en ticks del PIT:
 #   solo  ticks cobrados a za sin otro proceso listo
 #   idle  ticks que za esperó con la cuota agotada (nadie corría)
 # Cota: tot <= cuota * ventanas, con ventanas = ceil((tot de za + idle + tot de
 # zb) / 20), o sea, todos los ticks transcurridos de la corrida.
-typewait "fs write /zonas/za/q $HOG" 30
+typewait "fs write /zonas/za/q k4" 30
 typewait "fs write /zonas/zb/q y" 30
 typewait "zone cpu za 5" 30
 typewait "zone cpu zb 0" 30
