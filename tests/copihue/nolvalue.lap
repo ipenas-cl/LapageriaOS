@@ -1,0 +1,14 @@
+// EX-09: asignar a un no-lvalue (`f(x) = v`) tiene que ser error de compilación
+// con archivo y línea (Copihue v0.44.4). La asignación está en la línea 8.
+fn f(x: i64) -> i64 {
+    return x;
+}
+
+fn g() {
+    f(1) = 5;
+}
+
+naked fn _start() {
+    g();
+    hlt();
+}

@@ -59,13 +59,12 @@ fn ahci_preg(reg: i64) -> i64 {
 fn ahci_pr(reg: i64) -> i64 { return ahci_rd(ahci_preg(reg)); }
 fn ahci_pw(reg: i64, v: i64) -> i64 { return ahci_wr(ahci_preg(reg), v); }
 
-// Dword de la página de DMA. Puntero local y no `f(x)[0] = v`: Copihue
-// v0.44.2 descarta sin aviso la asignación a un índice de una llamada
-// (docs/PEDIDOS_COPIHUE.md, HR-01).
-fn ahci_mw(off: i64, v: i64) -> i64 {
-    let p: *volatile u32 = (ahci_pa + off) as *volatile u32;
-    p[0] = v as u32;
-    return 0;
+// Dword de la página de DMA: `ahci_m(off)[0] = v` es un store volatile de 32
+// bits. Desde Copihue v0.44.4 (EX-09) el store por llamada se emite; antes se
+// descartaba sin aviso y esto era una función `ahci_mw(off, v)` con puntero
+// local (docs/PEDIDOS_COPIHUE.md, HR-01 punto 1).
+fn ahci_m(off: i64) -> *volatile u32 {
+    return (ahci_pa + off) as *volatile u32;
 }
 
 // Espera a que (registro del puerto & mask) == want. 0 listo, 1 tiempo.
@@ -178,7 +177,7 @@ fn ahci_cmd(cmd: i64, lba: i64) -> i64 {
     let ct = 0x500;
     let i = 0;
     while (i < 0x40) {
-        ahci_mw(ct + i * 4, 0);
+        ahci_m(ct + i * 4)[0] = 0;
         i = i + 1;
     }
     let hdr = 5 | (1 << 16);
@@ -198,20 +197,20 @@ fn ahci_cmd(cmd: i64, lba: i64) -> i64 {
         cnt = 0;
     }
     // Cabecera de la ranura 0: CFL 5 dwords, una entrada PRDT (ninguna en FLUSH).
-    ahci_mw(0, hdr);
-    ahci_mw(4, 0);
-    ahci_mw(8, ahci_pa + ct);
-    ahci_mw(12, 0);
+    ahci_m(0)[0] = hdr as u32;
+    ahci_m(4)[0] = 0;
+    ahci_m(8)[0] = (ahci_pa + ct) as u32;
+    ahci_m(12)[0] = 0;
     // FIS H2D: tipo 0x27, bit C, comando, dispositivo LBA, un sector.
-    ahci_mw(ct, 0x27 | (0x80 << 8) | (cmd << 16));
-    ahci_mw(ct + 4, (lba & 0xFFFFFF) | (0x40 << 24));
-    ahci_mw(ct + 8, (lba >> 24) & 0xFFFFFF);
-    ahci_mw(ct + 12, cnt);
+    ahci_m(ct)[0] = (0x27 | (0x80 << 8) | (cmd << 16)) as u32;
+    ahci_m(ct + 4)[0] = ((lba & 0xFFFFFF) | (0x40 << 24)) as u32;
+    ahci_m(ct + 8)[0] = ((lba >> 24) & 0xFFFFFF) as u32;
+    ahci_m(ct + 12)[0] = cnt as u32;
     // PRDT: 512 bytes (DBC = 511) al búfer.
-    ahci_mw(ct + 0x80, ahci_pa + 0x800);
-    ahci_mw(ct + 0x84, 0);
-    ahci_mw(ct + 0x88, 0);
-    ahci_mw(ct + 0x8C, 511);
+    ahci_m(ct + 0x80)[0] = (ahci_pa + 0x800) as u32;
+    ahci_m(ct + 0x84)[0] = 0;
+    ahci_m(ct + 0x88)[0] = 0;
+    ahci_m(ct + 0x8C)[0] = 511;
     ahci_pw(0x10, 0xFFFFFFFF);
     ahci_pw(0x38, 1);
     let prev = ata_pit_read();

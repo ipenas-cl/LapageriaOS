@@ -1,0 +1,19 @@
+// EX-09: `mem(off)[0] = v` y `*mem(off) = v` con `-> *volatile u32` emiten un
+// store volatile al ancho del pointee (dword, Copihue v0.44.4).
+fn mem(off: i64) -> *volatile u32 {
+    return (0x1000 + off) as *volatile u32;
+}
+
+fn poke_idx() {
+    mem(8)[0] = 5;
+}
+
+fn poke_deref() {
+    *mem(12) = 7;
+}
+
+naked fn _start() {
+    poke_idx();
+    poke_deref();
+    hlt();
+}

@@ -112,7 +112,7 @@ QEMU_CPU = -cpu qemu64
 # existir antes de esas reglas: si no, la etapa 1 y la etapa 2 no esperan
 # al compilador (el CI de la etapa 2 falló así la primera vez).
 COPIHUE_REPO   ?= https://github.com/ipenas-cl/copihue.git
-COPIHUE_COMMIT ?= v0.44.3
+COPIHUE_COMMIT ?= v0.44.4
 COPIHUE_DIR     = $(BUILD_DIR)/copihue
 COPIHUE       ?= $(COPIHUE_DIR)/copihue
 
@@ -565,7 +565,7 @@ qemu-ahci-test: $(OS_IMAGE)
 mkaxe-test:
 	$(TESTS_DIR)/mkaxe_test.sh
 
-# EX-08: informa si el compilador emite el store de f(x)[0] = v (pedido abierto).
+# EX-09: comprueba que el compilador emite el store de f(x)[0] = v / *f(x) = v y rechaza f(x) = v.
 .PHONY: copihue-gaps-test
 copihue-gaps-test: $(COPIHUE)
 	sh $(TESTS_DIR)/copihue_gaps_test.sh $(abspath $(COPIHUE))
