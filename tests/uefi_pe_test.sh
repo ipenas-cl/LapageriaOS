@@ -66,11 +66,18 @@ done
 echo "ok   PE32+ x86-64, subsistema 10, entry 0x1000, $size bytes"
 
 # Independencia de la posición: el asm del stub no puede tener memoria absoluta
-# a etiquetas (`[efi_msg8]`, `mov rax, efi_msg8`). Solo `[rel ...]`, pila y punteros.
+# a etiquetas (`[efi_msg8]`, `mov rax, efi_msg8`). Con --pic el compilador escribe
+# `default rel` (todo `[etiqueta]` es relativo a RIP) y `lea reg, [rel etiqueta]`;
+# sin esa línea, solo valen `[rel ...]`, pila y punteros.
 if [ -f "$ASM" ]; then
-    if grep -nE '(mov|lea|cmp|add|sub|call|jmp)[^;]*\[(efi_|__)[A-Za-z0-9_]*\]' "$ASM" | grep -v 'rel ' | grep -vE '__loc_' >/dev/null; then
-        grep -nE '\[(efi_|__)[A-Za-z0-9_]*\]' "$ASM" | grep -v 'rel ' | head
-        fail "el stub tiene operandos absolutos a etiquetas"
+    if ! grep -qE '^default rel$' "$ASM"; then
+        if grep -nE '(mov|lea|cmp|add|sub|call|jmp)[^;]*\[(efi_|__)[A-Za-z0-9_]*\]' "$ASM" | grep -v 'rel ' | grep -vE '__loc_' >/dev/null; then
+            grep -nE '\[(efi_|__)[A-Za-z0-9_]*\]' "$ASM" | grep -v 'rel ' | head
+            fail "el stub tiene operandos absolutos a etiquetas"
+        fi
+    fi
+    if grep -nE '(mov|push|cmp|add|sub)[[:space:]]+[a-z0-9]+,[[:space:]]*(efi_|str_|__)[A-Za-z0-9_]*[[:space:]]*$' "$ASM" | grep -vE '__loc_|__frame_' | head -3 | grep . >/dev/null; then
+        fail "el stub carga la direccion absoluta de una etiqueta como inmediato"
     fi
     if grep -qE '^[[:space:]]*res[bwdq] ' "$ASM"; then fail "el stub tiene .bss (globales)"; fi
     echo "ok   el stub no tiene globales ni operandos absolutos"
