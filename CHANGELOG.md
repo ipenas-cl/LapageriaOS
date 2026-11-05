@@ -8,6 +8,11 @@ para ese commit es `legacy-tempo`.
 
 ## 0.8
 
+EX-10, pin de Copihue v0.44.6 (`509746b`), saltando v0.44.5. v0.44.6 trae `ms64 fn`
+(ABI Microsoft x64) para UEFI; `efi_call*` no se reescribe todavía. Sin cambios de
+código: el kernel mide lo mismo (535886 bytes, 1047 sectores). `make qemu-test` da
+235 `ok`; `make copihue-gaps-test` sigue pasando.
+
 HR-03, AHCI detrás de `blk.lap`. Pin de Copihue sin cambios (v0.44.4). (1) `blk`
 tiene un backend (`blk_dev`: ATA o AHCI): `blk_rd`/`blk_wr` reemplazan a
 `ata_read`/`ata_write` en `blk_read`/`blk_write`, `disk` y `fs`; `blk_open` elige
