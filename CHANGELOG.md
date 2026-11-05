@@ -8,6 +8,11 @@ para ese commit es `legacy-tempo`.
 
 ## 0.8
 
+EX-11, pin de Copihue v0.44.7 (`53dfca7`). v0.44.7 trae `--flat ADDR --pic` (código
+RIP-relative); no se usa todavía y `efi_call*` y los `naked fn` con `lea` no se tocan.
+Sin cambios de código: el kernel mide lo mismo (535886 bytes, 1047 sectores). `make
+qemu-test` da 235 `ok`.
+
 EX-10, pin de Copihue v0.44.6 (`509746b`), saltando v0.44.5. v0.44.6 trae `ms64 fn`
 (ABI Microsoft x64) para UEFI; `efi_call*` no se reescribe todavía. Sin cambios de
 código: el kernel mide lo mismo (535886 bytes, 1047 sectores). `make qemu-test` da
