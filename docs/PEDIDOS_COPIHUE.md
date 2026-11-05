@@ -18,6 +18,32 @@ Sin `asm()` nuevo. Una función de 7 parámetros (`udp_recv`; el séptimo es
 el plazo) compila y la prueba de plazo la ejerce; `udp_park` usa globales
 por prudencia, no porque haya fallado algo.
 
+## HR-01 (UEFI y AHCI), con Copihue v0.44.2
+
+El pin no cambia. Todo **ABIERTO**; HR-01 no cerró ningún pedido anterior.
+
+1. **`f(x)[0] = v` se descarta sin aviso.** Asignar al índice del resultado de una
+   llamada (`fn mem(off: i64) -> *volatile u32`; `mem(8)[0] = 5;`) compila sin
+   error ni advertencia, pero el asm solo evalúa el valor y no emite el store.
+   Costó una sesión de depuración en `ahci.lap`: el comando nunca se escribía en
+   la tabla de comandos y el controlador no hacía nada. Se pide error de
+   compilación (o que emita el store). Hoy `ahci.lap` usa un puntero local en
+   `ahci_mw`.
+2. **Inicializador de global que no es un literal.** `let ahci_port: i64 = 0 - 1;`
+   compila en Copihue y falla en nasm con ``symbol `ahci_port' not defined``. Se
+   pide un error de Copihue en la línea del `let`, o que acepte la constante.
+3. **Salida PE32+ / EFI.** No hay forma de producir una aplicación EFI. El stub
+   UEFI se compila con `--flat 0x1000` y `src/uefi/pe.asm` (nasm) le pone las
+   cabeceras. Se pide algo como `--pe-efi` (subsistema 10, entry, `.reloc`).
+4. **ABI Microsoft x64 para llamar al firmware.** Se hizo con tres `naked fn` y
+   `asm()` (`efi_call2`, `efi_call4`, `_start`). Se pide `extern "ms64"` /
+   `efi fn`: `rcx`, `rdx`, `r8`, `r9`, sombra de 32 bytes y pila alineada a 16.
+5. **Datos relativos a RIP en `--flat`.** Las globales y las cadenas de Copihue se
+   direccionan en absoluto, así que el stub no puede usarlas y se alcanza `data`
+   con `lea reg, [rel etiqueta]` desde `asm()`. Se pide un modo `--pic` para
+   `--flat`.
+6. Sigue el aviso de nasm 3.x (`implicit DEFAULT ABS`) de EX-07.
+
 ## EX-07 (marco ≥ 4 KiB en AXE1), con Copihue v0.44.2
 
 **Sondeo de pila en un AXE1: CERRADO, probado.** `zatk` modo `y` (`let b: [u8;
