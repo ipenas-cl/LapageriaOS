@@ -470,10 +470,11 @@ qemu-atk1-test: $(OS_IMAGE)
 # Deja los registros en build/stab/ y falla si alguna corrida falla.
 STAB_N   ?= 6
 STAB_PAR ?= 3
+STAB_TESTS ?= axe2 atk1 fast burst
 STAB_DIR  = $(BUILD_DIR)/stab
 qemu-stab-test: $(OS_IMAGE)
 	rm -rf $(STAB_DIR) && mkdir -p $(STAB_DIR)
-	@set -e; for t in axe2 atk1 fast burst; do \
+	@set -e; for t in $(STAB_TESTS); do \
 	  echo "--- $$t, -icount shift=7"; \
 	  bash $(TESTS_DIR)/repeat.sh $(STAB_DIR)/$${t}_icount $(STAB_N) $(STAB_PAR) $(TESTS_DIR)/qemu_$${t}_test.sh $(OS_IMAGE) || rc=1; \
 	  echo "--- $$t, sin icount"; \

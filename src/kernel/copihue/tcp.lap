@@ -139,6 +139,7 @@ let tcp_f_rxn: i64 = 0;
 let tcp_f_txat: i64 = 0;
 let tcp_f_txn: i64 = 0;
 let tcp_f_txg: i64 = 0;
+let tcp_f_txs: i64 = 0;
 let tcp_f_swat: i64 = 0;
 let tcp_f_held: i64 = 0;
 let tcp_f_rel: i64 = 0;
@@ -252,6 +253,7 @@ fn tcp_reset() -> i64 {
     tcp_f_rxn = 0;
     tcp_f_txn = 0;
     tcp_f_txg = 0;
+    tcp_f_txs = 0;
     tcp_f_swat = 0;
     tcp_f_held = 0;
     i = 0;
@@ -391,17 +393,25 @@ fn tcp_build(out: *u8) -> i64 {
 // Transmite lo que dejó tcp_o_*. En seco (pruebas) deja la trama en tcp_last.
 fn tcp_emit() -> i64 {
     // Falla inyectada: el segmento con datos se pierde antes del chip.
-    if (tcp_f_txn > 0 && tcp_o_dlen > 0 && tcp_o_t >= 0) {
+    // EX-05: la segunda pérdida de `txdrop K C G` (tcp_f_txs = 1) cuenta solo
+    // segmentos nuevos: un reenvío (seq debajo de tc_max) no la adelanta, así
+    // que no depende de qué tan rápido lleguen los ACK repetidos.
+    let counted = 1;
+    if (tcp_f_txs != 0 && tcp_o_t >= 0 && tcp_sub(tcp_o_seq, tc_max[tcp_o_t]) < 0) { counted = 0; }
+    if (tcp_f_txn > 0 && tcp_o_dlen > 0 && tcp_o_t >= 0 && counted != 0) {
         tcp_f_txat = tcp_f_txat - 1;
         if (tcp_f_txat <= 0) {
             tcp_f_txn = tcp_f_txn - 1;
             tcp_fdrop = tcp_fdrop + 1;
-            // EX-05: `txdrop K C G` pierde además el G-ésimo segmento que
+            // EX-05: `txdrop K C G` pierde además el G-ésimo segmento nuevo que
             // sale después de la tanda (dos pérdidas separadas en una ráfaga).
             if (tcp_f_txn == 0 && tcp_f_txg > 0) {
                 tcp_f_txat = tcp_f_txg;
                 tcp_f_txn = 1;
                 tcp_f_txg = 0;
+                tcp_f_txs = 1;
+            } else {
+                tcp_f_txs = 0;
             }
             return 0;
         }
@@ -2343,6 +2353,7 @@ fn tcp_selftest() -> i64 {
     tcp_f_rxn = 0;
     tcp_f_txn = 0;
     tcp_f_txg = 0;
+    tcp_f_txs = 0;
     tcp_f_swat = 0;
     tcp_f_held = 0;
     tcp_dry = 0;
@@ -2459,6 +2470,7 @@ fn tcp_fault_cmd(pos: i64) -> i64 {
         tcp_f_rxn = 0;
         tcp_f_txn = 0;
         tcp_f_txg = 0;
+        tcp_f_txs = 0;
         tcp_f_swat = 0;
         tcp_release_held();
         puts("tcp fault off\n");

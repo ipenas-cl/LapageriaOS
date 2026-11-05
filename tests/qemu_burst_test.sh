@@ -14,7 +14,8 @@
 #          timer. Un reenvío manda hasta un MSS (1460 bytes, unos 5 trozos de
 #          256) de datos contiguos, así que uno solo cubre los dos huecos.
 #   sep    `txdrop 20 1 4`: el 20 y el 24, separados por 3 segmentos que llegan
-#          (a menos de un MSS: un reenvío).
+#          (a menos de un MSS). Con ACK rápidos (-icount) el 24 sale ya en
+#          recuperación y hay una segunda recuperación rápida: fast +1 o +2.
 #   tanda  `txdrop 40 4`: cuatro seguidos (un reenvío).
 #   lejos  `txdrop 20 1 10`: el 20 y otro diez emisiones después, a más de un
 #          MSS. El segundo hueco es de un segmento que sale ya en recuperación:
@@ -247,7 +248,7 @@ burst() {
 # 5 trozos de 256): huecos a menos de un MSS uno del otro se cubren con un solo
 # reenvío. Dos huecos a más de un MSS necesitan dos (el segundo por ACK parcial).
 burst par    "tcp fault txdrop 20 2" 2 1 1 2
-burst sep    "tcp fault txdrop 20 1 4" 2 1 1 2
+burst sep    "tcp fault txdrop 20 1 4" 2 1 1 2 2
 burst tanda  "tcp fault txdrop 40 4" 4 1 1 4
 burst lejos  "tcp fault txdrop 20 1 10" 2 1 2 2 2
 burst cola   "tcp fault txdrop $((NSEG - 1)) 2" 2 0
