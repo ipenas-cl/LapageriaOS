@@ -7,10 +7,12 @@
 #   qemu-udp-test  Solo la prueba de red por IRQ y UDP (tests/qemu_udp_test.sh).
 #   qemu-big-test  Solo programas de varias páginas, AXE2 (tests/qemu_big_test.sh).
 #   mkaxe-test  Solo scripts/mkaxe.sh en el anfitrión (tests/mkaxe_test.sh).
-#   qemu-axe2-test  Solo AXE2 de mkaxe.sh y ataques de anillo 3 (tests/qemu_axe2_test.sh).
+#   qemu-axe2-test  Solo AXE2 del compilador y ataques de anillo 3 (tests/qemu_axe2_test.sh).
 #   qemu-atk1-test  Solo ataques de anillo 3 contra un AXE1 (tests/qemu_atk1_test.sh).
 #   qemu-fast-test  Solo la retransmisión rápida de TCP con pérdida real (tests/qemu_fast_test.sh).
-#   qemu-stab-test  6 corridas de las dos baterías de ataques y de la retransmisión rápida,
+#   qemu-burst-test  Solo la pérdida de varios segmentos en una ráfaga de TCP (tests/qemu_burst_test.sh).
+#   qemu-shell-test  Solo el arranque, las demos (nx, hh, user, sched con guarda) y el resto del shell (tests/qemu_shell_test.sh).
+#   qemu-stab-test  6 corridas de las dos baterías de ataques, de la retransmisión rápida y de la pérdida en ráfaga,
 #              con -icount shift=7 y sin icount.
 #   qemu-tcp-test  Solo la prueba de TCP (tests/qemu_tcp_test.sh).
 #   qemu-trace-test  Solo la prueba de trazas (tests/qemu_trace_test.sh).
@@ -554,10 +556,12 @@ help:
 	@echo "  make qemu-udp-test  Solo esa prueba de red (tests/qemu_udp_test.sh)."
 	@echo "  make qemu-big-test  Solo programas de varias páginas, AXE2 (tests/qemu_big_test.sh)."
 	@echo "  make mkaxe-test  Solo scripts/mkaxe.sh en el anfitrión (tests/mkaxe_test.sh)."
-	@echo "  make qemu-axe2-test  Solo AXE2 de mkaxe.sh y ataques de anillo 3 (tests/qemu_axe2_test.sh)."
+	@echo "  make qemu-axe2-test  Solo AXE2 del compilador y ataques de anillo 3 (tests/qemu_axe2_test.sh)."
 	@echo "  make qemu-atk1-test  Solo ataques de anillo 3 contra un AXE1 (tests/qemu_atk1_test.sh)."
 	@echo "  make qemu-fast-test  Solo la retransmisión rápida de TCP con pérdida real (tests/qemu_fast_test.sh)."
-	@echo "  make qemu-stab-test  6 corridas de las baterías AXE2 y AXE1 y de la retransmisión rápida, con y sin -icount shift=7."
+	@echo "  make qemu-burst-test  Solo la pérdida de varios segmentos en una ráfaga de TCP (tests/qemu_burst_test.sh)."
+	@echo "  make qemu-shell-test  Solo el arranque, las demos (con guarda) y el shell (tests/qemu_shell_test.sh)."
+	@echo "  make qemu-stab-test  6 corridas de las baterías AXE2 y AXE1, de la retransmisión rápida y de la pérdida en ráfaga, con y sin -icount shift=7."
 	@echo "  make qemu-tcp-test  Solo la prueba de TCP (tests/qemu_tcp_test.sh)."
 	@echo "  make qemu-trace-test  Solo la prueba de trazas (tests/qemu_trace_test.sh)."
 	@echo "  make qemu-zswitch-test  Solo el cambio de zona en switch_to (tests/qemu_zswitch_test.sh)."

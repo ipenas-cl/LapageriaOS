@@ -2,12 +2,13 @@
 
 Lapageria rosea es el nombre científico del copihue; antes AtomicOS.
 
-Compilador fijado en el Makefile: v0.42.5, commit
-`ea898c6c2be6f1a1686cf06c5050c31e726ef177`. `git ls-remote` devuelve
-ese commit para `refs/tags/v0.42.5^{}` (el objeto de la etiqueta es
-`d0d5b4239ee524336d7b6ff2c0a32553483afc46`), y `git -C build/copihue
-rev-parse HEAD` después del `make` también. No se comprobó `HEAD` ni
-`refs/heads/main` del remoto, ni la salida de `copihue --version`.
+Compilador fijado en el Makefile: v0.44.1, commit
+`20c46c72ecec4d3190cf5c7ad8a534a259c92b7f` (EX-05). `git -C build/copihue
+rev-parse HEAD` después del `make` devuelve ese commit. No se comprobó
+`git ls-remote` ni el objeto de la etiqueta, ni `HEAD` o `refs/heads/main`
+del remoto, ni la salida de `copihue --version`. Hasta EX-04 el pin era
+v0.42.5 (`ea898c6c2be6f1a1686cf06c5050c31e726ef177`); cada sección de más
+abajo dice con qué versión se escribió.
 Sin pedidos nuevos al subir desde v0.31.0: el kernel compila sin
 cambios de código. RD-01 parte 2 (UDP completo, recv bloqueante) tampoco
 pidió nada: `syscall fn` con 6 parámetros, `syscall(n, a1..a5)` en anillo
@@ -15,6 +16,59 @@ pidió nada: `syscall fn` con 6 parámetros, `syscall(n, a1..a5)` en anillo
 Sin `asm()` nuevo. Una función de 7 parámetros (`udp_recv`; el séptimo es
 el plazo) compila y la prueba de plazo la ejerce; `udp_park` usa globales
 por prudencia, no porque haya fallado algo.
+
+## EX-05 (AXE2 desde el compilador, align(N), guardas en demos), con Copihue v0.44.1
+
+**Cerrados por v0.44.1** (se probaron en este repositorio, no solo se leyó el
+changelog):
+
+- `align(N) fn` (pedido 2 de EX-01 y 2 de EX-02). `pag2.lap` tiene
+  `align(4096) naked fn where()` y corre en `0x401000`: la devuelve
+  `lea rax, [rel $]` y `exec pag2` exige esa dirección. Se probó con `naked fn`
+  y `asm("...")`; con `fn` normal y `--flat` no se probó.
+- AXE2 con texto, datos y bss (pedido 1 de EX-01 y 1 de EX-02):
+  `copihue --flat 0x400000 --axe2 --sizes` entrega el archivo entero.
+  `pag2` y `atk2` ya no arman páginas con `printf` y `dd`: los `let` con valor
+  van a datos y los `let` sin valor a bss. `--sizes` imprimió, para `pag2`,
+  `text=4521 data=12 bss=4084 text_bytes=8192 image=8204 memsize=12288
+  entry=0x400000` y `scripts/chksizes.sh` lo compara en cada `make`. El campo
+  entry sale como la VA absoluta de `_start`, `0x400000` (lo confirmó el
+  equipo del lenguaje, según el encargo de EX-05); `mkaxe.sh -a` lo exige dentro del texto.
+
+**Sigue abierto:**
+
+1. **Costo de embeber en el kernel** (pedido 3 de EX-02 y OB-03, sin cambios).
+   Pasar `pag2` y `atk2` al compilador subió `kernel.bin` de 493621 a 510005
+   bytes (+16384): `pag2` quedó con 1136 escrituras y `atk2` con 795, unos 5 a 6
+   bytes de kernel por byte de programa no nulo.
+2. **`--axe2` solo escribe AXE2.** Un programa de una página sigue por
+   `mkaxe.sh` (AXE1, 16 bytes de cabecera), porque con `--axe2` saldría con la
+   E/S en `0x410000`, y los programas existentes direccionan `0x401000`. Pedido
+   menor: un `--axe1` (magic, tamaño, entrada de 16 bytes) para que `mkaxe.sh`
+   no tenga que armarlo.
+3. **Sin control de dónde cae un `let`.** Los datos empiezan en la página
+   siguiente al texto y la bss pegada a los datos; para que la bss ocupe su
+   propia página o los datos lleguen a un múltiplo de 4096 hay que ajustar a
+   mano el largo del último `let` (`pag2`: 12 bytes de datos y un arreglo de
+   4084 para cerrar la página; `atk2`: 20 y 8172). Se pide `align(4096)` para
+   un `let` (o para `.data`/`.bss`). No se probó un inicializador corto
+   (`let a: [u8; 4096] = [1, 2]`) ni `[0; 4096]`: `atk2.lap` escribe el `ret`
+   y `ATK2` en un arreglo de 20 bytes para no depender de eso.
+4. **El AXE2 de `--axe2` redondea el texto a páginas** (`text_bytes=8192`) y el
+   de `mkaxe.sh` no (`texto` = bytes reales). Al kernel le da igual (redondea),
+   pero `atk2w` dejó de poder derivarse del `atk2` del compilador solo cambiando
+   `text`: la imagen es de 4116 bytes y hace falta estirarla a 8192 con ceros
+   (`exec_plant_axe2`).
+5. **Aviso de nasm 3.x** en cada compilación `--flat` (`implicit DEFAULT ABS is
+   deprecated`, línea del asm generado). No rompe nada; se arregla emitiendo
+   `default abs` o `default rel` al principio.
+6. **Lo de EX-04 sigue igual:** sin sondeo de pila para marcos de más de una
+   página, sin `const`, y el `hint` del `as u8`.
+
+Nada del lenguaje obligó a un parche externo: los programas de usuario, el
+kernel y los arreglos son Copihue; el Makefile y las pruebas son `make`, `sh`,
+`bash` y `awk`. Para las guardas de las demos (`build_proc_g`, `guard_probe`,
+un `naked fn` con `while (1) { push(0); }`) no hizo falta nada nuevo.
 
 ## EX-04 (guarda de pila de un AXE1, prueba de retransmisión rápida), con Copihue v0.42.5
 
@@ -793,7 +847,7 @@ escribieron con lo que ya había (`packed struct` de 32 bytes con `sizeof` y
 `offsetof`, `else if`, `as u32`/`as u8`, arreglos globales de 64 KiB).
 Pedidos que sí salieron, cada uno con su contorno:
 
-1. **Un programa `--flat` no puede declarar datos ni bss.** No hay forma de que
+1. **Un programa `--flat` no puede declarar datos ni bss.** *CERRADO en v0.44.1 (`--axe2`, EX-05; ver arriba).* No hay forma de que
    `copihue --flat 0x400000` entregue un binario con una sección de datos
    inicializados, ni de decir cuánta bss necesita (el kernel sí la cuenta:
    `__bss_start` / `__bss_end` en `kernel.asm`, que el `Makefile` lee con
@@ -805,7 +859,7 @@ Pedidos que sí salieron, cada uno con su contorno:
    que escriba un AXE2 completo (texto, datos y tamaño de bss) o que al menos
    imprima el tamaño de bss, y una forma de dejar un arreglo global
    inicializado.
-2. **Sin alineación de una función a una página.** No se puede forzar que una
+2. **Sin alineación de una función a una página.** *CERRADO en v0.44.1 (`align(N)`, EX-05).* No se puede forzar que una
    función empiece en `0x401000` para tener código real en una segunda página
    de texto; por eso el texto de `grande` es una sola página y `grandew`
    (texto de 2 páginas) solo prueba que la segunda página queda de solo
@@ -828,7 +882,7 @@ Cerrado en el repositorio, sin el compilador: `scripts/mkaxe.sh` empaca AXE2
 (`-d` datos, `-b` bss; docs/exec.md). Eso no cambia el pedido 1 de EX-01, que
 sigue abierto y es lo que falta para que un programa use datos de verdad:
 
-1. **`--flat` sigue sin datos ni bss** (pedido 1 de EX-01, sin cambios en
+1. **`--flat` sigue sin datos ni bss** *(CERRADO en v0.44.1, EX-05)* (pedido 1 de EX-01, sin cambios en
    v0.42.5; no se volvió a probar con una versión más nueva). `pag2.lap` y
    `atk2.lap` son solo texto; sus páginas de datos las arma el Makefile con
    `printf` y `dd`, y los programas las direccionan con constantes
@@ -838,7 +892,7 @@ sigue abierto y es lo que falta para que un programa use datos de verdad:
    que quede en el binario después del texto, alineado a página. No se probó
    si un `let` global en un programa de usuario cae después del código en
    `--flat`.
-2. **Alinear una función a una página** (pedido 2 de EX-01). `mkaxe.sh` rellena
+2. **Alinear una función a una página** *(CERRADO en v0.44.1, `align(N)`, EX-05)* (pedido 2 de EX-01). `mkaxe.sh` rellena
    el texto con ceros hasta la página, pero un texto de dos páginas con código
    real en la segunda solo sale de un binario más largo de 4096 bytes.
    `atk2w` (texto de 2 páginas) es `atk2` con el campo `text` cambiado en el

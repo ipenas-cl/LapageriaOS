@@ -634,7 +634,7 @@ fn copy_user(pi: i64, src: i64, n: i64, code: i64) -> i64 {
 
 // Distribución de memoria de un proceso (EX-01, docs/exec.md).
 //
-// Legado (AXE1, build_proc y las demos): una página de código en 0x400000,
+// Legado (AXE1, build_proc sin build_guard): una página de código en 0x400000,
 // una página de pila y E/S en 0x401000 (pila hasta 0x402000), páginas pedidas
 // con la syscall 8 desde 0x402000. proc_io, proc_ihi y proc_wlo valen 0.
 // Los AXE1 de exec (build_guard, EX-04) separan la pila: la E/S sigue sola en
@@ -655,7 +655,7 @@ fn copy_user(pi: i64, src: i64, n: i64, code: i64) -> i64 {
 let proc_io: [i64; 2];
 let proc_ihi: [i64; 2];
 let proc_wlo: [i64; 2];
-// Base de la pila de un AXE1 con guarda (0x40F000), o 0 (demos y AXE2).
+// Base de la pila de un AXE1 con guarda (0x40F000), o 0 (AXE2 y build_proc sin guarda).
 let proc_stk: [i64; 2];
 // exec_build lo pone en 1 antes de build_proc: pide la pila con guarda.
 let build_guard: i64 = 0;
