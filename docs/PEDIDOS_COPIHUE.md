@@ -2,11 +2,12 @@
 
 Lapageria rosea es el nombre científico del copihue; antes AtomicOS.
 
-Compilador fijado en el Makefile: v0.44.6, commit
-`509746b53d2c79daf816532c8a30abec3b83757d` (EX-10). `git -C build/copihue
-rev-parse HEAD` después del `make` devolvió ese commit. v0.44.6 trae `ms64 fn`
-(ABI Microsoft x64) para UEFI; en EX-10 no se usa todavía (`efi_call*` sigue
-igual). Salta directo desde v0.44.4. Hasta EX-09 el pin era v0.44.4
+Compilador fijado en el Makefile: v0.44.7, commit
+`53dfca74e0f0b2d5c091aefcee305419cb01394e` (EX-11). `git -C build/copihue
+rev-parse HEAD` después del `make` devolvió ese commit. v0.44.7 trae
+`--flat ADDR --pic` (RIP-relative); en EX-11 no se usa todavía. Hasta EX-10 el pin
+era v0.44.6 (`509746b53d2c79daf816532c8a30abec3b83757d`, trae `ms64 fn` para UEFI;
+`efi_call*` sigue igual). Salta directo desde v0.44.4. Hasta EX-09 el pin era v0.44.4
 (`dd708bc4854e0cfc9f2037c902c28b8501331211`). Hasta EX-08 el pin era
 v0.44.3 (`ad9fd12372966073ecceea279c82e2b8b15a9262`). Hasta EX-07 el pin era v0.44.2
 (`eaadb4472935a542979ebfbd2f7d3c7ebf719212`). En EX-05 el pin era v0.44.1
