@@ -23,6 +23,7 @@
 #   qemu-fs3-test  Solo fs migrate, fs snap rm y fs rm -r (tests/qemu_fs3_test.sh;
 #              necesita cc para scripts/mkv1.c).
 #   qemu-ata-test  Solo la prueba del timeout ATA con -icount shift=4 (tests/qemu_ata_test.sh).
+#   qemu-ahci-test  Solo la lectura de sectores por AHCI (tests/qemu_ahci_test.sh).
 #   qemu-cpu-test  Solo la cuota de CPU por zona (tests/qemu_cpu_test.sh), normal y con -icount shift=4.
 #   debug      Igual que qemu, y espera a gdb en tcp::1234 (-s -S).
 #   clean      Borra build/.
@@ -149,10 +150,11 @@ COPIHUE_KERNEL_SRC = $(KERNEL_SRC)/copihue/console.lap \
                      $(KERNEL_SRC)/copihue/udp.lap \
                      $(KERNEL_SRC)/copihue/tcp.lap \
                      $(KERNEL_SRC)/copihue/trace.lap \
+                     $(KERNEL_SRC)/copihue/ahci.lap \
                      $(KERNEL_SRC)/copihue/shell.lap \
                      $(KERNEL_SRC)/copihue/kernel.lap
 
-.PHONY: all qemu qemu-test qemu-shell-test mkaxe-test qemu-axe2-test qemu-atk1-test qemu-fast-test qemu-burst-test qemu-stab-test qemu-big-test qemu-udp-test qemu-tcp-test qemu-trace-test qemu-zswitch-test qemu-iso-test qemu-fs2-test qemu-fs3-test qemu-ata-test qemu-cpu-test debug clean help
+.PHONY: all qemu qemu-test qemu-shell-test mkaxe-test qemu-axe2-test qemu-atk1-test qemu-fast-test qemu-burst-test qemu-stab-test qemu-big-test qemu-udp-test qemu-tcp-test qemu-trace-test qemu-zswitch-test qemu-iso-test qemu-fs2-test qemu-fs3-test qemu-ata-test qemu-ahci-test qemu-cpu-test debug clean help
 
 # Imagen de arranque: LBA 0 etapa 1, LBA 1 etapa 2, LBA KERNEL_LBA el kernel.
 all: $(OS_IMAGE)
@@ -435,6 +437,7 @@ qemu-test: $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_fs2_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_fs3_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_ata_test.sh $(OS_IMAGE)
+	$(TESTS_DIR)/qemu_ahci_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_cpu_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_cpu_test.sh $(OS_IMAGE) "-icount shift=4"
 	COPIHUE=$(abspath $(COPIHUE)) $(TESTS_DIR)/stage2_big_test.sh $(BUILD_DIR)
@@ -448,6 +451,11 @@ qemu-shell-test: $(OS_IMAGE)
 # Solo la red por IRQ y UDP. Usa una copia nueva del disco de datos.
 qemu-udp-test: $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_udp_test.sh $(OS_IMAGE)
+
+# HR-01: lectura de sectores por AHCI (tests/qemu_ahci_test.sh). Arranca por
+# BIOS+IDE como siempre y cuelga un controlador AHCI con un disco SATA.
+qemu-ahci-test: $(OS_IMAGE)
+	$(TESTS_DIR)/qemu_ahci_test.sh $(OS_IMAGE)
 
 # Solo scripts/mkaxe.sh (EX-02): cabeceras AXE1 y AXE2, relleno, bss y rechazos.
 # No arranca QEMU.
