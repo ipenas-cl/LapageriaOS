@@ -20,8 +20,9 @@ default rel
 
 IMAGE_BASE      equ 0x0000000140000000
 TEXT_RVA        equ 0x1000
-RELOC_RVA       equ 0x2000
-SIZE_OF_IMAGE   equ 0x3000
+; .reloc va en la página que sigue a .text, sea cual sea su tamaño.
+RELOC_RVA       equ TEXT_RVA + ((STUB_SIZE + 0xFFF) & ~0xFFF)
+SIZE_OF_IMAGE   equ RELOC_RVA + 0x1000
 HEADERS_RAW     equ 0x200
 
 ; --- DOS ---------------------------------------------------------------
