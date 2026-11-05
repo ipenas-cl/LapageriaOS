@@ -418,7 +418,7 @@ fn exec_stage() -> i64 {
 
 // Arma el proceso pi con el programa de la ranura s y lo deja listo para
 // sched_go: el marco con su entrada y la pila que le toca (0x402000 en un
-// AXE1, 0x412000 en un AXE2), y la salida por líneas. 1, o 0 si no hubo
+// AXE1, 0x413000 en un AXE2), y la salida por líneas. 1, o 0 si no hubo
 // páginas (zone_errno dice por qué; el que llama libera).
 fn exec_build(pi: i64, s: i64) -> i64 {
     let code = exec_code as i64;
@@ -426,7 +426,7 @@ fn exec_build(pi: i64, s: i64) -> i64 {
     if (ex_kind[s] == 2) {
         if (build_image(pi, code, ex_sz[s], ex_text[s], ex_mem[s]) == 0) { return 0; }
         proc_lbuf[pi] = 1;
-        forge(pi, ex_ent[s], 0x412000, 0x202);
+        forge(pi, ex_ent[s], 0x413000, 0x202);
         return 1;
     }
     if (build_proc(pi, code, ex_sz[s], 0) == 0) { return 0; }

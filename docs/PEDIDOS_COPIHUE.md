@@ -16,6 +16,19 @@ Sin `asm()` nuevo. Una función de 7 parámetros (`udp_recv`; el séptimo es
 el plazo) compila y la prueba de plazo la ejerce; `udp_park` usa globales
 por prudencia, no porque haya fallado algo.
 
+## EX-03 (página de guarda de la pila), con Copihue v0.42.5
+
+`rsp = rdi;` y `push(0);` dentro de un `naked fn`, y un arreglo local
+`[u8; 8192]` compilaron a la primera, sin `asm()`. Un pedido:
+
+1. **Sondeo de pila para marcos de más de una página.** Un `let b: [u8; 8192]`
+   baja `rsp` ocho mil bytes de una vez y no toca las páginas intermedias, así
+   que una guarda de una página no lo detiene (`atk2` modo `y`, ver
+   docs/exec.md). Hace falta que el prólogo toque una palabra por página al
+   reservar un marco de 4096 bytes o más (como `-fstack-clash-protection` o
+   `__chkstk`), o una advertencia en tiempo de compilación para marcos así. Sin
+   eso la guarda cubre la recursión y los `push`, no los arreglos grandes.
+
 ## FS-04 (espera ATA por ticks, `fs rm -r` con guardas, cuota de CPU), con Copihue v0.42.5
 
 Sin pedidos que bloqueen nada; `read_rflags()` (para saber si IF está

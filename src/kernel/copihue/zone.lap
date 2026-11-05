@@ -587,6 +587,13 @@ fn zone_plant_atk() -> i64 {
 }
 
 fn zone_run(z: i64) -> i64 {
+    // shared_init toma 2 páginas bajas la primera vez que se arma un proceso.
+    // Si lo hace después de medir `before`, el primer `zone exec` tras el
+    // arranque dice `zone leak` aunque no haya fuga (EX-03/2).
+    let iflags0: u64 = irq_save();
+    let si = shared_init();
+    irq_restore(iflags0);
+    if (si == 0) { return zone_fail(6); }
     let before = pmm_free;
     puts("zone mem ");
     put_int(before);

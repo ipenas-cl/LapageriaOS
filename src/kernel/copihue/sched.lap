@@ -638,8 +638,10 @@ fn copy_user(pi: i64, src: i64, n: i64, code: i64) -> i64 {
 // con la syscall 8 desde 0x402000. proc_io, proc_ihi y proc_wlo valen 0.
 //
 // AXE2 (build_image): imagen de 1 a 16 páginas desde 0x400000, la página de
-// E/S sola en 0x410000, la pila en 0x411000 (tope 0x412000) y las páginas de
-// la syscall 8 desde 0x412000. Las páginas de texto de la imagen son de solo
+// E/S sola en 0x410000, una página de guarda sin mapa en 0x411000, la pila en
+// 0x412000 (tope 0x413000) y las páginas de la syscall 8 desde 0x413000. La
+// pila crece hacia abajo: un desborde cae en la guarda y mata solo a ese
+// proceso, en vez de pisar la página de E/S. Las páginas de texto de la imagen son de solo
 // lectura y ejecutables; el resto de la imagen (datos y bss) es de lectura y
 // escritura sin ejecución.
 //   proc_io[pi]   base de la página de E/S (+0x800 nombre, +0xC00 datos)
@@ -784,7 +786,7 @@ fn build_image(pi: i64, src: i64, n: i64, text_n: i64, mem_n: i64) -> i64 {
     let stack = take_page(pi, 0);
     if (io == 0 || stack == 0) { return build_fail(); }
     if (map_user(pi, 0x410000, io, 7 | pte_nx_bit()) == 0) { return build_fail(); }
-    if (map_user(pi, 0x411000, stack, 7 | pte_nx_bit()) == 0) { return build_fail(); }
+    if (map_user(pi, 0x412000, stack, 7 | pte_nx_bit()) == 0) { return build_fail(); }
     // El kernel escribe por las tablas del propio proceso, mientras todas
     // las páginas son de escritura (como copy_user).
     write_cr3(proc_pml4[pi]);
@@ -794,7 +796,7 @@ fn build_image(pi: i64, src: i64, n: i64, text_n: i64, mem_n: i64) -> i64 {
         i = i + 1;
     }
     zero_va(0x410000);
-    zero_va(0x411000);
+    zero_va(0x412000);
     let dst: *u8 = 0x400000;
     let s: *u8 = src as *u8;
     i = 0;
@@ -811,8 +813,8 @@ fn build_image(pi: i64, src: i64, n: i64, text_n: i64, mem_n: i64) -> i64 {
     proc_io[pi] = 0x410000;
     proc_ihi[pi] = 0x400000 + npg * 4096;
     proc_wlo[pi] = 0x400000 + tpg * 4096;
-    proc_uva[pi] = 0x412000;
-    forge(pi, 0x400000, 0x412000, 0x202);
+    proc_uva[pi] = 0x413000;
+    forge(pi, 0x400000, 0x413000, 0x202);
     proc_state[pi] = 1;
     charge_zone = 0;
     return 1;

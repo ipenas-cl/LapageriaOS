@@ -8,6 +8,33 @@ para ese commit es `legacy-tempo`.
 
 ## 0.8
 
+EX-03, página de guarda de la pila y estabilidad de los ataques.
+(1) La pila de un AXE2 iba pegada a la página de E/S (`0x410000`): un desborde
+pisaba el nombre y los datos de las syscalls 6, 7 y 27 y moría recién bajo la E/S,
+en `0x40fxxx`. Ahora `0x411000` queda sin mapa, la pila pasa a `0x412000` (tope
+`0x413000`) y las páginas de la syscall 8 empiezan en `0x413000`; `uptr_range_ok`
+trata la E/S y la pila como regiones separadas (un rango que cruza la guarda da
+`-14`). `atk2` suma los modos `t`, `u`, `r` (leer, escribir y ejecutar la
+guarda), `v` y `x` (`rsp` dentro de la guarda y bajo la E/S, en el hueco, y un
+`push`) e `y` (marco local de 8 KiB). `tests/qemu_axe2_test.sh` pasa de 18 a 23
+ataques, exige que el desborde por recursión caiga en `0x411xxx` y que con
+`exec2 atk2 pag2` (en los dos órdenes) muera solo `atk2` mientras `pag2` dice
+`pag2 ok`, devuelve 9 páginas y el shell responde. Límite conocido: un marco
+local de más de 4096 bytes salta la guarda (`atk2 y` sobrevive; la prueba lo
+informa y no lo exige) porque el compilador no sondea la pila; pedido en
+`docs/PEDIDOS_COPIHUE.md`. (2) Baterías de ataques repetidas: los 16 ataques de
+AXE1 salen de `qemu_shell_test.sh` (que mezcla comprobaciones del PIT y no
+admite icount) a `tests/qemu_atk1_test.sh`, con `QEMU_EXTRA`. `make
+qemu-stab-test` corre 6 veces cada batería, 3 a la vez, con `-icount shift=7` y
+sin icount: AXE2 6/6 y 6/6, AXE1 6/6 y 6/6, ninguna falla. Lo único que falló
+fue la batería AXE1 sola, en su primera corrida: `zone leak` en el primer
+ataque. No era una fuga: `shared_init` toma 2 páginas bajas la primera vez que
+se arma un proceso y `zone_run` medía `before` antes, así que el primer `zone
+exec` tras el arranque dijo `zone leak` siempre (la prueba grande lo escondía con
+un `exec` previo). `zone_run` llama ahora a `shared_init` antes de medir.
+`tests/repeat.sh` sale con error si alguna corrida falla y ya no lleva una ruta
+absoluta. Kernel: 941 sectores (antes 933).
+
 EX-02, `mkaxe.sh` empaca AXE2 y ataques de anillo 3 contra un AXE2.
 (1) `scripts/mkaxe.sh [-d datos.bin] [-b bss] payload.bin salida.axe salida.lap
 [funcion]`: sin opciones y con un payload de hasta 4080 bytes sale el mismo AXE1

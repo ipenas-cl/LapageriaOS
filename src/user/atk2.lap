@@ -3,7 +3,8 @@
 // 1 página con un `ret` (0xC3) en el byte 0, bss de 1 página):
 //
 //   0x400000 texto (RX)   0x401000 datos (RW, NX)   0x402000 bss (RW, NX)
-//   0x410000 E/S (RW, NX)  0x411000 pila (RW, NX)   0x412000 sin mapa
+//   0x410000 E/S (RW, NX)  0x411000 guarda (sin mapa)
+//   0x412000 pila (RW, NX, tope 0x413000)            0x413000 sin mapa
 //
 // Hace UN ataque contra la memoria o las syscalls. El modo sale del archivo
 // `q` (nombre en 0x410800, datos en 0x410C00): el shell lo escribe con
@@ -13,19 +14,26 @@
 //   'c' ejecutar la página de datos (hay un ret)     'd' ejecutar la bss
 //   'e' ejecutar la página de E/S                    'f' ejecutar la pila
 //   'g' leer 0x403000, justo después de la bss       'h' escribir ahí
-//   'i' leer 0x40FFFF, en el hueco antes de la E/S   'j' leer 0x412000
+//   'i' leer 0x40FFFF, en el hueco antes de la E/S   'j' leer 0x413000
 //   'k' leer 0x3FFFFF, antes de la imagen            'l' leer el kernel
 //   'm' escribir la mitad alta 0xFFFF800000001000    'n' leer 0x1000
 //   'o' leer una dirección no canónica
 //   'q' ejecutar una página pedida con la syscall 8 (hay un ret)
-//   's' desbordar la pila hacia abajo (cae en el hueco bajo la E/S)
+//   's' desbordar la pila hacia abajo: cae en la guarda, sin tocar la E/S
+//   't' leer el primer byte de la guarda             'u' escribir el último
+//   'r' ejecutar la guarda
+//   'v' rsp dentro de la guarda y un push (escribe en la guarda)
+//   'x' rsp bajo la E/S, en el hueco, y un push
+//   'y' marco local de 8 KiB: SALTA la guarda y cae en la E/S (limite
+//       conocido, ver docs/exec.md; la prueba lo informa y no lo exige)
 //   'w' escribir la segunda página (en `atk2` es de datos y se puede: control;
 //       en `atk2w`, la misma imagen con 2 páginas de texto, es de solo lectura)
 //   'p' punteros de usuario malos en una syscall que escribe (23, op 5):
 //       texto, hueco, pasar del fin de la imagen, pasar del tope de la pila,
 //       del kernel y enormes se niegan con -14 y el texto queda igual; dos
 //       rangos válidos que cruzan de una página de escritura a la siguiente
-//       (datos a bss, E/S a pila) tienen que funcionar (control).
+//       (datos a bss) tienen que funcionar (control); de la E/S a la pila
+//       ya no, porque entre las dos está la guarda.
 //
 // Cada ataque (menos 'w' en atk2 y 'p') tiene que matar al proceso, así que
 // `atk2 survived` solo sale si el kernel NO lo negó.
@@ -134,7 +142,7 @@ fn ptr_attack() {
     bad = denied(bad, 5, name_at(0x402FF8));
     bad = denied(bad, 6, name_at(0x403000));
     bad = denied(bad, 7, name_at(0x411FF8));
-    bad = denied(bad, 8, name_at(0x412000));
+    bad = denied(bad, 8, name_at(0x413000));
     bad = denied(bad, 9, name_at(0x3FFFF8));
     bad = denied(bad, 10, name_at(0xFFFFFFFF80400000));
     bad = denied(bad, 11, name_at(0xFFFF800000001000));
@@ -143,13 +151,17 @@ fn ptr_attack() {
     if (get(0x400000) != t0 || get(0x400FF8) != t1) {
         if (bad == 0) { bad = 14; }
     }
-    // Control: rangos válidos. Datos a bss y E/S a pila cruzan de una página
-    // de escritura a la siguiente; el nombre de la sonda 0 tiene más de 0 bytes.
+    // Pasar del tope de la pila y cruzar la guarda (E/S a guarda, dentro de ella).
+    bad = denied(bad, 20, name_at(0x412FF8));
+    bad = denied(bad, 21, name_at(0x410FF8));
+    bad = denied(bad, 22, name_at(0x411000));
+    // Control: rangos válidos. Datos a bss cruzan de una página de escritura
+    // a la siguiente; el nombre de la sonda 0 tiene más de 0 bytes.
     bad = allowed(bad, 15, name_at(0x401FF8));
     bad = allowed(bad, 16, name_at(0x401000));
     bad = allowed(bad, 17, name_at(0x402800));
-    bad = allowed(bad, 18, name_at(0x410FF8));
-    bad = allowed(bad, 19, name_at(0x411800));
+    bad = allowed(bad, 18, name_at(0x410FE0));
+    bad = allowed(bad, 19, name_at(0x412800));
     if (bad == 0) { say_ptr(); }
     else { say_bad(bad); }
 }
@@ -157,6 +169,20 @@ fn ptr_attack() {
 fn deep(n: i64) -> i64 {
     let pad: i64 = n;
     return deep(n + 1) + pad;
+}
+
+// Pone rsp en a y empuja: el push escribe en a - 8.
+naked fn sp_push(a: i64) {
+    rsp = rdi;
+    push(0);
+}
+
+// Marco local de 8 KiB: desde la pila (0x412000..0x413000) el arreglo cae
+// más de una página abajo y salta la guarda.
+fn big_frame() -> i64 {
+    let b: [u8; 8192];
+    b[0] = 1;
+    return b[0];
 }
 
 fn attack(m: i64) {
@@ -173,13 +199,13 @@ fn attack(m: i64) {
         call_to(0x410000);
     }
     if (m == 102) {
-        put(0x411000, 0xC3);
-        call_to(0x411000);
+        put(0x412000, 0xC3);
+        call_to(0x412000);
     }
     if (m == 103) { x = get(0x403000); }
     if (m == 104) { put(0x403000, 0); }
     if (m == 105) { x = get(0x40FFFF); }
-    if (m == 106) { x = get(0x412000); }
+    if (m == 106) { x = get(0x413000); }
     if (m == 107) { x = get(0x3FFFFF); }
     if (m == 108) { x = *(0xFFFFFFFF80400000 as *u8); }
     if (m == 109) { put(0xFFFF800000001000, 0); }
@@ -187,11 +213,17 @@ fn attack(m: i64) {
     if (m == 111) { x = *((1 << 63) as *u8); }
     if (m == 113) {
         if (syscall(8) == 0) {
-            put(0x412000, 0xC3);
-            call_to(0x412000);
+            put(0x413000, 0xC3);
+            call_to(0x413000);
         }
     }
+    if (m == 114) { call_to(0x411000); }
     if (m == 115) { x = deep(0); }
+    if (m == 116) { x = get(0x411000); }
+    if (m == 117) { put(0x411FFF, 0); }
+    if (m == 118) { sp_push(0x411800); }
+    if (m == 120) { sp_push(0x40F800); }
+    if (m == 121) { x = big_frame(); }
     if (m == 119) {
         put(0x401000, 0x77);
         if (get(0x401000) == 0x77) {

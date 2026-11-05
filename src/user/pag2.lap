@@ -6,7 +6,7 @@
 //   0x400000  texto (esta página): lectura y ejecución, sin escritura
 //   0x401000  datos (build/pag2.dat, 4096 bytes): lectura y escritura, NX
 //   0x402000  bss: en cero, sin archivo; lectura y escritura, NX
-//   0x410000  página de E/S      0x411000  pila
+//   0x410000  página de E/S      0x411000  guarda    0x412000  pila
 //
 // La página de datos trae "SEG2" en el byte 0, DE AD BE EF en el 0x800, 0x5A
 // en el último (0xFFF) y ceros en el resto. Pasos:
