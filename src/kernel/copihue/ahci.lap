@@ -86,7 +86,11 @@ fn ahci_spin(reg: i64, mask: i64, want: i64) -> i64 {
     return 1;
 }
 
-fn ahci_scan() -> i64 {
+// Busca el controlador AHCI número `skip` (0 = el primero) en el bus 0. Bajo
+// q35 el ICH9 trae uno integrado (casi siempre vacío) y `-device ahci` suma
+// otro: ahci_init prueba uno tras otro hasta dar con un disco.
+fn ahci_scan(want: i64) -> i64 {
+    let skip = want;
     let dev = 0;
     while (dev < 32) {
         let id0 = pci_rd(0, dev, 0, 0);
@@ -101,11 +105,14 @@ fn ahci_scan() -> i64 {
                     // Clase (31:24), subclase (23:16), interfaz (15:8).
                     let cls = pci_rd(0, dev, fun, 8) >> 8;
                     if ((cls & 0xFFFFFF) == 0x010601) {
-                        ahci_dev = dev;
-                        ahci_fun = fun;
-                        ahci_vid = id & 0xFFFF;
-                        ahci_did = (id >> 16) & 0xFFFF;
-                        return 0;
+                        if (skip == 0) {
+                            ahci_dev = dev;
+                            ahci_fun = fun;
+                            ahci_vid = id & 0xFFFF;
+                            ahci_did = (id >> 16) & 0xFFFF;
+                            return 0;
+                        }
+                        skip = skip - 1;
                     }
                 }
                 fun = fun + 1;
@@ -151,12 +158,48 @@ fn ahci_stop() -> i64 {
     return 0;
 }
 
+// Espera (tope ~200 ms del PIT) a que el puerto elegido tenga enlace: DET 3.
+fn ahci_wait_link() -> i64 {
+    let prev = ata_pit_read();
+    let acc = 0;
+    let n = 0;
+    while (acc < 238636) {
+        if ((ahci_pr(0x28) & 15) == 3) { return 0; }
+        n = n + 1;
+        if ((n & 15) == 0) {
+            let cur = ata_pit_read();
+            let d = prev - cur;
+            if (d < 0) { d = d + ATA_PIT_PERIOD; }
+            acc = acc + d;
+            prev = cur;
+        }
+    }
+    return 1;
+}
+
+// Si el firmware dejó el puerto sin enlace (DET != 3), lo reinicia con COMRESET
+// (PxSCTL.DET = 1, luego 0) y espera el enlace. Un puerto vacío paga el tope.
+fn ahci_link_up() -> i64 {
+    if ((ahci_pr(0x28) & 15) == 3) { return 0; }
+    // Con el motor de FIS detenido no hay riesgo de que el reset pise un DMA.
+    ahci_stop();
+    ahci_pw(0x2C, 0x301);
+    let i = 0;
+    while (i < 20000) {
+        ahci_pr(0x28);
+        i = i + 1;
+    }
+    ahci_pw(0x2C, 0x300);
+    return ahci_wait_link();
+}
+
 // Primer puerto implementado con un disco SATA (DET 3, IPM 1, firma 0x101).
 fn ahci_find_port() -> i64 {
     let n = 0;
     while (n < 32) {
         if (((ahci_pi >> n) & 1) != 0) {
             ahci_port = n;
+            ahci_link_up();
             let ssts = ahci_pr(0x28);
             if ((ssts & 15) == 3 && ((ssts >> 8) & 15) == 1) {
                 if (ahci_pr(0x24) == 0x101) { return 0; }
@@ -250,15 +293,32 @@ fn ahci_word(n: i64) -> i64 {
 // Busca el controlador, arma el puerto y lee IDENTIFY. Idempotente.
 fn ahci_init() -> i64 {
     if (ahci_ready != 0) { return 0; }
-    let r = ahci_scan();
-    if (r != 0) { return r; }
-    r = ahci_map_bar();
-    if (r != 0) { return r; }
-    // GHC.AE (bit 31), IE (bit 1) sigue en 0.
-    ahci_wr(0x04, 0x80000000);
-    ahci_pi = ahci_rd(0x0C);
-    r = ahci_find_port();
-    if (r != 0) { return r; }
+    let nth = 0;
+    let r = 3;
+    while (r != 0) {
+        r = ahci_scan(nth);
+        if (r != 0) { return r; }
+        r = ahci_map_bar();
+        if (r == 0) {
+            // GHC.AE (bit 31), IE (bit 1) sigue en 0.
+            ahci_wr(0x04, 0x80000000);
+            ahci_pi = ahci_rd(0x0C);
+            r = ahci_find_port();
+        }
+        if (r != 0) {
+            // Sin disco aquí: si hay otro controlador, apaga este (memoria y bus
+            // master) y prueba el siguiente; si no, lo deja como estaba (ahci_dump).
+            let bd = ahci_dev;
+            let bf = ahci_fun;
+            if (ahci_scan(nth + 1) != 0) {
+                ahci_dev = bd;
+                ahci_fun = bf;
+                return r;
+            }
+            pci_wr(0, bd, bf, 4, 0);
+            nth = nth + 1;
+        }
+    }
     ahci_pa = alloc_low_page();
     if (net_pa_ok(ahci_pa) == 0) { return 5; }
     zero_va(ahci_pa);
