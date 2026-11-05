@@ -25,8 +25,9 @@
 //   'r' ejecutar la guarda
 //   'v' rsp dentro de la guarda y un push (escribe en la guarda)
 //   'x' rsp bajo la E/S, en el hueco, y un push
-//   'y' marco local de 8 KiB: SALTA la guarda y cae en la E/S (limite
-//       conocido, ver docs/exec.md; la prueba lo informa y no lo exige)
+//   'y' marco local de 8 KiB: desde Copihue v0.44.2 el prólogo sondea la pila
+//       de a una página y cae en la guarda antes de que el cuerpo corra (antes
+//       de v0.44.2 saltaba la guarda y caía en la E/S; ver docs/exec.md)
 //   'w' escribir la segunda página (en `atk2` es de datos y se puede: control;
 //       en `atk2w`, la misma imagen con 2 páginas de texto, es de solo lectura)
 //   'p' punteros de usuario malos en una syscall que escribe (23, op 5):
@@ -184,7 +185,10 @@ naked fn sp_push(a: i64) {
 }
 
 // Marco local de 8 KiB: desde la pila (0x412000..0x413000) el arreglo cae
-// más de una página abajo y salta la guarda.
+// más de una página abajo. Hasta Copihue v0.44.1 el `sub rsp, 8192` de una
+// vez saltaba la guarda y caía en la E/S; desde v0.44.2 el prólogo sondea la
+// pila de a una página (EX-03, PEDIDOS_COPIHUE.md) y la primera `sub rsp,
+// 4096` ya cae dentro de la guarda (0x411000..0x412000).
 fn big_frame() -> i64 {
     let b: [u8; 8192];
     b[0] = 1;
