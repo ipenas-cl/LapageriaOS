@@ -455,11 +455,18 @@ fn udp_uptr_ok(p: i64, n: i64, write: i64) -> i64 {
 // [0x400000, ihi), escribible desde wlo, y la zona de E/S, pila y páginas
 // pedidas [io, hi). Un rango puede pasar de una región a la que le sigue
 // pegada (en el legado la imagen termina donde empieza la pila), pero no
-// cruzar un hueco ni escribir en el texto.
-fn uptr_seg_end(p: i64, write: i64, io: i64, ihi: i64, wlo: i64, hi: i64) -> i64 {
+// cruzar un hueco ni escribir en el texto. En un AXE2 (slo != 0) la E/S es
+// una sola página [io, io+0x1000) y la pila y lo pedido empiezan en slo:
+// entre las dos queda la página de guarda, que no se puede cruzar.
+fn uptr_seg_end(p: i64, write: i64, io: i64, ihi: i64, wlo: i64, hi: i64, slo: i64) -> i64 {
     if (p >= 0x400000 && p < ihi) {
         if (write != 0 && p < wlo) { return 0; }
         return ihi;
+    }
+    if (slo != 0) {
+        if (p >= io && p < io + 0x1000) { return io + 0x1000; }
+        if (p >= slo && p < hi) { return hi; }
+        return 0;
     }
     if (p >= io && p < hi) { return hi; }
     return 0;
@@ -470,21 +477,23 @@ fn uptr_range_ok(p: i64, n: i64, write: i64) -> i64 {
     let ihi = 0x401000;
     let wlo = 0x401000;
     let hi = 0x402000;
+    let slo = 0;
     let pi = cur_i;
     if (pi >= 0 && pi < 2 && proc_io[pi] != 0) {
         io = proc_io[pi];
         ihi = proc_ihi[pi];
         wlo = proc_wlo[pi];
-        hi = io + 0x2000;
+        slo = io + 0x2000;
+        hi = io + 0x3000;
     }
     if (pi >= 0 && pi < 2 && proc_uva[pi] > hi) { hi = proc_uva[pi]; }
     if (hi > 0x500000) { hi = 0x500000; }
     if (n < 0) { return 0; }
     let cur = p;
     let left = n;
-    if (left == 0 && uptr_seg_end(cur, write, io, ihi, wlo, hi) == 0) { return 0; }
+    if (left == 0 && uptr_seg_end(cur, write, io, ihi, wlo, hi, slo) == 0) { return 0; }
     while (left > 0) {
-        let e = uptr_seg_end(cur, write, io, ihi, wlo, hi);
+        let e = uptr_seg_end(cur, write, io, ihi, wlo, hi, slo);
         if (e == 0) { return 0; }
         let take = e - cur;
         if (take > left) { take = left; }
@@ -741,14 +750,14 @@ fn udp_selftest() -> i64 {
     if (udp_uptr_ok(0x401800, 0, 1) != 0) { return udp_fail(36); }
     if (udp_uptr_ok(0x401800, 513, 1) != 0) { return udp_fail(37); }
     // Lo mismo con la distribución de un AXE2 (EX-01): imagen de 4 páginas
-    // con 1 de texto, E/S en 0x410000, pila en 0x411000. El proceso 0 (cur_i)
-    // se deja como estaba al terminar.
+    // con 1 de texto, E/S en 0x410000, guarda en 0x411000 (sin mapa), pila en
+    // 0x412000. El proceso 0 (cur_i) se deja como estaba al terminar.
     let sv = cur_i;
     cur_i = 0;
     proc_io[0] = 0x410000;
     proc_ihi[0] = 0x404000;
     proc_wlo[0] = 0x401000;
-    proc_uva[0] = 0x412000;
+    proc_uva[0] = 0x413000;
     let ax = 1;
     if (uptr_range_ok(0x401000, 12288, 1) != 1) { ax = 60; }
     else if (uptr_range_ok(0x400000, 16, 0) != 1) { ax = 61; }
@@ -760,12 +769,17 @@ fn udp_selftest() -> i64 {
     else if (uptr_range_ok(0x404000, 1, 0) != 0) { ax = 67; }
     else if (uptr_range_ok(0x40FFFF, 1, 0) != 0) { ax = 68; }
     else if (uptr_range_ok(0x410800, 16, 1) != 1) { ax = 69; }
-    else if (uptr_range_ok(0x410FF8, 16, 1) != 1) { ax = 70; }
-    else if (uptr_range_ok(0x411FF8, 8, 1) != 1) { ax = 71; }
-    else if (uptr_range_ok(0x411FF8, 16, 1) != 0) { ax = 72; }
-    else if (uptr_range_ok(0x412000, 1, 0) != 0) { ax = 73; }
+    else if (uptr_range_ok(0x410FF8, 16, 1) != 0) { ax = 70; }
+    else if (uptr_range_ok(0x412FF8, 8, 1) != 1) { ax = 71; }
+    else if (uptr_range_ok(0x412FF8, 16, 1) != 0) { ax = 72; }
+    else if (uptr_range_ok(0x413000, 1, 0) != 0) { ax = 73; }
     else if (uptr_range_ok(0x3FFFFF, 1, 0) != 0) { ax = 74; }
     else if (uptr_range_ok(0x401800, 16, 1) != 1) { ax = 75; }
+    else if (uptr_range_ok(0x410FFF, 1, 1) != 1) { ax = 78; }
+    else if (uptr_range_ok(0x411000, 1, 0) != 0) { ax = 79; }
+    else if (uptr_range_ok(0x411FFF, 1, 1) != 0) { ax = 80; }
+    else if (uptr_range_ok(0x411FF8, 16, 1) != 0) { ax = 81; }
+    else if (uptr_range_ok(0x412000, 1, 1) != 1) { ax = 82; }
     if (ax == 1) {
         proc_uva[0] = 0x414000;
         if (uptr_range_ok(0x413FF8, 8, 1) != 1) { ax = 76; }

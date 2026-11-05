@@ -62,8 +62,9 @@ eligen una u otra por el magic.
 |---|---|---|
 | Imagen | `0x400000`, 1 página, solo lectura y ejecutable | `0x400000`, 1 a 16 páginas; texto RX, datos y bss RW sin ejecución |
 | Página de E/S | `0x401000` (compartida con la pila) | `0x410000`, sola |
-| Pila | `0x401000`..`0x402000`, tope `0x402000` | `0x411000`..`0x412000`, tope `0x412000` |
-| Páginas de la syscall 8 | desde `0x402000` | desde `0x412000` |
+| Guarda | no hay | `0x411000`, sin mapa (EX-03) |
+| Pila | `0x401000`..`0x402000`, tope `0x402000` | `0x412000`..`0x413000`, tope `0x413000` |
+| Páginas de la syscall 8 | desde `0x402000` | desde `0x413000` |
 | Nombre de las syscalls 6, 7 y 27 | `0x401800` | `0x410800` |
 | Datos de las syscalls 6 y 7 | `0x401C00` | `0x410C00` |
 
@@ -73,15 +74,35 @@ página de E/S si es un AXE2), así que los programas que ya existen no
 cambian. Los rangos que un programa pasa al kernel (UDP, TCP, trazas) se
 validan región por región (`uptr_range_ok`, `udp.lap`): un rango puede
 cruzar de una página a la siguiente si están pegadas, pero no un hueco
-(entre el fin de la imagen y `0x410000`), ni escribir en el texto, ni pasar
-del tope de la pila o de las páginas pedidas. Un proceso toma hasta 32 páginas
+(entre el fin de la imagen y `0x410000`, ni la guarda `0x411000`), ni escribir
+en el texto, ni pasar del tope de la pila o de las páginas pedidas. Un proceso toma hasta 32 páginas
 (el máximo de un AXE2 es 16 de imagen + 2 + 4 de tablas).
 
 Un AXE2 válido que no cabe en el cupo de su zona falla con `zone fail 6` sin
 dejar páginas tomadas. `grande` (4 páginas de imagen) toma 10 páginas, que son
 las que devuelve al salir (`freed=10`): 3 tablas (PML4, PDPT, PD), 1 tabla de
 páginas (`0x400000` y `0x410000` comparten una), 4 de imagen, la de E/S y la
+pila. La guarda no toma nada: es una entrada de la tabla de páginas en cero.
+
+### Página de guarda de la pila (EX-03)
+
+La pila de un AXE2 crece hacia abajo y antes de EX-03 estaba pegada a la
+página de E/S (`0x410000`): un desborde pisaba el nombre y los datos de las
+syscalls 6, 7 y 27 y moría recién bajo la E/S, en `0x40fxxx`. Ahora
+`0x411000` no tiene mapa: el primer acceso de la pila a esa página es un
+`#PF` en anillo 3 (`vec=14`, `err=0x6` al escribir), el kernel mata solo a ese
+proceso (`user killed`), devuelve sus páginas y el shell y los demás procesos
+siguen. La E/S ya no es contigua a la pila para el kernel: `uptr_range_ok`
+niega con `-14` un rango que cruce de la E/S a la guarda o de la guarda a la
 pila.
+
+Cubre la pila que baja en pasos de menos de una página (recursión, `push`,
+`call`), y el `rsp` puesto a mano en la guarda o bajo la E/S (el hueco sin mapa
+hasta el fin de la imagen). No cubre un marco local de más de 4096 bytes: el
+compilador no sondea la pila, un arreglo local de 8 KiB deja `rsp` más de una
+página abajo y sus escrituras caen en `0x410xxx`, en la E/S, sin pasar por la
+guarda (`atk2` modo `y`; la prueba lo informa y no lo exige). Cerrarlo del todo
+pide sondeo de pila en el compilador (`docs/PEDIDOS_COPIHUE.md`, EX-03).
 
 | Línea | Causa |
 |---|---|
@@ -173,15 +194,18 @@ kernel, en la mitad alta o con el bit 63; magic `AXE3`.
 | Modo | Ataque | Falla esperada (`user killed`) |
 |---|---|---|
 | `a` `b` | escribir el primer y el último byte del texto | `vec=14 err=0x7` en `0x400000`, `0x400fff` |
-| `c` `d` `e` `f` `q` | ejecutar datos, bss, página de E/S, pila, página de la syscall 8 (con un `ret` de destino) | `vec=14 err=0x15` en `0x401000`, `0x402000`, `0x410000`, `0x411000`, `0x412000` |
+| `c` `d` `e` `f` `q` | ejecutar datos, bss, página de E/S, pila, página de la syscall 8 (con un `ret` de destino) | `vec=14 err=0x15` en `0x401000`, `0x402000`, `0x410000`, `0x412000`, `0x413000` |
 | `g` `h` | leer, escribir justo después de la bss | `err=0x4`, `err=0x6` en `0x403000` |
-| `i` `j` `k` | leer el hueco antes de la E/S, sobre la pila, bajo la imagen | `err=0x4` en `0x40ffff`, `0x412000`, `0x3fffff` |
-| `s` | desbordar la pila hacia abajo | `err=0x6` en `0x40fxxx` (cruza antes su propia E/S) |
+| `i` `j` `k` | leer el hueco antes de la E/S, sobre la pila, bajo la imagen | `err=0x4` en `0x40ffff`, `0x413000`, `0x3fffff` |
+| `s` | desbordar la pila hacia abajo (recursión) | `err=0x6` en `0x411xxx`: cae en la guarda sin tocar la E/S |
+| `t` `u` `r` | leer el primer byte de la guarda, escribir el último, ejecutarla | `err=0x4` en `0x411000`, `err=0x6` en `0x411fff`, `err=0x14` en `0x411000` |
+| `v` `x` | `rsp` dentro de la guarda y un `push`; `rsp` bajo la E/S y un `push` | `err=0x6` en `0x4117f8` y en `0x40f7f8` |
+| `y` | marco local de 8 KiB | nada la detiene: salta la guarda (límite conocido, arriba) |
 | `l` `m` `n` | leer el kernel, escribir la mitad alta, leer `0x1000` | `err=0x5`, `0x7`, `0x5` |
 | `o` | dirección no canónica | `#GP` o `#PF`, según el QEMU |
 | `w` en `atk2w` | escribir la segunda página (texto) | `err=0x7` en `0x401000` |
 | `w` en `atk2` | escribir la segunda página (datos) | nada: `atk2 w ok` (control) |
-| `p` | 13 punteros malos en la syscall 23 op 5 (texto, hueco, fin de imagen, tope de pila, kernel, enormes) | nadie muere: `-14` y el texto igual; 5 rangos válidos que cruzan de página funcionan. Necesita `zone trace` (la syscall 23 está fuera de la máscara de una zona nueva) |
+| `p` | 16 punteros malos en la syscall 23 op 5 (texto, hueco, guarda, E/S a guarda, fin de imagen, tope de pila, kernel, enormes) | nadie muere: `-14` y el texto igual; 5 rangos válidos (datos a bss, dentro de la E/S y de la pila) funcionan. Necesita `zone trace` (la syscall 23 está fuera de la máscara de una zona nueva) |
 
 Todos los que matan dejan `zone ls` con `pag=0` y sin procesos.
 

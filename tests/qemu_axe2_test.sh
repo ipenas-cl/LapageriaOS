@@ -204,17 +204,28 @@ atk_run b 14 0x00000007 0x0000000000400fff
 atk_run c 14 0x00000015 0x0000000000401000
 atk_run d 14 0x00000015 0x0000000000402000
 atk_run e 14 0x00000015 0x0000000000410000
-atk_run f 14 0x00000015 0x0000000000411000
-atk_run q 14 0x00000015 0x0000000000412000
+atk_run f 14 0x00000015 0x0000000000412000
+atk_run q 14 0x00000015 0x0000000000413000
 # Fuera de sus páginas: justo después de la bss (leer: no presente, error 4;
 # escribir: error 6), el hueco antes de la E/S, sobre la pila y bajo la imagen.
 atk_run g 14 0x00000004 0x0000000000403000
 atk_run h 14 0x00000006 0x0000000000403000
 atk_run i 14 0x00000004 0x000000000040ffff
-atk_run j 14 0x00000004 0x0000000000412000
+atk_run j 14 0x00000004 0x0000000000413000
 atk_run k 14 0x00000004 0x00000000003fffff
-# La pila se desborda hacia abajo: cruza la E/S (suya) y cae en el hueco.
-atk_run s 14 0x00000006 '0x000000000040f[0-9a-f]{3}'
+# EX-03: la página de guarda (0x411000, sin mapa) entre la E/S y la pila. La
+# pila se desborda hacia abajo y tiene que caer en la guarda (0x411xxx) y no
+# en la E/S: si llegara a 0x410xxx habría pisado la página de E/S antes de
+# morir (antes de EX-03 la muerte salía en 0x40fxxx, bajo la E/S).
+atk_run s 14 0x00000006 '0x0000000000411[0-9a-f]{3}'
+# La guarda en sí: leer su primer byte, escribir el último, ejecutarla (error
+# 0x14: no presente, usuario, fetch) y un push con rsp dentro de ella.
+atk_run t 14 0x00000004 0x0000000000411000
+atk_run u 14 0x00000006 0x0000000000411fff
+atk_run r 14 0x00000014 0x0000000000411000
+atk_run v 14 0x00000006 0x00000000004117f8
+# El otro lado: rsp bajo la E/S, en el hueco sin mapa, y un push.
+atk_run x 14 0x00000006 0x000000000040f7f8
 # Memoria del kernel y tablas, igual que el AXE1.
 atk_run l 14 0x00000005 0xffffffff80400000
 atk_run m 14 0x00000007 0xffff800000001000
@@ -224,7 +235,42 @@ atk_run o '(13|14)' '0x0000000[05]' '(0x00000000004[0-9a-f]{5}|0x800000000000000
 tr -d '\r' < "$SERIAL" | grep '^user killed ' | grep -Eq 'vec=13 err=0x00000000 addr=0x00000000004|vec=14 err=0x00000005 addr=0x8000000000000000$' || fail "attack o: unexpected fault combination"
 # Dos páginas de texto: la segunda deja de ser de datos y es de solo lectura.
 atk_run w 14 0x00000007 0x0000000000401000 atk2w
-echo "ok   ring 3 vs un AXE2: $attack_n ataques (escribir texto, ejecutar datos/bss/E-S/pila/pág. pedida, leer y escribir fuera de sus páginas, desbordar la pila, kernel, no canónica, escribir texto de 2 páginas) mataron solo al proceso"
+echo "ok   ring 3 vs un AXE2: $attack_n ataques (escribir texto, ejecutar datos/bss/E-S/pila/pág. pedida, leer y escribir fuera de sus páginas, desbordar la pila contra la guarda, tocar la guarda, rsp en la guarda y bajo la E/S, kernel, no canónica, escribir texto de 2 páginas) mataron solo al proceso"
+
+# EX-03: un desborde de pila mata solo a ese proceso. Con exec2 (zona 0) corren
+# dos AXE2 a la vez, atk2 en modo 's' (desborde) y pag2 (que usa su E/S y su
+# pila); el otro proceso termina bien y devuelve todas sus páginas, y el shell
+# sigue. Se prueba en los dos órdenes (el primero nombrado es el pid 1).
+typewait "fs write q s" 100
+typewait "fs write /zonas/k/q s" 100
+for pair in "atk2 pag2" "pag2 atk2"; do
+    off=$(wc -c < "$SERIAL" | tr -d ' ')
+    typewait "exec2 $pair" 900
+    win=$(tail -c +$((off + 1)) "$SERIAL" | tr -d '\r')
+    printf '%s\n' "$win" | grep -qx 'pag2 ok' || fail "exec2 $pair: pag2 no terminó bien: $win"
+    printf '%s\n' "$win" | grep -qx 'atk2 survived' && fail "exec2 $pair: atk2 sobrevivió: $win"
+    printf '%s\n' "$win" | grep -Eqx 'user killed pid=[12] vec=14 err=0x00000006 addr=0x0000000000411[0-9a-f]{3}' || fail "exec2 $pair: el desborde no cayó en la guarda: $win"
+    [ "$(printf '%s\n' "$win" | grep -c '^user killed ')" = 1 ] || fail "exec2 $pair: murió más de un proceso: $win"
+    printf '%s\n' "$win" | grep -Eqx 'exit pid=[12] freed=9' || fail "exec2 $pair: pag2 no devolvió sus 9 páginas: $win"
+    printf '%s\n' "$win" | grep -qx 'exec2 ok' || fail "exec2 $pair no terminó: $win"
+    typewait "echo vivo-$pair" 50
+    has "vivo-$pair" || fail "exec2 $pair: el shell no respondió"
+done
+echo "ok   desborde de pila con otro proceso vivo (exec2 atk2 pag2 y pag2 atk2): muere solo atk2 en la guarda, pag2 dice pag2 ok y devuelve 9 páginas, el shell sigue"
+
+# Límite conocido (informativo, no se exige): un marco local de más de una
+# página salta la guarda; el compilador no sondea la pila (PEDIDOS_COPIHUE.md).
+typewait "fs write /zonas/k/q y" 100
+off=$(wc -c < "$SERIAL" | tr -d ' ')
+typewait "zone exec k atk2" 300
+win=$(tail -c +$((off + 1)) "$SERIAL" | tr -d '\r')
+if printf '%s\n' "$win" | grep -q 'atk2 survived'; then
+    echo "info marco local de 8 KiB (atk2 y): salta la guarda y sobrevive (por la geometría, b[0] cae en 0x410xxx, la E/S; no se observó el contenido)"
+else
+    echo "info marco local de 8 KiB (atk2 y): $(printf '%s\n' "$win" | grep '^user killed ' || echo 'sin user killed')"
+fi
+typewait "echo vivo-y" 50
+has "vivo-y" || fail "el shell no respondió tras el marco de 8 KiB"
 
 # Control: la misma escritura en la segunda página de atk2 (datos) no mata a nadie.
 typewait "fs write /zonas/k/q w" 100
