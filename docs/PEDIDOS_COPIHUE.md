@@ -710,3 +710,20 @@ Dos incomodidades, ninguna con contorno raro:
 Tamaño: el kernel pasó de 394009 a 406754 bytes (770 a 795 sectores, de
 2048 posibles) y la `.bss` de 145 KB a 246 KB (`fs_big` de 72 KiB, `fs_dt`
 de 2 KiB y la pila del barrido).
+
+## FS-05
+
+Nada del lenguaje bloqueó FS-05 (tarea ociosa, guardia de `fs rm`, espera
+del ATA por el contador del PIT). `&idle_loop` como dirección de una `fn`,
+`idle_stack as i64` sobre un arreglo global y `outb`/`inb` compilaron como
+estaba previsto. Dos incomodidades:
+
+1. **Programas de anillo 3 de una sola página.** `src/user/par.lap` está a
+   pocos bytes del tope de `mkaxe` (4080). Un segundo bucle de gasto de CPU
+   (`hog_short`) no cabía y se resolvió con un solo `hog(n)` y el dígito del
+   modo como exponente (`1 << (m - 29)`). Un programa de usuario de más de
+   una página aliviaría esto. Además, `hog` ya no acumula `s = s + i` (para
+   ahorrar bytes); no se investigó cuánto cambia el costo por vuelta entre
+   las dos versiones, por eso la prueba mide ticks cobrados y no vueltas.
+2. **Sin `const` global** (igual que arriba): `ATA_PIT_PERIOD` y
+   `ATA_PIT_TIMEOUT` son `let` globales normales.
