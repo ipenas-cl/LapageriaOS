@@ -733,3 +733,22 @@ estaba previsto. Dos incomodidades:
    bytes más grande que el bucle doble.
 2. **Sin `const` global** (igual que arriba): `ATA_PIT_PERIOD` y
    `ATA_PIT_TIMEOUT` son `let` globales normales.
+
+## OB-03 (par y parcpu, `zone ls`), con Copihue v0.42.5
+
+Nada bloqueó la tarea; compiló sin `asm()` nuevo. Dos notas:
+
+1. **Programas de anillo 3 de una sola página (sigue abierto).** `par.bin`
+   estaba en 4078 de 4080 bytes. Se eligió dividir el programa (`par` y
+   `parcpu`) y no subir el tope: el límite no es solo de `mkaxe.sh`. El
+   código del proceso es una página de 4 KiB en `0x400000`, y `0x401000`
+   (búfer de traza), `0x401800` y `0x401C00` (nombre y datos) son
+   direcciones fijas que los programas ya usan; `zone_plant_*` rechaza
+   `n > 4096`. Un ejecutable de varias páginas obligaría a mover esos
+   búferes y a cambiar `exec_prepare`, la carga y todos los programas de
+   usuario. No se probó. Pedido al lenguaje (sigue valiendo): un modo de
+   salida que no pague 4 bytes por asignación al embeber (`mkaxe.sh`) y un
+   optimizador de bucles/locales; `par` bajó a 3919 bytes solo con sacar
+   el modo `k`.
+2. **Sin `const`.** `parcpu` repite los topes de lectura (2000000 y 1000) como
+   literales. Mismo pedido de RD-03.

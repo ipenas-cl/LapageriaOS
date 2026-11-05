@@ -231,7 +231,18 @@ echo. Polling del bit DD. Sin TCP ni UDP. El detalle está en
 
 `zone` aísla procesos con tope de páginas, máscara de syscalls (niega por defecto), prefijo de archivos y tope de procesos. La zona 0 es la global. Un proceso de una zona no ve, no señala ni traza a los de otra (`tests/qemu_iso_test.sh`), y el cambio de zona en cada cambio de contexto tiene su prueba (`tests/qemu_zswitch_test.sh`). El detalle está en [docs/zonas.md](docs/zonas.md).
 
-`trace` tiene once sondas estáticas (syscall de entrada y de salida, cambio de contexto, `#PF`, tick del PIT, alloc y free de páginas, lectura y escritura de bloques, paquetes recibidos y enviados) y un anillo fijo de 32 eventos. Apagada, la sonda es un chequeo. El detalle está en [docs/trace.md](docs/trace.md). VGA sigue duplicada en COM1, con `ticks`, `kbd_irqs` y la línea de cada excepción.
+Cuota de CPU por zona con tope duro (`zone cpu`, tarea ociosa cuando la zona acotada queda sola), `zone ls` con `cpu=<cuota>/20 tot=<ticks>`, `zone trace` para que una zona lea su propia traza y administración completa de zonas documentada (`docs/zonas.md`, «Administración de zonas»). Prueba: `tests/qemu_cpu_test.sh`.
+
+Falta de la etapa 7 (verificado contra el fuente de OB-03, nada de esto está en la imagen):
+
+- Cuotas por zona solo de páginas, procesos y CPU. No hay de disco (bloques, E/S), de red (ancho de banda, sockets) ni de sondas de traza.
+- La CPU se mide con a lo sumo dos procesos (`zone pair`) y el corte ocurre en el tick del PIT solo en anillo 3: un proceso dentro de una syscall puede pasarse un tick.
+- La tabla de zonas vive en RAM: se pierde al reiniciar (los archivos de `/zonas/<nombre>` quedan).
+- Hasta 8 zonas, sin zonas anidadas ni migración de procesos entre zonas.
+- Una zona no prende ni apaga sondas ni lee la traza de otra; no hay una vista de trazas agregada por zona fuera de `traza dump zone=<n>` desde la global.
+- Los programas de anillo 3 caben en una página (4080 bytes con `mkaxe.sh`). `par` y `parcpu` son dos programas por eso.
+
+`trace` tiene veinte sondas estáticas (ver [docs/trace.md](docs/trace.md)) y un anillo fijo de 64 registros. Apagada, la sonda es un chequeo. El detalle está en [docs/trace.md](docs/trace.md). VGA sigue duplicada en COM1, con `ticks`, `kbd_irqs` y la línea de cada excepción.
 
 ## Historial Tempo
 
