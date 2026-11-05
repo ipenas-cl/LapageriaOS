@@ -135,6 +135,7 @@ COPIHUE_KERNEL_SRC = $(KERNEL_SRC)/copihue/console.lap \
                      $(KERNEL_SRC)/copihue/grande_img.lap \
                      $(KERNEL_SRC)/copihue/pag2_img.lap \
                      $(KERNEL_SRC)/copihue/atk2_img.lap \
+                     $(KERNEL_SRC)/copihue/cal_img.lap \
                      $(KERNEL_SRC)/copihue/exec.lap \
                      $(KERNEL_SRC)/copihue/zone_img.lap \
                      $(KERNEL_SRC)/copihue/atk_img.lap \
@@ -293,6 +294,19 @@ $(ATK2_IMG): src/user/atk2.lap scripts/mkaxe.sh scripts/chksizes.sh $(COPIHUE) |
 	$(abspath $(COPIHUE)) --flat 0x400000 --axe2 --sizes -o $(ATK2_AXE) src/user/atk2.lap > $(ATK2_SIZES)
 	scripts/chksizes.sh $(ATK2_SIZES) data=20 bss=8172 text_bytes=4096 image=4116 memsize=12288 entry=0x400000
 	scripts/mkaxe.sh -a $(ATK2_AXE) $@ atk2_fill
+
+# const y align(4096) let (EX-08). cal.lap usa `const N` en `[T; N]` y dos
+# `align(4096) let`: `tab` (con valor) en 0x401000 y `zbuf` (bss) en 0x402000.
+# --sizes trae data_at y bss_at (v0.44.3): las direcciones se comprueban sin
+# correr la imagen. `exec axe2plant` lo escribe como cal; `exec cal` lo corre.
+CAL_AXE = $(BUILD_DIR)/cal.axe
+CAL_SIZES = $(BUILD_DIR)/cal.sizes
+CAL_IMG = $(KERNEL_SRC)/copihue/cal_img.lap
+
+$(CAL_IMG): src/user/cal.lap scripts/mkaxe.sh scripts/chksizes.sh $(COPIHUE) | $(BUILD_DIR)
+	$(abspath $(COPIHUE)) --flat 0x400000 --axe2 --sizes -o $(CAL_AXE) src/user/cal.lap > $(CAL_SIZES)
+	scripts/chksizes.sh $(CAL_SIZES) data=8 bss=8 data_at=0x401000 bss_at=0x402000 entry=0x400000
+	scripts/mkaxe.sh -a $(CAL_AXE) $@ cal_fill
 
 # Programa de la zona. Misma cabecera AXE1; zone plant lo escribe como ztest.
 ZONE_BIN = $(BUILD_DIR)/zona.bin
@@ -629,7 +643,7 @@ debug: $(OS_IMAGE) $(DATA_IMG)
 
 clean:
 	rm -rf $(BUILD_DIR)
-	rm -f $(KERNEL_SRC)/copihue/exec_img.lap $(KERNEL_SRC)/copihue/grande_img.lap $(KERNEL_SRC)/copihue/pag2_img.lap $(KERNEL_SRC)/copihue/atk2_img.lap $(KERNEL_SRC)/copihue/zone_img.lap $(KERNEL_SRC)/copihue/atk_img.lap $(KERNEL_SRC)/copihue/par_img.lap $(KERNEL_SRC)/copihue/parcpu_img.lap $(KERNEL_SRC)/copihue/udpeco_img.lap $(KERNEL_SRC)/copihue/udpdos_img.lap $(KERNEL_SRC)/copihue/udpwait_img.lap $(KERNEL_SRC)/copihue/tcpeco_img.lap $(KERNEL_SRC)/copihue/tcpcli_img.lap $(KERNEL_SRC)/copihue/tcpmulti_img.lap $(KERNEL_SRC)/copihue/tcphog_img.lap $(KERNEL_SRC)/copihue/tcpsnd_img.lap $(KERNEL_SRC)/copihue/traza_img.lap
+	rm -f $(KERNEL_SRC)/copihue/exec_img.lap $(KERNEL_SRC)/copihue/grande_img.lap $(KERNEL_SRC)/copihue/pag2_img.lap $(KERNEL_SRC)/copihue/atk2_img.lap $(KERNEL_SRC)/copihue/cal_img.lap $(KERNEL_SRC)/copihue/zone_img.lap $(KERNEL_SRC)/copihue/atk_img.lap $(KERNEL_SRC)/copihue/par_img.lap $(KERNEL_SRC)/copihue/parcpu_img.lap $(KERNEL_SRC)/copihue/udpeco_img.lap $(KERNEL_SRC)/copihue/udpdos_img.lap $(KERNEL_SRC)/copihue/udpwait_img.lap $(KERNEL_SRC)/copihue/tcpeco_img.lap $(KERNEL_SRC)/copihue/tcpcli_img.lap $(KERNEL_SRC)/copihue/tcpmulti_img.lap $(KERNEL_SRC)/copihue/tcphog_img.lap $(KERNEL_SRC)/copihue/tcpsnd_img.lap $(KERNEL_SRC)/copihue/traza_img.lap
 
 help:
 	@echo "LapageriaOS $(VERSION) — kernel y arranque en Copihue $(COPIHUE_COMMIT)"
