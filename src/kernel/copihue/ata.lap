@@ -1,8 +1,8 @@
 // Canal IDE primario, esclavo (QEMU ide index=1, ide0-hd1).
 // El maestro es la imagen de arranque: este driver no la selecciona.
 // PIO, LBA28, un sector de 512 B. La espera del estado tiene tope de
-// tiempo (ticks del PIT, ver ata_wait): si el disco no responde, se
-// devuelve error y no se queda pegado.
+// tiempo real (contador del PIT leído directo, sin interrupciones; ver
+// ata_wait): si el disco no responde, se devuelve error y no se queda pegado.
 //
 // 0 listo
 // 1 se agotó el tiempo
@@ -51,32 +51,38 @@ fn ata_check(kind: i64) -> i64 {
 // iteraciones de inb mide instrucciones: con -icount el reloj virtual solo
 // avanza al ejecutarlas, así que un anfitrión cargado agota el tope antes de
 // que el disco termine ("exec fail 1", timeout en DRQ o al terminar una
-// escritura). Aquí el tope es de tiempo: unas pocas lecturas de sondeo y,
-// después, hlt hasta el siguiente tick del PIT, que deja avanzar al reloj
-// virtual y al hilo de E/S. 500 ticks a 100 Hz son 5 s.
-// hlt solo se usa con IF=1 y sin planificador; en otro caso (sección con
-// irq_save, proceso de usuario corriendo) queda el tope en iteraciones.
+// escritura). Aquí el tope es de tiempo y no depende de las interrupciones
+// (FS-05/3): se lee el contador del canal 0 del PIT directamente (latch en
+// 0x43, lectura en 0x40) y se acumulan las cuentas que bajó entre muestras.
+// Sirve con IF=0 (irq_save), con procesos corriendo y con el planificador
+// apagado; no usa `ticks` ni hlt. El contador da la vuelta cada 10 ms
+// (11931 cuentas a 1.193182 MHz), así que se muestrea cada 16 sondeos del
+// estado, muy por debajo de una vuelta. Tope: 5 s (5965910 cuentas).
+let ATA_PIT_PERIOD: i64 = 11931;
+let ATA_PIT_TIMEOUT: i64 = 5965910;
+
+fn ata_pit_read() -> i64 {
+    outb(0x43, 0x00);
+    let lo = inb(0x40) & 255;
+    let hi = inb(0x40) & 255;
+    return lo | (hi << 8);
+}
+
 fn ata_wait(kind: i64) -> i64 {
+    let prev = ata_pit_read();
+    let acc = 0;
     let n = 0;
-    while (n < 2000) {
+    while (acc < ATA_PIT_TIMEOUT) {
         let r = ata_check(kind);
         if (r != 9) { return r; }
         n = n + 1;
-    }
-    if (sched_on == 0 && (read_rflags() & 0x200) != 0) {
-        let t = ticks;
-        while (ticks - t < 500) {
-            hlt();
-            let r2 = ata_check(kind);
-            if (r2 != 9) { return r2; }
+        if ((n & 15) == 0) {
+            let cur = ata_pit_read();
+            let d = prev - cur;
+            if (d < 0) { d = d + ATA_PIT_PERIOD; }
+            acc = acc + d;
+            prev = cur;
         }
-        return 1;
-    }
-    n = 0;
-    while (n < 200000) {
-        let r3 = ata_check(kind);
-        if (r3 != 9) { return r3; }
-        n = n + 1;
     }
     return 1;
 }

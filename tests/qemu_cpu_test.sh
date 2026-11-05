@@ -8,13 +8,18 @@
 #   tot   ticks cobrados a la zona
 #   cont  ticks cobrados con otro proceso listo (los que disputó)
 #   thr   veces que la cuota la sacó de la CPU
-# Se corre `zone pair za zb par` con los dos procesos en modo 'h' (gastan
-# CPU sin syscalls: 100 millones de vueltas y salen). Dos corridas:
+# Se corre `zone pair za zb par` con los procesos en modo `k<d>` de par.lap:
+# gastan CPU sin ceder hasta que el kernel ha cobrado 10*d ticks a su zona
+# (syscall 28) y salen. El gasto se pide en ticks, no en vueltas, así que la
+# prueba da lo mismo en un anfitrión rápido, lento o con -icount. Tres corridas:
 #   1. control, sin cuotas: el reparto es por turnos, cont casi igual (±20%),
 #      thr = 0 en las dos.
 #   2. za con cuota 2 de 20, zb sin límite: cont(za) * 4 <= cont(zb) (lo
 #      esperado es 2/18, un 11%), thr(za) >= 1, thr(zb) = 0, y los dos
 #      procesos terminan (`zone pair ok`, sin fuga).
+#   3. tope duro (FS-05/1): za sola (zb sale enseguida) con cuota 5 de 20:
+#      tot <= 5 * ventanas transcurridas e idle >= 2 * solo. Sin tarea ociosa
+#      idle sería 0.
 # Más los errores de `zone cpu`. Nada depende del reloj del anfitrión: la
 # cuota se mide en ticks. QEMU_EXTRA="-icount shift=4" suma opciones a QEMU.
 # La imagen de arranque se copia al directorio temporal. El disco de datos es
@@ -143,7 +148,7 @@ typewait "zone create za 12" 30
 typewait "zone create zb 12" 30
 for z in za zb; do
     typewait "zone sched $z" 30
-    typewait "fs write /zonas/$z/q h" 30
+    typewait "fs write /zonas/$z/q k4" 30
 done
 
 # Errores de zone cpu.
@@ -168,7 +173,11 @@ read_cpu
 [ "$ta" = 0 ] && [ "$tb" = 0 ] || fail "control: thr za=$ta zb=$tb, esperaba 0 y 0"
 echo "ok   control sin cuotas: cont za=$ca zb=$cb (parejo), thr 0 y 0, los dos terminan"
 
-# 2. za con cuota 2 de 20, zb sin límite.
+# 2. za con cuota 2 de 20, zb sin límite. zb gasta 60 ticks (unos 67 de reloj,
+# 18 de cada 20) y za 10 (5 ventanas, 100 ticks de reloj), así que za sigue viva mientras zb corre
+# y los 60 ticks de zb son disputados, sea cual sea la velocidad del anfitrión.
+typewait "fs write /zonas/za/q k1" 30
+typewait "fs write /zonas/zb/q k6" 30
 typewait "zone cpu za 2" 30
 typewait "zone cpu zb 0" 30
 pair_run za zb
@@ -180,6 +189,32 @@ read_cpu
 [ "$ta" -ge 1 ] || fail "cuota: la cuota nunca sacó a za de la CPU (thr=$ta)"
 [ "$tb" = 0 ] || fail "cuota: zb sin límite fue sacada de la CPU (thr=$tb)"
 echo "ok   cuota 2/20 en za, zb sin límite: cont za=$ca zb=$cb (za*4 <= zb), tot za=$tota zb=$totb, thr za=$ta zb=$tb; los dos terminan sin fuga"
+
+# 3. Tope duro (FS-05/1): za sola con cuota 5 de 20. zb solo cede 6 veces y
+# sale; za gasta CPU (modo k4 de par) y queda sola. Sin tarea
+# ociosa seguiría corriendo todo el tiempo; con ella, en cada ventana de 20
+# ticks gasta como mucho 5 y el resto es idle. Se mide en ticks del PIT:
+#   solo  ticks cobrados a za sin otro proceso listo
+#   idle  ticks que za esperó con la cuota agotada (nadie corría)
+# Cota: tot <= cuota * ventanas, con ventanas = ceil((tot de za + idle + tot de
+# zb) / 20), o sea, todos los ticks transcurridos de la corrida.
+typewait "fs write /zonas/za/q k4" 30
+typewait "fs write /zonas/zb/q y" 30
+typewait "zone cpu za 5" 30
+typewait "zone cpu zb 0" 30
+pair_run za zb
+typewait "zone cpu za" 30
+typewait "zone cpu zb" 30
+totb=$(cpuf zb tot); tot=$(cpuf za tot); solo=$(cpuf za solo); idle=$(cpuf za idle); thr=$(cpuf za thr)
+for v in "$totb" "$tot" "$solo" "$idle" "$thr"; do
+    [ -n "$v" ] || fail "tope duro: zone cpu sin contadores: $(win 'zone cpu za' | tr '\n' '|')"
+done
+[ "$solo" -ge 20 ] || fail "tope duro: za corrió muy poco sola (solo=$solo, tot=$tot)"
+[ "$idle" -ge 1 ] || fail "tope duro: za nunca esperó ociosa (idle=$idle): la cuota no frenó a una zona sola"
+windows=$(( (tot + idle + ${totb:-0} + 19) / 20 ))
+[ "$tot" -le $((5 * windows)) ] || fail "tope duro: za gastó $tot ticks en $windows ventanas (cuota 5/ventana = $((5 * windows)))"
+[ "$idle" -ge $((solo * 2)) ] || fail "tope duro: idle=$idle contra solo=$solo; esperaba idle >= 2*solo con cuota 5/20"
+echo "ok   tope duro 5/20 con za sola: tot=$tot solo=$solo idle=$idle en $windows ventanas (tot <= 5*ventanas), thr=$thr; termina sin fuga"
 
 typewait "zone ls" 30
 win "zone ls" | grep -q '^zone 1 za root=/zonas/za .* proc=0/2 pag=0 ' || fail "za quedó con procesos o páginas: $(win 'zone ls' | tr '\n' '|')"

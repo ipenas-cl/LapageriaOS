@@ -162,7 +162,7 @@ Las rutas van con `/`; `fs write /a/b/f hola`.
 | `fs write <ruta> <texto>` | `fs write ok` (el texto es el resto de la línea) |
 | `fs cat <ruta>` | `fs live <texto>`, o `fs empty` |
 | `fs ls [ruta]` | `fs file <nombre>` o `fs dir <nombre>`, uno por línea, en el orden de creación. Sin ruta: la raíz |
-| `fs rm <ruta>` | archivo o directorio vacío. `fs rm ok` |
+| `fs rm <ruta>` | archivo o directorio vacío. `fs rm ok`. Igual que con `-r`, se niega a borrar `/`, `/zonas` y `/zonas/<nombre>` aunque estén vacías (`fs rm refused: raiz del sistema`, `raiz de zona`) |
 | `fs rm -r <ruta>` | borrado recursivo: la carpeta con sus subcarpetas y archivos (o un archivo). `fs rm -r ok`. Libera lo que nadie más usa; lo que un snapshot todavía apunta se queda. `-r` solo es la opción si le sigue una ruta; `/`, `/zonas`, `/zonas/<nombre>` y rutas con `.`, `..` o componentes vacíos se rechazan sin tocar el disco (`fs rm -r refused: raiz del sistema`, `raiz de zona`, `ruta con componente vacio, . o ..`) |
 | `fs snap rm <nombre>` | borra el snapshot y libera los bloques que solo él usaba. `fs snap rm ok`; 7 si no existe. `rm` está reservado: no se puede crear un snapshot con ese nombre (11) |
 | `fs migrate` | migra un disco v1 a v2. `fs migrate ok snaps=S files=F`; en un disco que ya es v2, `fs migrate not needed` |

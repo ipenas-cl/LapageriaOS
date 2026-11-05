@@ -717,8 +717,8 @@ fn zone_sys_pkill(pid: i64) -> i64 {
     return 0;
 }
 
-// `zone sched nombre`: agrega a la máscara de la zona la syscall 4 (yield)
-// y las de procesos, 25 (proc_stat) y 26 (proc_kill). Una zona nueva no
+// `zone sched nombre`: agrega a la máscara de la zona la syscall 4 (yield),
+// las de procesos, 25 (proc_stat) y 26 (proc_kill), y 28 (cpu_ticks). Una zona nueva no
 // cede la CPU ni ve procesos; `zone pair` lo necesita para que dos procesos
 // de zonas distintas se alternen.
 fn zone_sched(pos: i64) -> i64 {
@@ -726,7 +726,7 @@ fn zone_sched(pos: i64) -> i64 {
     if (p < 0) { return zone_fail(11); }
     let z = zone_by_name(fs_name);
     if (z <= 0) { return zone_fail(11); }
-    zone_mask[z] = zone_mask[z] | (1 << 4) | (1 << 25) | (1 << 26);
+    zone_mask[z] = zone_mask[z] | (1 << 4) | (1 << 25) | (1 << 26) | (1 << 28);
     puts("zone sched ok\n");
     return 0;
 }
@@ -884,6 +884,10 @@ fn zone_cpu_cmd(pos: i64) -> i64 {
         put_int(zcpu_cont[z]);
         puts(" thr=");
         put_int(zcpu_thr[z]);
+        puts(" idle=");
+        put_int(zcpu_idle[z]);
+        puts(" solo=");
+        put_int(zcpu_solo[z]);
         putc('\n');
         return 0;
     }
