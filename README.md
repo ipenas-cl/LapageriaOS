@@ -25,7 +25,7 @@ La etapa 1 solo carga los 8 sectores de la etapa 2. La etapa 2 habilita A20, lee
 
 El número de sectores del kernel no está fijo en el fuente. `stage2.lap` tiene el marcador `dw 0; // KERNEL_SECTORS`. `make` copia el archivo a `build/stage2.lap` y escribe ahí `ceil(kernel.bin / 512)`. Ese número es el total. La etapa 2 lo parte en paquetes de 128 sectores: un INT 13h con offset 0 no puede pasar de 64 KiB, porque el offset es de 16 bits. Cada paquete usa el segmento `0x1000`, `0x2000`, … y el LBA que sigue. `>` en modo real ensambla `setg` (con signo); con un total de hasta 32767 el corte en 128 sigue valiendo. El tope de `make` es 512.
 
-Desde SG-02 el tope ya no es la memoria convencional. La etapa 2 lee el kernel de a 128 sectores a un rebote en `0x10000` y copia cada trozo con INT 15h AH=87h a `0x400000`; el kernel vive en la página de 2 MiB `0x400000`..`0x5FFFFF` (PD alta [2]). Archivo + `.bss` tienen que caber ahí, y `make` rechaza un `kernel.bin` de más de 2048 sectores (1 MiB). Con este kernel: 469 de 2048 sectores usados (LBA 9..477), 1579 libres en la región (LBA 478..2056), y 823 sectores libres de la imagen después (LBA 2057..2879). Detalle, mapa de memoria y prueba con una región llena: [docs/higher-half.md](docs/higher-half.md).
+Desde SG-02 el tope ya no es la memoria convencional. La etapa 2 lee el kernel de a 128 sectores a un rebote en `0x10000` y copia cada trozo con INT 15h AH=87h a `0x400000`; el kernel vive en la página de 2 MiB `0x400000`..`0x5FFFFF` (PD alta [2]). Archivo + `.bss` tienen que caber ahí, y `make` rechaza un `kernel.bin` de más de 2048 sectores (1 MiB). Con este kernel: 868 de 2048 sectores usados (LBA 9..876), 1180 libres en la región (LBA 877..2056), y 823 sectores libres de la imagen después (LBA 2057..2879). Detalle, mapa de memoria y prueba con una región llena: [docs/higher-half.md](docs/higher-half.md).
 
 En esta compilación (`copihue` v0.31.0, commit `495bb4b54d3fba77ed83aa51c0d2362ea9ebd621`, `wc -l` y `stat`):
 
@@ -69,6 +69,7 @@ Los textos exactos están en `tests/qemu_shell_test.sh`. La prueba exige:
 - `disk`: en el esclavo IDE, `ata ok`, `blk ok` y `blk corrupt detected`, en ese orden (un byte del sector de datos pisado con el driver, sin pasar por `blk`);
 - `fs`: formatea, escribe `a` como `v1`, saca el snapshot `s1`, reescribe `a` como `v2`, lee `v2` en vivo y `v1` desde `s1`, hace rollback de otro archivo y un archivo de 600 bytes. Apaga QEMU, abre el mismo `build/data.img` y vuelve a leer. Después pisa un bloque de `a`: tiene que salir `fs corrupt detected` y `s1` sigue en `v1`;
 - `exec`: después del `fs`, `exec plant` escribe en el disco el programa `hola` (cabecera `AXE1`), `malo` (magic malo) y `gordo` (tamaño 65535). `exec hola` imprime `desde disco` y `exec ok`. `exec noesta` imprime `exec fail 7`. `exec malo` imprime `exec bad magic`. `exec gordo` imprime `exec bad size`. `fs corrupt hola` y otro `exec hola` imprimen `exec corrupt` y no vuelven a imprimir `desde disco`;
+- programas de varias páginas (`make qemu-big-test`, `tests/qemu_big_test.sh`; también en `make qemu-test`): `exec bigplant` escribe `grande` (AXE2 de 3 páginas más bss) y cuatro cabeceras malas. `exec grande` imprime `big ok` (lee el patrón de sus páginas de datos, la bss en cero, escribe y lee de vuelta la segunda página, y usa las syscalls 6 y 7 con la página de E/S en `0x410000`) y devuelve 10 páginas. `exec grandew` (texto de 2 páginas) muere por escribir en una página de solo lectura (`#PF`, err 7) y el shell sigue. Las cabeceras malas dan `exec bad size` / `exec bad entry`. `exec2 grande hola` corre un AXE2 y un AXE1 a la vez. `zone exec` de `grande` en una zona de 16 páginas no deja fugas; en una de 8 da `zone fail 6` sin dejar páginas tomadas. Los 16 ataques de anillo 3 de `tests/qemu_shell_test.sh` y las pruebas de zonas siguen pasando;
 - `ud2` imprime la excepción `#UD`;
 - `zone`: después de soltar `malo`, `gordo` y `hola`, planta `ztest` y crea las zonas `a` (prefijo `za`, 12 páginas) y `b` (prefijo `zb`). `zone exec a ztest` imprime `zone fs ok`, `zone fs denied`, `zone fs denied create`, `zone syscall denied`, `zone syscall flood denied`, `zone quota ok`, `zone quota hold` y `zone escape denied`. El archivo queda como `zan`. Las dos líneas `zone mem` coinciden. `niega=64`, `fuga=5` y `max=12`. Además `zone create` inválidos y una zona de 1 página (`zone fail 6`) sin filtrar memoria (SG-01 parte 1). Ver [docs/zonas.md](docs/zonas.md);
 - `net`: con `-nic none -netdev user,id=n0 -device e1000,netdev=n0`, el kernel pide ARP a `10.0.2.2` (`net arp ok`), manda ICMP echo a esa puerta (`net ping ok`) y descarta una trama cuyo largo IP no cabe en el buffer (`net drop ok`). Si QEMU no tiene esa red, el script falla al tiro y no espera el ping. Ver [docs/red.md](docs/red.md);
@@ -157,17 +158,19 @@ src/kernel/copihue/
   ata.lap                     ATA PIO, canal primario, esclavo, LBA28
   blk.lap                     bloques de 512 B con CRC-32 en otro sector
   fs.lap                      directorios, archivos de hasta 72 KiB, snapshots y scrub (copy-on-write)
-  exec.lap                    exec: AXE1 del disco a un PML4 nuevo
+  exec.lap                    exec: AXE1 (una página) y AXE2 (1 a 16 páginas) del disco a un PML4 nuevo
   zone.lap                    zonas: cuota, máscara, raíz propia (/zonas/nombre) y tope de procesos
   net.lap                     e1000, ARP, IPv4 e ICMP
   trace.lap                   sondas estáticas y anillo de eventos
   shell.lap                   editor de línea y comandos
 src/user/hola.lap             programa de anillo 3 que imprime «desde disco»
 src/user/zona.lap             programa de prueba de la zona `a`
+src/user/grande.lap           programa de varias páginas (AXE2): lee y escribe sus páginas de datos
 tests/qemu_shell_test.sh
+tests/qemu_big_test.sh        programas de varias páginas (make qemu-big-test)
 docs/disco.md                 layout del disco de datos
 docs/fs.md                    sistema de archivos copy-on-write
-docs/exec.md                  ejecutable plano AXE1 y el comando exec
+docs/exec.md                  ejecutables planos AXE1 y AXE2, distribución de memoria de usuario y el comando exec
 docs/zonas.md                 zonas, prefijo de archivos y cuota de páginas
 docs/red.md                   e1000, ARP e ICMP en la red de usuario
 docs/nx.md                    bit NX, W^X y el comando nx
@@ -214,6 +217,8 @@ IDT de 48 entradas. Las excepciones de CPU 0–31 imprimen su nombre; `#PF` tamb
 
 `exec nombre` lee un archivo AXE1 con `fs_read` (el CRC del bloque incluido), rechaza magic malo o tamaño de más, y copia el código a un PML4 nuevo del proceso 0. Lo corre el mismo planificador (`sched_go`); no se agregó `asm()`. `user` y `sched` siguen usando las funciones `naked` internas. El programa del disco es `src/user/hola.lap`.
 
+Desde EX-01 `exec` también carga un AXE2: de 1 a 16 páginas de imagen desde `0x400000` (texto de solo lectura y ejecutable, datos y bss de lectura y escritura sin ejecución), la página de E/S sola en `0x410000`, la pila en `0x411000` (tope `0x412000`) y las páginas de la syscall 8 desde `0x412000`. Un AXE1 sigue con su página de código en `0x400000` y la pila y los búferes en `0x401000`. Los búferes de las syscalls 6, 7 y 27 ya no son direcciones fijas del kernel: se buscan en la página de E/S del proceso (`uio_base`), y los rangos que un programa pasa al kernel se validan región por región. `src/user/grande.lap` es el programa de prueba (3 páginas más bss) y `tests/qemu_big_test.sh` lo corre en anillo 3, en `exec2` junto a un AXE1 y en zonas. Detalle y tablas en [docs/exec.md](docs/exec.md). La salida de los programas del disco sale por líneas enteras: dos procesos ya no mezclan palabras.
+
 ### 5. Disco y sistema de archivos — parcial, en la imagen
 
 El arranque sigue leyendo la etapa 2 (8 sectores) y el kernel con INT 13h, de a 128 sectores; el conteo total lo calcula `make`. Imagen y `.bss` tienen que caber en la página de 2 MiB de `0x400000` (tope de `make`: 2048 sectores de archivo). El kernel trae ATA PIO del esclavo primario (LBA28: identify, leer y escribir un sector, con timeout) y bloques de 512 B cuyo CRC-32 vive en el sector de al lado. Encima hay un sistema de archivos copy-on-write con directorios, snapshots, rollback y `fs scrub`. El layout del disco está en [docs/disco.md](docs/disco.md) y el del sistema de archivos en [docs/fs.md](docs/fs.md). Sigue pendiente otro bus (AHCI, NVMe).
@@ -240,7 +245,7 @@ Falta de la etapa 7 (verificado contra el fuente de OB-03, nada de esto está en
 - La tabla de zonas vive en RAM: se pierde al reiniciar (los archivos de `/zonas/<nombre>` quedan).
 - Hasta 8 zonas, sin zonas anidadas ni migración de procesos entre zonas.
 - Una zona no prende ni apaga sondas ni lee la traza de otra; no hay una vista de trazas agregada por zona fuera de `traza dump zone=<n>` desde la global.
-- Los programas de anillo 3 caben en una página (4080 bytes con `mkaxe.sh`). `par` y `parcpu` son dos programas por eso.
+- El cargador admite programas de hasta 16 páginas (AXE2, EX-01), pero `mkaxe.sh` solo empaca AXE1: un programa compilado de más de 4080 bytes de código no tiene todavía camino hasta el disco (embeberlo costaría ~5 bytes de kernel por byte de programa). `par` y `parcpu` siguen siendo dos programas por eso, y `grande` arma su AXE2 en el kernel (`exec bigplant`). Ver `docs/PEDIDOS_COPIHUE.md`, EX-01.
 
 `trace` tiene veinte sondas estáticas (ver [docs/trace.md](docs/trace.md)) y un anillo fijo de 64 registros. Apagada, la sonda es un chequeo. El detalle está en [docs/trace.md](docs/trace.md). VGA sigue duplicada en COM1, con `ticks`, `kbd_irqs` y la línea de cada excepción.
 
