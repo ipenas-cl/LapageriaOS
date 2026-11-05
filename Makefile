@@ -558,6 +558,11 @@ qemu-ahci-test: $(OS_IMAGE)
 mkaxe-test:
 	$(TESTS_DIR)/mkaxe_test.sh
 
+# EX-08: informa si el compilador emite el store de f(x)[0] = v (pedido abierto).
+.PHONY: copihue-gaps-test
+copihue-gaps-test: $(COPIHUE)
+	sh $(TESTS_DIR)/copihue_gaps_test.sh $(abspath $(COPIHUE))
+
 # Solo AXE2 de mkaxe.sh (EX-02) y ataques de anillo 3 contra un AXE2. Usa
 # copias nuevas de imagen y disco.
 qemu-axe2-test: $(OS_IMAGE)
