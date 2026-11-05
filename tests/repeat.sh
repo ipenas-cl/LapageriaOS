@@ -4,7 +4,7 @@
 # argumento "sin-icount"), de a <paralelas> a la vez.
 # Deja <prefijo>_<i>.log y un resumen por salida estándar.
 set -u
-PFX=$1; N=$2; PAR=$3; TEST=$4; IMG=${5:-/Users/admin/lapageriaos-work/src/build/lapageriaos.img}
+PFX=$1; N=$2; PAR=$3; TEST=$4; IMG=${5:-build/lapageriaos.img}
 export QEMU_EXTRA="${QEMU_EXTRA--icount shift=7}"
 # Sexto argumento "sin-icount": sin opciones de QEMU (TCG normal, reloj del anfitrión).
 if [ "${6:-}" = "sin-icount" ]; then QEMU_EXTRA=""; fi
@@ -23,3 +23,4 @@ while [ "$i" -le "$N" ]; do
     i=$((i + 1))
 done
 echo "total: $pass ok, $failn fallas de $N"
+[ "$failn" -eq 0 ]

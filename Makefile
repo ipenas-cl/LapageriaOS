@@ -8,6 +8,8 @@
 #   qemu-big-test  Solo programas de varias páginas, AXE2 (tests/qemu_big_test.sh).
 #   mkaxe-test  Solo scripts/mkaxe.sh en el anfitrión (tests/mkaxe_test.sh).
 #   qemu-axe2-test  Solo AXE2 de mkaxe.sh y ataques de anillo 3 (tests/qemu_axe2_test.sh).
+#   qemu-atk1-test  Solo ataques de anillo 3 contra un AXE1 (tests/qemu_atk1_test.sh).
+#   qemu-stab-test  6 corridas de las dos baterías de ataques con -icount shift=7 y sin icount.
 #   qemu-tcp-test  Solo la prueba de TCP (tests/qemu_tcp_test.sh).
 #   qemu-trace-test  Solo la prueba de trazas (tests/qemu_trace_test.sh).
 #   qemu-zswitch-test  Solo el cambio de zona en switch_to (tests/qemu_zswitch_test.sh).
@@ -145,7 +147,7 @@ COPIHUE_KERNEL_SRC = $(KERNEL_SRC)/copihue/console.lap \
                      $(KERNEL_SRC)/copihue/shell.lap \
                      $(KERNEL_SRC)/copihue/kernel.lap
 
-.PHONY: all qemu qemu-test mkaxe-test qemu-axe2-test qemu-big-test qemu-udp-test qemu-tcp-test qemu-trace-test qemu-zswitch-test qemu-iso-test qemu-fs2-test qemu-fs3-test qemu-ata-test qemu-cpu-test debug clean help
+.PHONY: all qemu qemu-test mkaxe-test qemu-axe2-test qemu-atk1-test qemu-stab-test qemu-big-test qemu-udp-test qemu-tcp-test qemu-trace-test qemu-zswitch-test qemu-iso-test qemu-fs2-test qemu-fs3-test qemu-ata-test qemu-cpu-test debug clean help
 
 # Imagen de arranque: LBA 0 etapa 1, LBA 1 etapa 2, LBA KERNEL_LBA el kernel.
 all: $(OS_IMAGE)
@@ -418,6 +420,7 @@ qemu-test: $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_udp_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_big_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_axe2_test.sh $(OS_IMAGE)
+	$(TESTS_DIR)/qemu_atk1_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_tcp_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_trace_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_zswitch_test.sh $(OS_IMAGE)
@@ -442,6 +445,26 @@ mkaxe-test:
 # copias nuevas de imagen y disco.
 qemu-axe2-test: $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_axe2_test.sh $(OS_IMAGE)
+
+# Solo ataques de anillo 3 contra un AXE1 (los de qemu_shell_test.sh, aparte y
+# con QEMU_EXTRA). Usa copias nuevas de imagen y disco.
+qemu-atk1-test: $(OS_IMAGE)
+	$(TESTS_DIR)/qemu_atk1_test.sh $(OS_IMAGE)
+
+# EX-03: estabilidad de las baterías de ataques AXE2 y AXE1. STAB_N corridas de
+# cada una (6 por defecto), STAB_PAR a la vez, con -icount shift=7 y sin icount.
+# Deja los registros en build/stab/ y falla si alguna corrida falla.
+STAB_N   ?= 6
+STAB_PAR ?= 3
+STAB_DIR  = $(BUILD_DIR)/stab
+qemu-stab-test: $(OS_IMAGE)
+	rm -rf $(STAB_DIR) && mkdir -p $(STAB_DIR)
+	@set -e; for t in axe2 atk1; do \
+	  echo "--- $$t, -icount shift=7"; \
+	  bash $(TESTS_DIR)/repeat.sh $(STAB_DIR)/$${t}_icount $(STAB_N) $(STAB_PAR) $(TESTS_DIR)/qemu_$${t}_test.sh $(OS_IMAGE) || rc=1; \
+	  echo "--- $$t, sin icount"; \
+	  bash $(TESTS_DIR)/repeat.sh $(STAB_DIR)/$${t}_sin $(STAB_N) $(STAB_PAR) $(TESTS_DIR)/qemu_$${t}_test.sh $(OS_IMAGE) sin-icount || rc=1; \
+	done; exit $${rc:-0}
 
 # Solo programas de varias páginas (EX-01). Usa copias nuevas de imagen y disco.
 qemu-big-test: $(OS_IMAGE)
@@ -510,6 +533,8 @@ help:
 	@echo "  make qemu-big-test  Solo programas de varias páginas, AXE2 (tests/qemu_big_test.sh)."
 	@echo "  make mkaxe-test  Solo scripts/mkaxe.sh en el anfitrión (tests/mkaxe_test.sh)."
 	@echo "  make qemu-axe2-test  Solo AXE2 de mkaxe.sh y ataques de anillo 3 (tests/qemu_axe2_test.sh)."
+	@echo "  make qemu-atk1-test  Solo ataques de anillo 3 contra un AXE1 (tests/qemu_atk1_test.sh)."
+	@echo "  make qemu-stab-test  6 corridas de las baterías AXE2 y AXE1, con y sin -icount shift=7."
 	@echo "  make qemu-tcp-test  Solo la prueba de TCP (tests/qemu_tcp_test.sh)."
 	@echo "  make qemu-trace-test  Solo la prueba de trazas (tests/qemu_trace_test.sh)."
 	@echo "  make qemu-zswitch-test  Solo el cambio de zona en switch_to (tests/qemu_zswitch_test.sh)."
