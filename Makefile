@@ -123,6 +123,7 @@ COPIHUE_KERNEL_SRC = $(KERNEL_SRC)/copihue/console.lap \
                      $(KERNEL_SRC)/copihue/exec_img.lap \
                      $(KERNEL_SRC)/copihue/grande_img.lap \
                      $(KERNEL_SRC)/copihue/pag2_img.lap \
+                     $(KERNEL_SRC)/copihue/atk2_img.lap \
                      $(KERNEL_SRC)/copihue/exec.lap \
                      $(KERNEL_SRC)/copihue/zone_img.lap \
                      $(KERNEL_SRC)/copihue/atk_img.lap \
@@ -272,6 +273,23 @@ $(PAG2_IMG): src/user/pag2.lap $(PAG2_DAT) scripts/mkaxe.sh $(COPIHUE) | $(BUILD
 	$(abspath $(COPIHUE)) --flat 0x400000 -o $(PAG2_BIN) src/user/pag2.lap
 	scripts/mkaxe.sh -d $(PAG2_DAT) -b 4096 $(PAG2_BIN) $(PAG2_AXE) $@ pag2_fill
 
+# Ataques de anillo 3 contra un AXE2 (EX-02). Texto de atk2.lap, una página de
+# datos con un `ret` (0xC3) en el byte 0 y "ATK2" en el 16, una de bss.
+# `exec axe2plant` lo escribe como atk2 (y atk2w, con 2 páginas de texto).
+ATK2_BIN = $(BUILD_DIR)/atk2.bin
+ATK2_DAT = $(BUILD_DIR)/atk2.dat
+ATK2_AXE = $(BUILD_DIR)/atk2.axe
+ATK2_IMG = $(KERNEL_SRC)/copihue/atk2_img.lap
+
+$(ATK2_DAT): Makefile | $(BUILD_DIR)
+	dd if=/dev/zero of=$@ bs=4096 count=1 status=none
+	printf '\303' | dd of=$@ bs=1 seek=0 conv=notrunc status=none
+	printf 'ATK2' | dd of=$@ bs=1 seek=16 conv=notrunc status=none
+
+$(ATK2_IMG): src/user/atk2.lap $(ATK2_DAT) scripts/mkaxe.sh $(COPIHUE) | $(BUILD_DIR)
+	$(abspath $(COPIHUE)) --flat 0x400000 -o $(ATK2_BIN) src/user/atk2.lap
+	scripts/mkaxe.sh -d $(ATK2_DAT) -b 4096 $(ATK2_BIN) $(ATK2_AXE) $@ atk2_fill
+
 # Programa de la zona. Misma cabecera AXE1; zone plant lo escribe como ztest.
 ZONE_BIN = $(BUILD_DIR)/zona.bin
 ZONE_AXE = $(BUILD_DIR)/zona.axe
@@ -394,10 +412,12 @@ qemu: $(OS_IMAGE) $(DATA_IMG)
 # El disco de datos se reescribe en cada corrida: la prueba no depende
 # de lo que haya quedado de la anterior.
 qemu-test: $(OS_IMAGE)
+	$(TESTS_DIR)/mkaxe_test.sh
 	dd if=/dev/zero of=$(DATA_IMG) bs=512 count=$(DATA_SECTORS) status=none
 	$(TESTS_DIR)/qemu_shell_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_udp_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_big_test.sh $(OS_IMAGE)
+	$(TESTS_DIR)/qemu_axe2_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_tcp_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_trace_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_zswitch_test.sh $(OS_IMAGE)
@@ -471,7 +491,7 @@ debug: $(OS_IMAGE) $(DATA_IMG)
 
 clean:
 	rm -rf $(BUILD_DIR)
-	rm -f $(KERNEL_SRC)/copihue/exec_img.lap $(KERNEL_SRC)/copihue/grande_img.lap $(KERNEL_SRC)/copihue/pag2_img.lap $(KERNEL_SRC)/copihue/zone_img.lap $(KERNEL_SRC)/copihue/atk_img.lap $(KERNEL_SRC)/copihue/par_img.lap $(KERNEL_SRC)/copihue/parcpu_img.lap $(KERNEL_SRC)/copihue/udpeco_img.lap $(KERNEL_SRC)/copihue/udpdos_img.lap $(KERNEL_SRC)/copihue/udpwait_img.lap $(KERNEL_SRC)/copihue/tcpeco_img.lap $(KERNEL_SRC)/copihue/tcpcli_img.lap $(KERNEL_SRC)/copihue/tcpmulti_img.lap $(KERNEL_SRC)/copihue/tcphog_img.lap $(KERNEL_SRC)/copihue/traza_img.lap
+	rm -f $(KERNEL_SRC)/copihue/exec_img.lap $(KERNEL_SRC)/copihue/grande_img.lap $(KERNEL_SRC)/copihue/pag2_img.lap $(KERNEL_SRC)/copihue/atk2_img.lap $(KERNEL_SRC)/copihue/zone_img.lap $(KERNEL_SRC)/copihue/atk_img.lap $(KERNEL_SRC)/copihue/par_img.lap $(KERNEL_SRC)/copihue/parcpu_img.lap $(KERNEL_SRC)/copihue/udpeco_img.lap $(KERNEL_SRC)/copihue/udpdos_img.lap $(KERNEL_SRC)/copihue/udpwait_img.lap $(KERNEL_SRC)/copihue/tcpeco_img.lap $(KERNEL_SRC)/copihue/tcpcli_img.lap $(KERNEL_SRC)/copihue/tcpmulti_img.lap $(KERNEL_SRC)/copihue/tcphog_img.lap $(KERNEL_SRC)/copihue/traza_img.lap
 
 help:
 	@echo "LapageriaOS $(VERSION) — kernel y arranque en Copihue $(COPIHUE_COMMIT)"
