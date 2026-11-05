@@ -358,6 +358,7 @@ queda con `pag=0` y `proc=0/`.
 | s | recursión sin fin (EX-04) | #PF `0x6` en `0x40Exxx`: cae en la guarda de la pila |
 | t | leer el primer byte de la guarda `0x40E000` (EX-04) | #PF `0x4` en `0x40E000` |
 | v | `rsp` en `0x40E800` y un `push` (EX-04) | #PF `0x6` en `0x40E7F8` |
+| y | marco local de 8 KiB (`let b: [u8; 8192]`, EX-07) | #PF `0x4` en `0x40Exxx`: el sondeo de v0.44.2 toca la guarda antes de que corra el cuerpo |
 
 **Bug encontrado y arreglado.** Antes de este cambio, el modo 1 (y todos
 los demás) paraba la máquina: un proceso de `exec` o de zona no tiene

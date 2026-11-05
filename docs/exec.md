@@ -113,8 +113,7 @@ escritura antes de que corra una sola línea del cuerpo (`atk2` modo `y`:
 página sin mapa; la prueba lo fija así). La prueba ya lo exige. Los marcos de
 menos de 4096 bytes no cambian. Como el sondeo toca cada página del camino, la
 guarda no se puede saltar con ningún tamaño de marco compilado con v0.44.2.
-No se probó un marco en un AXE1 (`atk`/`zatk`); por el mismo prólogo debería caer
-en `0x40Exxx`.
+En un AXE1 también (EX-07): `zatk` modo `y` cae en `0x40Exxx`, ver más abajo.
 
 ### Página de guarda de la pila de un AXE1 (EX-04)
 
@@ -138,11 +137,15 @@ la arma cuando `exec_build` pone `build_guard`; desde EX-05 también las demos d
 - Cuesta una página más por AXE1 (7 en vez de 6: 3 tablas, 1 tabla de páginas,
   código, E/S y pila), que es lo que devuelve `exit` (`freed=7`).
 - Un marco local de más de 4096 bytes: desde Copihue v0.44.2 el prólogo sondea
-  la pila (ver arriba, EX-06). Hasta v0.44.1 saltaba la guarda. Sin prueba propia
-  en un AXE1.
+  la pila (ver arriba, EX-06). Hasta v0.44.1 saltaba la guarda. EX-07 lo prueba
+  en un AXE1: `zatk` modo `y` (`let b: [u8; 8192]`) hace `vec=14 err=0x4
+  addr=0x40Exxx` (el sondeo con `rsp` ya bajo `0x40F000` toca la
+  guarda) antes de que corra el cuerpo, y muere solo ese proceso. No hizo
+  falta cambiar el kernel ni el diseño: AXE1 tenía guarda y el compilador
+  pinneado emite el sondeo en un `--flat` sin `--axe2`.
 
-`zatk` gana tres modos (`s`, `t`, `v`, ver `docs/zonas.md`) y
-`tests/qemu_atk1_test.sh` corre los 16 de siempre más esos tres, y `exec2 zatk
+`zatk` gana cuatro modos (`s`, `t`, `v`, y desde EX-07 `y`; ver `docs/zonas.md`) y
+`tests/qemu_atk1_test.sh` corre los 16 de siempre más esos cuatro, y `exec2 zatk
 hola` / `exec2 hola zatk` con la recursión sin fin: muere solo `zatk` en
 `0x40Exxx`, `hola` dice `desde disco` y devuelve sus 7 páginas, y el shell sigue.
 
