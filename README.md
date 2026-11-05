@@ -61,13 +61,19 @@ El camino BIOS + ATA PIO no cambia. Detalle, líneas de QEMU y lo que falta:
 - **UEFI:** `make qemu-uefi-test` arranca en QEMU + OVMF un cargador en Copihue
   (`src/uefi/loader.lap`) que lee `kernel.bin` de la ESP, sale de los servicios de
   arranque y salta al kernel: banner, mapa de memoria, PIT y shell por PS/2. Solo
-  probado en QEMU; **la pantalla no funciona** (VGA texto, no GOP) y **no hay disco**
-  bajo q35 (el kernel habla con el IDE). Sin firmware, el target falla con un
+  probado en QEMU; **la pantalla no funciona** (VGA texto, no GOP). Disco bajo q35:
+  ver HR-03 abajo. Sin firmware, el target falla con un
   mensaje claro (`OVMF_CODE=... OVMF_VARS=...` o `OVMF_BIOS=...`).
 - **AHCI:** `ahci [lba]` lee un sector de un disco SATA por DMA (`-device ahci`) y
   `ahci w <lba> [patrón]` escribe uno y lo verifica. `make qemu-ahci-test` compara
   el CRC-32 con el del anfitrión y lee el archivo del disco tras escribir.
 - **NVMe:** el comando `nvme` solo detecta el controlador.
+- **Disco por AHCI (HR-03):** `blk.lap` tiene un backend (ATA o AHCI) y `disk` y `fs`
+  pasan por él. Sin pedir nada elige el ATA (BIOS + IDE no cambia) y, si no hay
+  IDE (q35), el primer disco SATA; `blk ahci` / `blk ata` fuerzan uno. `make
+  qemu-ahci-fs-test` ejerce `disk` y `fs` sobre un SATA de datos y `make
+  qemu-uefi-blk-test` lo mismo bajo UEFI sin IDE (SKIP si no hay OVMF). Un
+  sector por comando, sin NCQ ni interrupciones. Detalle: `docs/hr03-ahci-blk.md`.
 
 ## Qué comprueba `make qemu-test`
 
@@ -134,7 +140,7 @@ La consola serie repite el texto de VGA. Con `-display none -serial stdio` se ve
 qemu-system-x86_64 -cpu qemu64 -drive format=raw,file=build/lapageriaos.img -display none -serial stdio
 ```
 
-`make qemu`, `make debug` y `make qemu-test` agregan el disco de datos. El arranque solo, como el humo de CI, no lo necesita: sin ese drive el comando `disk` imprime `ata fail 1` y vuelve al prompt.
+`make qemu`, `make debug` y `make qemu-test` agregan el disco de datos. El arranque solo, como el humo de CI, no lo necesita: sin ese drive (y sin un disco SATA) el comando `disk` imprime `ata fail 1` y vuelve al prompt.
 
 ```bash
 qemu-system-x86_64 -cpu qemu64 -drive format=raw,file=build/lapageriaos.img \
@@ -183,7 +189,7 @@ src/kernel/copihue/
   zone.lap                    zonas: cuota, máscara, raíz propia (/zonas/nombre) y tope de procesos
   net.lap                     e1000, ARP, IPv4 e ICMP
   trace.lap                   sondas estáticas y anillo de eventos
-  ahci.lap                    AHCI: lee y escribe un sector SATA por DMA (comando ahci, HR-01/HR-02)
+  ahci.lap                    AHCI: lee y escribe un sector SATA por DMA (comando ahci, HR-01/HR-02); backend de blk.lap (HR-03)
   nvme.lap                    NVMe: solo detección del controlador (comando nvme, HR-01)
   shell.lap                   editor de línea y comandos
 src/uefi/loader.lap           cargador UEFI en Copihue: lee kernel.bin de la ESP, ExitBootServices y salta al kernel (HR-02)
@@ -204,10 +210,13 @@ tests/repeat.sh               repite una prueba N veces en paralelo, con -icount
 scripts/chksizes.sh           compara la salida de copihue --sizes con lo esperado (pag2 y atk2)
 tests/mkaxe_test.sh           scripts/mkaxe.sh en el anfitrión (make mkaxe-test)
 tests/qemu_ahci_test.sh       AHCI (CRC de lectura contra gzip, escritura verificada en el anfitrión), nvme none/found y ATA intacto (make qemu-ahci-test)
+tests/qemu_ahci_fs_test.sh    disk y fs sobre el disco SATA por blk, elección de backend y fallo limpio (make qemu-ahci-fs-test, HR-03)
+tests/qemu_uefi_blk_test.sh   bajo UEFI (q35, sin IDE) disk y fs por AHCI; exige OVMF (make qemu-uefi-blk-test, HR-03)
 tests/uefi_pe_test.sh         comprobación estática del PE32+ del cargador UEFI (make uefi-pe-test)
 tests/qemu_uefi_test.sh       el kernel arranca por UEFI en QEMU con OVMF (make qemu-uefi-test; necesita firmware)
 docs/hr01-uefi-ahci.md        HR-01: qué arranca por UEFI, AHCI y NVMe, qué falta y cómo probarlo
 docs/hr02-uefi-ahci.md        HR-02: UEFI que carga el kernel, AHCI con escritura, qué falta y cómo probarlo
+docs/hr03-ahci-blk.md         HR-03: AHCI detrás de blk (disk y fs sobre SATA, también bajo UEFI), cómo elegir backend, qué falta
 docs/disco.md                 layout del disco de datos
 docs/fs.md                    sistema de archivos copy-on-write
 docs/exec.md                  ejecutables planos AXE1 y AXE2, distribución de memoria de usuario y el comando exec
@@ -261,7 +270,7 @@ Desde EX-01 `exec` también carga un AXE2: de 1 a 16 páginas de imagen desde `0
 
 ### 5. Disco y sistema de archivos — parcial, en la imagen
 
-El arranque sigue leyendo la etapa 2 (8 sectores) y el kernel con INT 13h, de a 128 sectores; el conteo total lo calcula `make`. Imagen y `.bss` tienen que caber en la página de 2 MiB de `0x400000` (tope de `make`: 2048 sectores de archivo). El kernel trae ATA PIO del esclavo primario (LBA28: identify, leer y escribir un sector, con timeout) y bloques de 512 B cuyo CRC-32 vive en el sector de al lado. Encima hay un sistema de archivos copy-on-write con directorios, snapshots, rollback y `fs scrub`. El layout del disco está en [docs/disco.md](docs/disco.md) y el del sistema de archivos en [docs/fs.md](docs/fs.md). Sigue pendiente otro bus (AHCI, NVMe).
+El arranque sigue leyendo la etapa 2 (8 sectores) y el kernel con INT 13h, de a 128 sectores; el conteo total lo calcula `make`. Imagen y `.bss` tienen que caber en la página de 2 MiB de `0x400000` (tope de `make`: 2048 sectores de archivo). El kernel trae ATA PIO del esclavo primario (LBA28: identify, leer y escribir un sector, con timeout) y bloques de 512 B cuyo CRC-32 vive en el sector de al lado. Encima hay un sistema de archivos copy-on-write con directorios, snapshots, rollback y `fs scrub`. El layout del disco está en [docs/disco.md](docs/disco.md) y el del sistema de archivos en [docs/fs.md](docs/fs.md). Desde HR-03 `blk` también puede ir por AHCI (disco SATA, un sector por comando; [docs/hr03-ahci-blk.md](docs/hr03-ahci-blk.md)). Sigue pendiente NVMe.
 
 ### 6. Red — parcial, en la imagen
 

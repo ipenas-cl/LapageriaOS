@@ -8,6 +8,19 @@ para ese commit es `legacy-tempo`.
 
 ## 0.8
 
+HR-03, AHCI detrás de `blk.lap`. Pin de Copihue sin cambios (v0.44.4). (1) `blk`
+tiene un backend (`blk_dev`: ATA o AHCI): `blk_rd`/`blk_wr` reemplazan a
+`ata_read`/`ata_write` en `blk_read`/`blk_write`, `disk` y `fs`; `blk_open` elige
+ATA primero y AHCI si no hay ATA (q35 no tiene IDE), `blk_set_dev` fuerza uno.
+Comando `blk [ata|ahci]`; `disk` imprime `ahci ok` en lugar de `ata ok` con el
+backend AHCI. El layout de bloques (datos+meta, CRC) no cambió. (2) Pruebas:
+`make qemu-ahci-fs-test` (`disk` y `fs` sobre un SATA de datos, con el anfitrión
+leyendo `AFS1`/`ABLK` del archivo) y `make qemu-uefi-blk-test` (lo mismo bajo
+q35 + OVMF sin IDE, y fallo limpio sin disco; SKIP en `qemu-test` si no hay
+OVMF). (3) `docs/hr03-ahci-blk.md`. Falta: elegir puerto/controlador AHCI,
+multi-sector, interrupciones, NVMe, GOP, hardware real. Kernel: 535691 bytes,
+1047 sectores (antes 535528 y 1046).
+
 EX-09, pin de Copihue v0.44.4 (`dd708bc`). (1) `f(x)[0] = v` y `*f(x) = v` con
 `-> *volatile u32` emiten el store volatile al ancho del pointee; asignar a un
 no-lvalue (`f(1) = 5`) es error de compilación con archivo y línea. Cierra el

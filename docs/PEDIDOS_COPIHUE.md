@@ -103,6 +103,16 @@ Siguen abiertos de EX-07: el costo de embeber programas en el kernel (el
 kernel pasó de 523044 a 531240 bytes por `cal`), el `hint: use 'as u8'` y el
 aviso de nasm 3.x.
 
+## HR-03 (AHCI detrás de blk), con Copihue v0.44.4
+
+El pin no cambia y no se parchó el lenguaje. Esta tajada es Copihue sin
+sorpresas: `blk.lap`, `fs.lap`, `shell.lap` y dos pruebas compilaron a la primera
+(arreglos globales, `else if`, funciones que devuelven `*u8`, `put_int`). **No
+apareció ningún hueco nuevo del compilador** y no se cerró ninguno: los pedidos
+abiertos de HR-01 (puntos 2 a 6) y de HR-02 siguen como están. Lo que queda de
+HR-03 (puerto AHCI elegible, multi-sector, IRQ, GOP) es de LapageriaOS, no de
+Copihue; ver `docs/hr03-ahci-blk.md`.
+
 ## HR-02 (cargador UEFI y AHCI con escritura), con Copihue v0.44.3
 
 El pin no cambia y no se parchó el lenguaje. `f(x)[0] = v` **seguía ABIERTO**
