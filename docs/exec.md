@@ -291,7 +291,7 @@ lectura falla por checksum y no hay proceso.
 
 ## AXE1 y `const` / `align(4096) let` desde el compilador (EX-08)
 
-Con Copihue v0.44.3 o posterior (el pin es v0.44.4), `copihue --flat 0x400000 --axe1 [--sizes] -o p.axe p.lap`
+Con Copihue v0.44.3 o posterior (el pin es v0.44.6), `copihue --flat 0x400000 --axe1 [--sizes] -o p.axe p.lap`
 escribe el AXE1 entero: 16 bytes de cabecera (magic, tamaño de la imagen u32,
 entrada u64 = dirección de `_start`) y la imagen, de 1 a 4080 bytes. `zatk`
 (`src/user/ataque.lap`) se arma así (`make`: `--sizes` se compara con
