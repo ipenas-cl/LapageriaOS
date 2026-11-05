@@ -71,6 +71,25 @@ La ESP va en virtio-blk a propósito: si estuviera en el SATA (como en
 `make qemu-uefi`) sería el primer disco del puerto 0, que es el que elige
 `ahci_find_port`, y `disk`/`fs` escribirían sobre ella.
 
+## Diagnóstico (`ahci dbg`)
+
+Si AHCI falla al elegir backend (`blk`, `disk`, `fs`, `blk ahci`), `blk_set_dev`
+llama a `ahci_dbg`, que imprime por serie (solo en fallo; `grep 'ahci dbg'`):
+
+```
+ahci dbg init r=<código AHCI> stage=<1..7> pa=<página DMA> pmmfree=<n>
+ahci dbg ctl=<i> dev=<d> fun=<f> id=<vid>:<did> map=<0|5> abar=.. cap=.. ghc=.. pi=.. bohc=..
+ahci dbg ctl=<i> port=<n> ssts=.. sig=.. cmd=.. tfd=.. serr=..
+ahci dbg ctrls=<n>
+```
+
+`r` es el código real de `ahci_init`; `blk fail 3` es el del ATA y lo oculta
+(`blk_open` devuelve el primero). `stage`: 1 buscar controlador, 2 BAR, 3 puerto
+con disco, 4 página de DMA (`pa=0` o `pmmfree=0` → código 5), 5 parar el
+puerto, 6 TFD, 7 IDENTIFY. Un puerto con disco SATA tiene `ssts=0x..0113` y
+`sig=0x00000101`; `sig=0xeb140101` es ATAPI (el CD que q35 trae en el puerto 2).
+Los registros se leen después del intento de `ahci_init`, con el BAR reabierto.
+
 ## Qué falta
 
 - **Elegir el puerto/controlador AHCI.** `ahci_find_port` toma el primer puerto

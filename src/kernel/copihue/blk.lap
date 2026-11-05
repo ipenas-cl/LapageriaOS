@@ -42,6 +42,10 @@ fn blk_set_dev(d: i64) -> i64 {
         if (r == 0) {
             blk_dev = 2;
             blk_sectors = ahci_sectors;
+        } else {
+            // Solo en fallo: blk_open devuelve el código del ATA (3) y el de
+            // AHCI se perdería. Líneas `ahci dbg ...` (ver ahci_dbg).
+            ahci_dbg(r);
         }
     }
     return r;

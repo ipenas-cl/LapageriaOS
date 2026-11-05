@@ -58,8 +58,8 @@ trap 'stop_qemu; rm -rf "$TMP"' EXIT
 
 fail() {
     echo "FAIL: $*"
-    echo "--- serial (últimas 60 líneas) ---"
-    tr -d '\r' < "$SERIAL" 2>/dev/null | tail -60 || true
+    echo "--- serial (últimas 120 líneas) ---"
+    tr -d '\r' < "$SERIAL" 2>/dev/null | tail -120 || true
     exit 1
 }
 

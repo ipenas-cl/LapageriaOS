@@ -37,6 +37,9 @@ let ahci_port: i64 = 0;
 let ahci_pa: i64 = 0;
 let ahci_sectors: i64 = 0;
 let ahci_ready: i64 = 0;
+// Hasta dónde llegó ahci_init (para ahci_dbg): 1 buscar controlador, 2 BAR,
+// 3 puerto con disco, 4 página de DMA, 5 parar el puerto, 6 TFD, 7 IDENTIFY.
+let ahci_stage: i64 = 0;
 let ahci_buf: [u8; 512];
 let ahci_out: [u8; 512];
 
@@ -290,18 +293,47 @@ fn ahci_word(n: i64) -> i64 {
     return (ahci_buf[n * 2] & 255) | ((((ahci_buf[n * 2 + 1] & 255) as i64)) << 8);
 }
 
+// Traspaso BIOS/SO (AHCI 1.3 §10.6.3): solo si CAP2.BOH (bit 0). Pide la
+// propiedad (BOHC.OOS, bit 1) y espera a que el firmware suelte BOS (bit 0)
+// y BB (bit 4). QEMU no lo implementa; un firmware que sí lo hace no debe
+// seguir dueño del HBA. Tope ~200 ms del PIT; si no suelta, se sigue igual.
+fn ahci_handoff() -> i64 {
+    if ((ahci_rd(0x24) & 1) == 0) { return 0; }
+    ahci_wr(0x28, ahci_rd(0x28) | 2);
+    let prev = ata_pit_read();
+    let acc = 0;
+    let n = 0;
+    while (acc < 238636) {
+        if ((ahci_rd(0x28) & 0x11) == 0) { return 0; }
+        n = n + 1;
+        if ((n & 15) == 0) {
+            let cur = ata_pit_read();
+            let d = prev - cur;
+            if (d < 0) { d = d + ATA_PIT_PERIOD; }
+            acc = acc + d;
+            prev = cur;
+        }
+    }
+    return 1;
+}
+
 // Busca el controlador, arma el puerto y lee IDENTIFY. Idempotente.
 fn ahci_init() -> i64 {
     if (ahci_ready != 0) { return 0; }
     let nth = 0;
     let r = 3;
+    ahci_stage = 1;
     while (r != 0) {
+        ahci_stage = 1;
         r = ahci_scan(nth);
         if (r != 0) { return r; }
+        ahci_stage = 2;
         r = ahci_map_bar();
         if (r == 0) {
+            ahci_stage = 3;
             // GHC.AE (bit 31), IE (bit 1) sigue en 0.
             ahci_wr(0x04, 0x80000000);
+            ahci_handoff();
             ahci_pi = ahci_rd(0x0C);
             r = ahci_find_port();
         }
@@ -319,9 +351,11 @@ fn ahci_init() -> i64 {
             nth = nth + 1;
         }
     }
+    ahci_stage = 4;
     ahci_pa = alloc_low_page();
     if (net_pa_ok(ahci_pa) == 0) { return 5; }
     zero_va(ahci_pa);
+    ahci_stage = 5;
     if (ahci_stop() != 0) { return 1; }
     ahci_pw(0x00, ahci_pa);
     ahci_pw(0x04, 0);
@@ -331,9 +365,11 @@ fn ahci_init() -> i64 {
     ahci_pw(0x10, 0xFFFFFFFF);
     ahci_pw(0x14, 0);
     ahci_pw(0x18, ahci_pr(0x18) | 0x10);
+    ahci_stage = 6;
     if (ahci_spin(0x20, 0x88, 0) != 0) { return 1; }
     ahci_pw(0x18, ahci_pr(0x18) | 0x1);
     ahci_ready = 1;
+    ahci_stage = 7;
     r = ahci_cmd(0xEC, 0);
     if (r != 0) { ahci_ready = 0; return r; }
     // Palabras 100..103: sectores LBA48 (aquí bastan las dos bajas).
@@ -385,6 +421,90 @@ fn ahci_dump() -> i64 {
     puts(" ci=");
     put_hex(ahci_pr(0x38));
     putc('\n');
+    return 0;
+}
+
+// Diagnóstico tras un ahci_init fallido (código `r`), líneas `ahci dbg ...`
+// para grep. Una de resumen (código, etapa de ahci_init, página de DMA,
+// páginas libres del pmm) y, por cada controlador AHCI del bus 0, una con
+// dispositivo, función, ID, ABAR, CAP, GHC, PI y BOHC, y una por puerto
+// implementado con SSTS, SIG, CMD, TFD y SERR. Vuelve a abrir cada BAR para
+// leer y lo apaga otra vez; ahci_init lo reconfigura en el próximo intento.
+fn ahci_dbg(r: i64) -> i64 {
+    puts("ahci dbg init r=");
+    put_int(r);
+    puts(" stage=");
+    put_int(ahci_stage);
+    puts(" pa=");
+    put_hex(ahci_pa);
+    puts(" pmmfree=");
+    put_int(pmm_free);
+    putc('\n');
+    let sd = ahci_dev;
+    let sf = ahci_fun;
+    let sp = ahci_port;
+    let k = 0;
+    while (ahci_scan(k) == 0) {
+        puts("ahci dbg ctl=");
+        put_int(k);
+        puts(" dev=");
+        put_int(ahci_dev);
+        puts(" fun=");
+        put_int(ahci_fun);
+        puts(" id=");
+        put_hex(ahci_vid);
+        putc(':');
+        put_hex(ahci_did);
+        let m = ahci_map_bar();
+        puts(" map=");
+        put_int(m);
+        if (m == 0) {
+            puts(" abar=");
+            put_hex(ahci_mmio);
+            puts(" cap=");
+            put_hex(ahci_rd(0x00));
+            puts(" ghc=");
+            put_hex(ahci_rd(0x04));
+            puts(" pi=");
+            put_hex(ahci_rd(0x0C));
+            puts(" bohc=");
+            put_hex(ahci_rd(0x28));
+            putc('\n');
+            let pi = ahci_rd(0x0C);
+            let n = 0;
+            while (n < 32) {
+                if (((pi >> n) & 1) != 0) {
+                    ahci_port = n;
+                    puts("ahci dbg ctl=");
+                    put_int(k);
+                    puts(" port=");
+                    put_int(n);
+                    puts(" ssts=");
+                    put_hex(ahci_pr(0x28));
+                    puts(" sig=");
+                    put_hex(ahci_pr(0x24));
+                    puts(" cmd=");
+                    put_hex(ahci_pr(0x18));
+                    puts(" tfd=");
+                    put_hex(ahci_pr(0x20));
+                    puts(" serr=");
+                    put_hex(ahci_pr(0x30));
+                    putc('\n');
+                }
+                n = n + 1;
+            }
+            pci_wr(0, ahci_dev, ahci_fun, 4, 0);
+        } else {
+            putc('\n');
+        }
+        k = k + 1;
+    }
+    puts("ahci dbg ctrls=");
+    put_int(k);
+    putc('\n');
+    ahci_dev = sd;
+    ahci_fun = sf;
+    ahci_port = sp;
     return 0;
 }
 
