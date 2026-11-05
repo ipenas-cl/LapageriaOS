@@ -177,6 +177,184 @@ fn exec_plant_big() -> i64 {
     return 0;
 }
 
+// `exec axe2plant` (EX-02): escribe en la raíz `pag2` y `atk2`, los AXE2 que
+// armó scripts/mkaxe.sh con texto, datos y bss (src/user/pag2.lap y
+// atk2.lap), y `atk2w`: atk2 con 2 páginas de texto (la segunda, que en atk2
+// es de datos, pasa a ser de solo lectura). Los bytes de pag2_fill y
+// atk2_fill llegan tal cual: la cabecera la hizo mkaxe, no el kernel.
+fn exec_plant_axe2() -> i64 {
+    let n = pag2_fill(exec_buf);
+    if (n < 33 || n > 65568) { return exec_fail(9); }
+    let r = fs_write("pag2", exec_buf, n);
+    if (r != 0) { return exec_fail(r); }
+    n = atk2_fill(exec_buf);
+    if (n < 33 || n > 65568) { return exec_fail(9); }
+    r = fs_write("atk2", exec_buf, n);
+    if (r != 0) { return exec_fail(r); }
+    let h: *Axe2 = axe2_of(exec_buf);
+    h.text = 8192;
+    r = fs_write("atk2w", exec_buf, n);
+    if (r != 0) { return exec_fail(r); }
+    puts("exec axe2 plant ok\n");
+    return 0;
+}
+
+// Resultado de exec_hdr con un nombre, una línea: `hdr nombre ok|bad size|...`.
+fn hdr_try(name: *u8, n: i64) {
+    puts("hdr ");
+    puts(name);
+    puts(" ");
+    let e = exec_hdr(n);
+    if (e == 0) { puts("ok\n"); }
+    else if (e == 1) { puts("bad size\n"); }
+    else if (e == 2) { puts("bad entry\n"); }
+    else { puts("bad magic\n"); }
+}
+
+// `exec hdrcheck` (EX-02): arma pag2 en exec_buf y le estropea la cabecera de
+// una en una (tamaños, páginas fuera de 1..16, texto que pasa de la imagen,
+// entradas fuera del texto, reservado, archivo corto). Pasa cada una por
+// exec_hdr, la función que usan exec, exec2 y zone exec, sin cargar nada.
+fn exec_hdrcheck() -> i64 {
+    let n = pag2_fill(exec_buf);
+    if (n < 33 || n > 65568) { return exec_fail(9); }
+    let img = n - 32;
+    let h: *Axe2 = axe2_of(exec_buf);
+    let tx = h.text;
+    hdr_try("base", n);
+    // Válidas en el borde: todo texto, memoria de 16 páginas, memoria sin alinear.
+    h.text = img as u32;
+    hdr_try("textall", n);
+    pag2_fill(exec_buf);
+    h.mem = 65536;
+    hdr_try("mem16", n);
+    pag2_fill(exec_buf);
+    h.mem = (img + 1) as u32;
+    hdr_try("memodd", n);
+    // Tamaño de imagen.
+    pag2_fill(exec_buf);
+    h.size = 0;
+    hdr_try("size0", n);
+    pag2_fill(exec_buf);
+    h.size = 65537;
+    hdr_try("size65537", n);
+    pag2_fill(exec_buf);
+    h.size = 0xFFFFFFFF;
+    hdr_try("sizemax", n);
+    pag2_fill(exec_buf);
+    h.size = (img + 1) as u32;
+    hdr_try("sizelong", n);
+    // Memoria: menos que la imagen, 0, 17 páginas, enorme.
+    pag2_fill(exec_buf);
+    h.mem = (img - 1) as u32;
+    hdr_try("memshort", n);
+    pag2_fill(exec_buf);
+    h.mem = 0;
+    hdr_try("mem0", n);
+    pag2_fill(exec_buf);
+    h.mem = 65537;
+    hdr_try("mem17", n);
+    pag2_fill(exec_buf);
+    h.mem = 0xFFFFFFFF;
+    hdr_try("memmax", n);
+    // Texto: 0, más que la imagen (se solapa con lo que no existe), enorme.
+    pag2_fill(exec_buf);
+    h.text = 0;
+    hdr_try("text0", n);
+    pag2_fill(exec_buf);
+    h.text = (img + 1) as u32;
+    hdr_try("textlong", n);
+    pag2_fill(exec_buf);
+    h.text = 0xFFFFFFFF;
+    hdr_try("textmax", n);
+    // Entrada: bajo la imagen, justo al final del texto, en datos, en la
+    // página de E/S, en el kernel, en la mitad alta, con el bit 63.
+    pag2_fill(exec_buf);
+    h.entry = 0x3FFFFF as u64;
+    hdr_try("entlow", n);
+    pag2_fill(exec_buf);
+    h.entry = (0x400000 + tx) as u64;
+    hdr_try("entend", n);
+    pag2_fill(exec_buf);
+    h.entry = 0x401000 as u64;
+    hdr_try("entdata", n);
+    pag2_fill(exec_buf);
+    h.entry = 0x410000 as u64;
+    hdr_try("entio", n);
+    pag2_fill(exec_buf);
+    h.entry = 0xFFFFFFFF80400000 as u64;
+    hdr_try("entkern", n);
+    pag2_fill(exec_buf);
+    h.entry = 0xFFFF800000001000 as u64;
+    hdr_try("enthigh", n);
+    pag2_fill(exec_buf);
+    h.entry = 0x8000000000000000 as u64;
+    hdr_try("entbit63", n);
+    // Reservado distinto de cero, magic malo, archivo corto.
+    pag2_fill(exec_buf);
+    h.pad = 1 as u64;
+    hdr_try("pad", n);
+    pag2_fill(exec_buf);
+    exec_buf[3] = 0x33;
+    hdr_try("magic", n);
+    pag2_fill(exec_buf);
+    hdr_try("n31", 31);
+    hdr_try("n32", 32);
+    hdr_try("n15", 15);
+    hdr_try("short", n - 1);
+    puts("exec hdrcheck done\n");
+    return 0;
+}
+
+// Lo que exec_hdr sacó de la cabecera de exec_buf.
+let hd_kind: i64 = 0;
+let hd_sz: i64 = 0;
+let hd_text: i64 = 0;
+let hd_mem: i64 = 0;
+let hd_ent: i64 = 0;
+let hd_hdr: i64 = 0;
+
+// Valida la cabecera de los n bytes que hay en exec_buf. 0 si está bien (y
+// deja el tipo, los tamaños y la entrada en hd_*); 1 tamaño malo, 2 entrada
+// mala, 3 magic malo. No imprime ni toma páginas: `exec hdrcheck` la prueba
+// sola. EX-02: en un AXE2 los 8 bytes reservados tienen que valer cero.
+fn exec_hdr(n: i64) -> i64 {
+    if (n < 16) { return 1; }
+    let kind = exec_magic();
+    if (kind == 0) { return 3; }
+    if (axe_layout() == 0) { return 1; }
+    let h: *Axe = axe_of(exec_buf);
+    let sz = h.size;
+    let hdr = 16;
+    let text = sz;
+    let mem = sz;
+    let entry = h.entry;
+    if (kind == 1) {
+        let room = n - 16;
+        if (sz <= 0 || sz > 4080 || sz > room) { return 1; }
+        let end = 0x400000 + sz;
+        if (entry < 0x400000 || entry >= 0x401000 || entry >= end) { return 2; }
+    } else {
+        hdr = 32;
+        if (n < 32) { return 1; }
+        let h2: *Axe2 = axe2_of(exec_buf);
+        text = h2.text;
+        mem = h2.mem;
+        let room2 = n - 32;
+        if (sz <= 0 || sz > 65536 || sz > room2) { return 1; }
+        if (mem < sz || mem > 65536 || text <= 0 || text > sz) { return 1; }
+        if (h2.pad != 0) { return 1; }
+        if (entry < 0x400000 || entry >= 0x400000 + text) { return 2; }
+    }
+    hd_kind = kind;
+    hd_sz = sz;
+    hd_text = text;
+    hd_mem = mem;
+    hd_ent = entry;
+    hd_hdr = hdr;
+    return 0;
+}
+
 // Lee `fs_name` y valida la cabecera. Deja la imagen en exec_code y su
 // descriptor en la ranura 0. Devuelve la entrada, o 0 tras imprimir el error.
 fn exec_prepare() -> i64 {
@@ -188,59 +366,25 @@ fn exec_prepare() -> i64 {
         }
         return exec_fail(0 - n);
     }
-    if (n < 16) {
+    let e = exec_hdr(n);
+    if (e == 1) {
         puts("exec bad size\n");
         return 0;
     }
-    let kind = exec_magic();
-    if (kind == 0) {
+    if (e == 2) {
+        puts("exec bad entry\n");
+        return 0;
+    }
+    if (e == 3) {
         puts("exec bad magic\n");
         return 0;
     }
-    if (axe_layout() == 0) {
-        puts("exec bad size\n");
-        return 0;
-    }
-    let h: *Axe = axe_of(exec_buf);
-    let sz = h.size;
-    let hdr = 16;
-    let text = sz;
-    let mem = sz;
-    let entry = h.entry;
-    if (kind == 1) {
-        let room = n - 16;
-        if (sz <= 0 || sz > 4080 || sz > room) {
-            puts("exec bad size\n");
-            return 0;
-        }
-        let end = 0x400000 + sz;
-        if (entry < 0x400000 || entry >= 0x401000 || entry >= end) {
-            puts("exec bad entry\n");
-            return 0;
-        }
-    } else {
-        hdr = 32;
-        if (n < 32) {
-            puts("exec bad size\n");
-            return 0;
-        }
-        let h2: *Axe2 = axe2_of(exec_buf);
-        text = h2.text;
-        mem = h2.mem;
-        let room2 = n - 32;
-        if (sz <= 0 || sz > 65536 || sz > room2) {
-            puts("exec bad size\n");
-            return 0;
-        }
-        if (mem < sz || mem > 65536 || text <= 0 || text > sz) {
-            puts("exec bad size\n");
-            return 0;
-        }
-        if (entry < 0x400000 || entry >= 0x400000 + text) {
-            puts("exec bad entry\n");
-            return 0;
-        }
-    }
+    let kind = hd_kind;
+    let sz = hd_sz;
+    let text = hd_text;
+    let mem = hd_mem;
+    let entry = hd_ent;
+    let hdr = hd_hdr;
     let i = 0;
     while (i < sz) {
         exec_code[i] = exec_buf[hdr + i];
@@ -362,5 +506,7 @@ fn cmd_exec() -> i64 {
     if (pos < 0) { return exec_fail(11); }
     if (exec_is("plant")) { return exec_plant(); }
     if (exec_is("bigplant")) { return exec_plant_big(); }
+    if (exec_is("axe2plant")) { return exec_plant_axe2(); }
+    if (exec_is("hdrcheck")) { return exec_hdrcheck(); }
     return exec_run();
 }

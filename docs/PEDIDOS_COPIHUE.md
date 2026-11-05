@@ -778,7 +778,7 @@ Pedidos que sí salieron, cada uno con su contorno:
    de texto; por eso el texto de `grande` es una sola página y `grandew`
    (texto de 2 páginas) solo prueba que la segunda página queda de solo
    lectura. Pedido: `align(4096)` o un `org` dentro de un archivo.
-3. **El tope de 4080 bytes sigue en `mkaxe.sh`.** El cargador acepta hasta 64
+3. **El tope de 4080 bytes sigue en `mkaxe.sh`** (cerrado en EX-02: ver abajo). El cargador acepta hasta 64
    KiB, pero el único camino de un programa compilado al disco es
    `mkaxe.sh`, que embebe el AXE1 en el kernel con una asignación de 4 bytes
    (unos 20 bytes de código cada una), y solo empaca AXE1. Un programa
@@ -789,3 +789,32 @@ Pedidos que sí salieron, cada uno con su contorno:
    reunieron.
 4. **Sin `const`** (igual que arriba): `0x410000`, `0x411000` y `0x412000`
    son literales repetidos en `sched.lap`, `exec.lap` y `udp.lap`.
+
+## EX-02 (mkaxe.sh empaca AXE2), con Copihue v0.42.5
+
+Cerrado en el repositorio, sin el compilador: `scripts/mkaxe.sh` empaca AXE2
+(`-d` datos, `-b` bss; docs/exec.md). Eso no cambia el pedido 1 de EX-01, que
+sigue abierto y es lo que falta para que un programa use datos de verdad:
+
+1. **`--flat` sigue sin datos ni bss** (pedido 1 de EX-01, sin cambios en
+   v0.42.5; no se volvió a probar con una versión más nueva). `pag2.lap` y
+   `atk2.lap` son solo texto; sus páginas de datos las arma el Makefile con
+   `printf` y `dd`, y los programas las direccionan con constantes
+   (`0x401000`, `0x402000`). Lo que pide el empaquetador, y que el compilador
+   podría darle: (a) el tamaño de la bss en alguna forma legible (hoy `-b` lo
+   escribe a mano quien arma el Makefile), (b) un arreglo global inicializado
+   que quede en el binario después del texto, alineado a página. No se probó
+   si un `let` global en un programa de usuario cae después del código en
+   `--flat`.
+2. **Alinear una función a una página** (pedido 2 de EX-01). `mkaxe.sh` rellena
+   el texto con ceros hasta la página, pero un texto de dos páginas con código
+   real en la segunda solo sale de un binario más largo de 4096 bytes.
+   `atk2w` (texto de 2 páginas) es `atk2` con el campo `text` cambiado en el
+   kernel: prueba la protección de la segunda página, no código ahí.
+3. **Costo de embeber.** `mkaxe.sh` ya salta las palabras en cero, pero el texto
+   sigue costando unos 6 bytes de kernel por byte de texto (`pag2`: 12323
+   bytes de kernel para 2106 de texto y 4096 de datos casi vacíos, medido
+   como diferencia de `kernel.bin`). Extrapolado, un programa denso de 64 KiB
+   de texto pagaría unos 380 KiB (estimación, no se midió). Sigue siendo el pedido de OB-03: una salida que
+   no pague una asignación por palabra al embeber, o un cargador desde el
+   anfitrión.

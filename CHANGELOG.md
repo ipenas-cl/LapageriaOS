@@ -8,6 +8,35 @@ para ese commit es `legacy-tempo`.
 
 ## 0.8
 
+EX-02, `mkaxe.sh` empaca AXE2 y ataques de anillo 3 contra un AXE2.
+(1) `scripts/mkaxe.sh [-d datos.bin] [-b bss] payload.bin salida.axe salida.lap
+[funcion]`: sin opciones y con un payload de hasta 4080 bytes sale el mismo AXE1
+de siempre (los `.lap` de `hola`, `ataque`, `grande` y `traza` se regeneraron y
+son idénticos byte a byte); con `-d`, `-b` o un payload mayor sale un AXE2 de 1 a
+16 páginas: texto relleno con ceros hasta la página, datos desde la página
+siguiente, bss detrás de los datos (o en la página siguiente al texto si no hay
+datos) sin ocupar archivo. El `.lap` de un AXE2 limpia el buffer y solo escribe
+las palabras no nulas, y `mkaxe.sh` vuelve a armar el archivo desde el `.lap` y lo
+compara con el `.axe`. `tests/mkaxe_test.sh` (`make mkaxe-test`, sin QEMU) revisa
+las cabeceras byte por byte, el relleno, la bss y los rechazos. `src/user/pag2.lap`
+es el primer AXE2 de verdad (1 página de texto, 1 de datos con marcadores armada
+en el Makefile con `printf` y `dd`, 1 de bss): `exec pag2` imprime `pag2 ok` tras
+leer los marcadores del archivo y escribir su segunda página. (2) `src/user/atk2.lap`
+hace 18 ataques de anillo 3 contra un AXE2, uno por corrida, y los 18 matan solo
+al proceso sin fugas: escribir el texto (primer y último byte), ejecutar datos,
+bss, página de E/S, pila y página de la syscall 8 (con un `ret` de destino, para
+que sobrevivir se note), leer y escribir fuera de sus páginas, desbordar la pila,
+kernel, tablas, no canónica, y escribir la segunda página de `atk2w` (texto de 2
+páginas). Control: la misma escritura en `atk2` (datos) no mata a nadie. Trece
+punteros malos contra la syscall 23 op 5 dan `-14` y el texto queda igual; cinco
+rangos válidos que cruzan de página funcionan. (3) La validación de cabecera salió
+de `exec_prepare` a `exec_hdr` (mismos mensajes) y ahora exige los 8 bytes
+reservados de un AXE2 en cero. `exec hdrcheck` estropea la cabecera de `pag2` en 28
+casos y los pasa por `exec_hdr`. `tests/qemu_axe2_test.sh` (`make
+qemu-axe2-test`, también en `make qemu-test`). Los 16 ataques de AXE1 de
+`tests/qemu_shell_test.sh` no se tocaron. Sigue pedido a Copihue: datos y bss en
+`--flat`, y alinear una función a una página (`docs/PEDIDOS_COPIHUE.md`, EX-02).
+
 EX-01, programas de modo usuario de varias páginas y `qemu_udp_test` estable.
 (1) `exec2: udpdos no abrió sus sockets` (PR 45, primera corrida) era una
 carrera: la syscall 1 escribe un carácter y el PIT puede cortar a un proceso a

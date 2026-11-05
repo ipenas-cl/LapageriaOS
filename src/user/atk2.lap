@@ -1,0 +1,226 @@
+// Ataques de anillo 3 contra un AXE2 (EX-02). copihue --flat 0x400000.
+// Corre como AXE2 armado por scripts/mkaxe.sh (texto de 1 página, datos de
+// 1 página con un `ret` (0xC3) en el byte 0, bss de 1 página):
+//
+//   0x400000 texto (RX)   0x401000 datos (RW, NX)   0x402000 bss (RW, NX)
+//   0x410000 E/S (RW, NX)  0x411000 pila (RW, NX)   0x412000 sin mapa
+//
+// Hace UN ataque contra la memoria o las syscalls. El modo sale del archivo
+// `q` (nombre en 0x410800, datos en 0x410C00): el shell lo escribe con
+// `fs write /zonas/z/q M` antes de cada `zone exec z atk2`.
+//
+//   'a' escribir el primer byte del texto            'b' escribir el último
+//   'c' ejecutar la página de datos (hay un ret)     'd' ejecutar la bss
+//   'e' ejecutar la página de E/S                    'f' ejecutar la pila
+//   'g' leer 0x403000, justo después de la bss       'h' escribir ahí
+//   'i' leer 0x40FFFF, en el hueco antes de la E/S   'j' leer 0x412000
+//   'k' leer 0x3FFFFF, antes de la imagen            'l' leer el kernel
+//   'm' escribir la mitad alta 0xFFFF800000001000    'n' leer 0x1000
+//   'o' leer una dirección no canónica
+//   'q' ejecutar una página pedida con la syscall 8 (hay un ret)
+//   's' desbordar la pila hacia abajo (cae en el hueco bajo la E/S)
+//   'w' escribir la segunda página (en `atk2` es de datos y se puede: control;
+//       en `atk2w`, la misma imagen con 2 páginas de texto, es de solo lectura)
+//   'p' punteros de usuario malos en una syscall que escribe (23, op 5):
+//       texto, hueco, pasar del fin de la imagen, pasar del tope de la pila,
+//       del kernel y enormes se niegan con -14 y el texto queda igual; dos
+//       rangos válidos que cruzan de una página de escritura a la siguiente
+//       (datos a bss, E/S a pila) tienen que funcionar (control).
+//
+// Cada ataque (menos 'w' en atk2 y 'p') tiene que matar al proceso, así que
+// `atk2 survived` solo sale si el kernel NO lo negó.
+
+naked fn emit(c: i64) {
+    rax = 1;
+    syscall();
+}
+
+fn nl() {
+    emit(10);
+}
+
+fn say8(w: i64) {
+    let x: i64 = w;
+    while (x != 0) {
+        emit(x & 255);
+        x = x >> 8;
+    }
+}
+
+// atk2 <modo>
+fn say_atk(m: i64) {
+    say8(0x20326b7461);
+    emit(m);
+    nl();
+}
+
+// atk2 survived
+fn say_survived() {
+    say8(0x72757320326b7461);
+    say8(0x6465766976);
+    nl();
+}
+
+// atk2 ptr denied
+fn say_ptr() {
+    say8(0x72747020326b7461);
+    say8(0x6465696e656420);
+    nl();
+}
+
+// atk2 w ok
+fn say_w_ok() {
+    say8(0x20326b7461);
+    emit(119);
+    say8(0x6b6f20);
+    nl();
+}
+
+// Salta a la dirección de rdi. Como el naked no tiene prólogo, la dirección de
+// retorno de quien lo llamó sigue arriba de la pila: si el destino ejecuta (hay
+// un ret ahí), vuelve a quien llamó y el ataque «sobrevive». Sin locales.
+naked fn call_to(a: i64) {
+    jmp rdi;
+}
+
+fn get(a: i64) -> i64 {
+    let p: *u8 = a as *u8;
+    let v: i64 = p[0];
+    return v & 255;
+}
+
+fn put(a: i64, v: i64) {
+    let p: *u8 = a as *u8;
+    p[0] = v as u8;
+}
+
+// Syscall 23 op 5: copia el nombre de la sonda `a` (hasta 15 bytes y un cero)
+// a la dirección b. Valida que b..b+16 sea escribible. -14 si no.
+fn name_at(b: i64) -> i64 {
+    return syscall(23, 5, 0, b);
+}
+
+// Número de la primera comprobación que falló (0 si ninguna). `denied` pide
+// -14 y `allowed` un largo positivo.
+fn denied(bad: i64, n: i64, r: i64) -> i64 {
+    if (bad != 0) { return bad; }
+    if (r != 0 - 14) { return n; }
+    return 0;
+}
+
+fn allowed(bad: i64, n: i64, r: i64) -> i64 {
+    if (bad != 0) { return bad; }
+    if (r <= 0) { return n; }
+    return 0;
+}
+
+// atk2 bad NN: la comprobación NN de ptr_attack falló
+fn say_bad(n: i64) {
+    say8(0x64616220326b7461);
+    emit(32);
+    emit(48 + n / 10);
+    emit(48 + n % 10);
+    nl();
+}
+
+fn ptr_attack() {
+    let bad: i64 = 0;
+    let t0: i64 = get(0x400000);
+    let t1: i64 = get(0x400FF8);
+    bad = denied(bad, 1, name_at(0x400000));
+    bad = denied(bad, 2, name_at(0x400FF8));
+    bad = denied(bad, 3, name_at(0x400FF0));
+    bad = denied(bad, 4, name_at(0x40FFF8));
+    bad = denied(bad, 5, name_at(0x402FF8));
+    bad = denied(bad, 6, name_at(0x403000));
+    bad = denied(bad, 7, name_at(0x411FF8));
+    bad = denied(bad, 8, name_at(0x412000));
+    bad = denied(bad, 9, name_at(0x3FFFF8));
+    bad = denied(bad, 10, name_at(0xFFFFFFFF80400000));
+    bad = denied(bad, 11, name_at(0xFFFF800000001000));
+    bad = denied(bad, 12, name_at(0x7FFFFFFFFFFFFFF8));
+    bad = denied(bad, 13, name_at(1 << 63));
+    if (get(0x400000) != t0 || get(0x400FF8) != t1) {
+        if (bad == 0) { bad = 14; }
+    }
+    // Control: rangos válidos. Datos a bss y E/S a pila cruzan de una página
+    // de escritura a la siguiente; el nombre de la sonda 0 tiene más de 0 bytes.
+    bad = allowed(bad, 15, name_at(0x401FF8));
+    bad = allowed(bad, 16, name_at(0x401000));
+    bad = allowed(bad, 17, name_at(0x402800));
+    bad = allowed(bad, 18, name_at(0x410FF8));
+    bad = allowed(bad, 19, name_at(0x411800));
+    if (bad == 0) { say_ptr(); }
+    else { say_bad(bad); }
+}
+
+fn deep(n: i64) -> i64 {
+    let pad: i64 = n;
+    return deep(n + 1) + pad;
+}
+
+fn attack(m: i64) {
+    let x: i64 = 0;
+    if (m == 97) { put(0x400000, 0x90); }
+    if (m == 98) { put(0x400FFF, 0x90); }
+    if (m == 99) { call_to(0x401000); }
+    if (m == 100) {
+        put(0x402000, 0xC3);
+        call_to(0x402000);
+    }
+    if (m == 101) {
+        put(0x410000, 0xC3);
+        call_to(0x410000);
+    }
+    if (m == 102) {
+        put(0x411000, 0xC3);
+        call_to(0x411000);
+    }
+    if (m == 103) { x = get(0x403000); }
+    if (m == 104) { put(0x403000, 0); }
+    if (m == 105) { x = get(0x40FFFF); }
+    if (m == 106) { x = get(0x412000); }
+    if (m == 107) { x = get(0x3FFFFF); }
+    if (m == 108) { x = *(0xFFFFFFFF80400000 as *u8); }
+    if (m == 109) { put(0xFFFF800000001000, 0); }
+    if (m == 110) { x = get(0x1000); }
+    if (m == 111) { x = *((1 << 63) as *u8); }
+    if (m == 113) {
+        if (syscall(8) == 0) {
+            put(0x412000, 0xC3);
+            call_to(0x412000);
+        }
+    }
+    if (m == 115) { x = deep(0); }
+    if (m == 119) {
+        put(0x401000, 0x77);
+        if (get(0x401000) == 0x77) {
+            say_w_ok();
+            return;
+        }
+    }
+    if (x == 123456) { emit(88); }
+    say_survived();
+}
+
+fn run_mode() {
+    let m: i64 = get(0x410C00);
+    say_atk(m);
+    if (m == 112) {
+        ptr_attack();
+        return;
+    }
+    attack(m);
+}
+
+naked fn _start() {
+    *(0x410800 as *u8) = 113;
+    *(0x410801 as *u8) = 0;
+    rax = 7;
+    rdi = 1;
+    syscall();
+    if (rax == 1) { run_mode(); }
+    rax = 5;
+    syscall();
+    hlt();
+}

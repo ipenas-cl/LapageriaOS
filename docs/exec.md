@@ -48,7 +48,7 @@ mide 32 bytes, little-endian, y la imagen va justo después:
 | 8 | 8 | punto de entrada, dentro del texto |
 | 16 | 4 | bytes de texto: el principio de la imagen, redondeado hacia arriba a páginas |
 | 20 | 4 | tamaño en memoria (de lo que hay en el archivo hasta 65536): lo que pasa del archivo queda en cero (bss) |
-| 24 | 8 | reservado, en cero |
+| 24 | 8 | reservado, en cero (EX-02: si no lo está, `exec bad size`) |
 
 Las páginas de texto quedan presentes, de usuario, de solo lectura y
 ejecutables (`5`). Las demás de la imagen y la de bss son de lectura y
@@ -120,6 +120,70 @@ conoce (`big_pat` en `exec.lap`, `pat` en el programa); la 4 es bss.
 corre todo eso, `exec2 grande hola` (un AXE2 y un AXE1 a la vez) y
 `zone exec` de `grande` en una zona de 16 páginas (sin fugas) y en una de 8
 (`zone fail 6`).
+
+## Empacar un AXE2 con mkaxe.sh (EX-02)
+
+```
+scripts/mkaxe.sh [-d datos.bin] [-b bss] payload.bin salida.axe salida.lap [funcion]
+```
+
+Sin opciones y con un payload de 1 a 4080 bytes sale un AXE1, como siempre.
+Sale un AXE2 si el payload pasa de 4080 bytes o si se pide `-d` o `-b`:
+
+| Parte | Dónde queda |
+|---|---|
+| `payload.bin` (texto) | principio de la imagen; el campo `text` de la cabecera es su largo; se rellena con ceros hasta la página |
+| `-d datos.bin` | en la primera página después del texto; cuenta como imagen en el archivo |
+| `-b bss` | bytes en cero detrás de los datos, o en la página siguiente al texto si no hay datos (la bss no puede compartir página con el texto, que es de solo lectura); no ocupa archivo |
+
+El campo `mem` es todo eso sumado y la imagen no puede pasar de 64 KiB (16
+páginas); `mkaxe.sh` rechaza lo que se pase, un payload vacío, datos vacíos o
+inexistentes y una bss que no es un número. El `.lap` que genera limpia el
+buffer que le pasan y solo escribe las palabras no nulas: una página de datos
+casi vacía cuesta poco kernel, una llena unos 5 bytes por byte.
+
+Ejemplo (el Makefile lo hace así para `pag2` y `atk2`): `copihue --flat
+0x400000 -o pag2.bin src/user/pag2.lap` y `mkaxe.sh -d pag2.dat -b 4096 pag2.bin
+pag2.axe pag2_img.lap pag2_fill`. El compilador no emite datos ni bss en `--flat`
+(`docs/PEDIDOS_COPIHUE.md`): `pag2.dat` se arma con `printf` y `dd`, y el programa
+direcciona sus páginas con constantes (`0x401000` datos, `0x402000` bss).
+
+`exec axe2plant` escribe en la raíz:
+
+| Nombre | Qué es |
+|---|---|
+| `pag2` | texto + 1 página de datos (`SEG2` en el byte 0, `DE AD BE EF` en el `0x800`, `Z` en el último) + 1 de bss. `exec pag2` imprime `pag2 ok`; toma 9 páginas |
+| `atk2` | texto de `src/user/atk2.lap`, 1 página de datos con un `ret` (`0xC3`) en el byte 0, 1 de bss |
+| `atk2w` | `atk2` con 2 páginas de texto: la segunda, que en `atk2` es de datos, es de solo lectura |
+
+`exec hdrcheck` arma `pag2` en memoria, le estropea la cabecera de a una (28
+casos) y pasa cada una por `exec_hdr`, la función que usan `exec`, `exec2` y
+`zone exec`. Imprime `hdr <caso> ok|bad size|bad entry|bad magic`; lo esperado
+está en `tests/qemu_axe2_test.sh`. Rechaza: tamaño de imagen 0, 65537, `0xFFFFFFFF`
+o más largo que el archivo; memoria menor que la imagen, 0, 17 páginas o
+`0xFFFFFFFF`; texto 0, más largo que la imagen o `0xFFFFFFFF`; reservado
+distinto de cero; archivo de 15, 31 o 32 bytes o con un byte de menos; entrada
+bajo la imagen, justo al final del texto, en datos, en la página de E/S, en el
+kernel, en la mitad alta o con el bit 63; magic `AXE3`.
+
+### Ataques de anillo 3 contra un AXE2
+
+`atk2` (en una zona; el modo está en el archivo `q`) hace un ataque por corrida:
+
+| Modo | Ataque | Falla esperada (`user killed`) |
+|---|---|---|
+| `a` `b` | escribir el primer y el último byte del texto | `vec=14 err=0x7` en `0x400000`, `0x400fff` |
+| `c` `d` `e` `f` `q` | ejecutar datos, bss, página de E/S, pila, página de la syscall 8 (con un `ret` de destino) | `vec=14 err=0x15` en `0x401000`, `0x402000`, `0x410000`, `0x411000`, `0x412000` |
+| `g` `h` | leer, escribir justo después de la bss | `err=0x4`, `err=0x6` en `0x403000` |
+| `i` `j` `k` | leer el hueco antes de la E/S, sobre la pila, bajo la imagen | `err=0x4` en `0x40ffff`, `0x412000`, `0x3fffff` |
+| `s` | desbordar la pila hacia abajo | `err=0x6` en `0x40fxxx` (cruza antes su propia E/S) |
+| `l` `m` `n` | leer el kernel, escribir la mitad alta, leer `0x1000` | `err=0x5`, `0x7`, `0x5` |
+| `o` | dirección no canónica | `#GP` o `#PF`, según el QEMU |
+| `w` en `atk2w` | escribir la segunda página (texto) | `err=0x7` en `0x401000` |
+| `w` en `atk2` | escribir la segunda página (datos) | nada: `atk2 w ok` (control) |
+| `p` | 13 punteros malos en la syscall 23 op 5 (texto, hueco, fin de imagen, tope de pila, kernel, enormes) | nadie muere: `-14` y el texto igual; 5 rangos válidos que cruzan de página funcionan. Necesita `zone trace` (la syscall 23 está fuera de la máscara de una zona nueva) |
+
+Todos los que matan dejan `zone ls` con `pag=0` y sin procesos.
 
 ## De dónde sale el archivo
 
