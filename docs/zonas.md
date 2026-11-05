@@ -413,7 +413,7 @@ atribuir al proceso ni reanudar.
 
 Probados en QEMU (modos u, z, i arriba; `make qemu-test` exige vector y
 error exactos, el RIP dentro del programa y que los bytes de
-`build/ataque.bin` en ese RIP sean la instrucción esperada): #UD, #DE y
+`build/ataque.axe`, tras su cabecera AXE1 de 16 bytes, en ese RIP sean la instrucción esperada): #UD, #DE y
 #GP (por `int 3`). Cubiertos por el mismo `user_exc` pero **sin prueba**:
 #DB, #BP, #OF, #BR, #NM, #TS, #NP, #SS, #MF, #AC, #XM/#VE/#CP/#HV/#VC/#SX
 y los reservados. Motivos: `into` y `bound` no existen en 64 bits (darían #UD
