@@ -8,6 +8,22 @@ para ese commit es `legacy-tempo`.
 
 ## 0.8
 
+HR-01, primera tajada de hardware moderno (UEFI, AHCI, NVMe). El camino BIOS +
+ATA no cambia. (1) UEFI: `src/uefi/stub.lap` es una aplicación EFI en Copihue,
+independiente de la posición, que escribe por COM1 y por `ConOut` y apaga con
+`ResetSystem`; `src/uefi/pe.asm` la envuelve en PE32+ (`BOOTX64.EFI`). Nuevos
+targets `uefi-image`, `uefi-pe-test`, `qemu-uefi` y `qemu-uefi-test` (los dos
+últimos fallan con un mensaje claro si no hay OVMF). `qemu-test` corre la
+comprobación estática siempre y el arranque solo si hay firmware. **No carga el
+kernel.** (2) AHCI: `ahci.lap` y el comando `ahci [lba]` leen un sector SATA por
+DMA (IDENTIFY y READ DMA EXT); `make qemu-ahci-test` compara el CRC-32 de los
+sectores 0 y 9 con el del anfitrión y comprueba que ATA sigue igual. Sin
+escritura. (3) NVMe: `nvme.lap` y el comando `nvme` solo detectan el controlador.
+Kernel: 523044 bytes. Documentado en `docs/hr01-uefi-ahci.md`.
+`docs/PEDIDOS_COPIHUE.md` suma cinco pedidos abiertos (el store a `f(x)[0]` que se
+descarta sin aviso, el inicializador de global no literal, salida PE/EFI, ABI
+MS x64 y datos relativos a RIP en `--flat`); no cierra ninguno.
+
 EX-07, marco local de 8 KiB en un AXE1. `src/user/ataque.lap` (`zatk`) suma el
 modo `y`: llama a una función con `let b: [u8; 8192]`. Con el sondeo de pila de
 Copihue v0.44.2 (el pin no cambia, `eaadb447`) el prólogo toca la guarda de la
