@@ -194,8 +194,10 @@ fn switch_to(n: i64) -> i64 {
 // la zona z puede gastar (0 = sin límite); zcpu_use[z] los que lleva en la
 // ventana. Un tick se le cobra a la zona del proceso que corría. Con la
 // cuota gastada, la zona cede la CPU al otro proceso hasta que la ventana
-// se renueva (en el tick 20). Si no hay otro proceso listo, sigue corriendo:
-// no hay tarea ociosa a la que dejar la CPU.
+// se renueva (en el tick 20). Es un tope duro (FS-05/1): si no hay otro
+// proceso con cuota, la CPU pasa a la tarea ociosa (idle_loop: hlt sobre su
+// propia pila) hasta que la ventana se renueve. zcpu_idle y zcpu_solo
+// cuentan los ticks ociosos y los cobrados sin otro proceso listo.
 // Todo se mide en ticks (no en tiempo del anfitrión), y los contadores son
 // los que mira la prueba: zcpu_tot (ticks cobrados), zcpu_cont (los cobrados
 // con otro proceso listo) y zcpu_thr (veces que la cuota la sacó de la CPU).
@@ -204,7 +206,11 @@ let zcpu_use: [i64; 8];
 let zcpu_tot: [i64; 8];
 let zcpu_cont: [i64; 8];
 let zcpu_thr: [i64; 8];
+let zcpu_idle: [i64; 8];
+let zcpu_solo: [i64; 8];
 let volatile zcpu_win: i64 = 0;
+let volatile idle_on: i64 = 0;
+let idle_stack: [u8; 4096];
 
 fn zcpu_throttled(z: i64) -> i64 {
     if (z < 1 || z >= 8) { return 0; }
@@ -218,12 +224,15 @@ fn zcpu_reset(z: i64) -> i64 {
     zcpu_tot[z] = 0;
     zcpu_cont[z] = 0;
     zcpu_thr[z] = 0;
+    zcpu_idle[z] = 0;
+    zcpu_solo[z] = 0;
     return 0;
 }
 
 // Ventana nueva: la corrida empieza con todas las zonas sin gasto.
 fn zcpu_window_start() -> i64 {
     zcpu_win = 0;
+    idle_on = 0;
     let i = 0;
     while (i < 8) {
         zcpu_use[i] = 0;
@@ -240,8 +249,17 @@ fn zcpu_tick() -> i64 {
         if (z >= 0 && z < 8) {
             zcpu_use[z] = zcpu_use[z] + 1;
             zcpu_tot[z] = zcpu_tot[z] + 1;
-            if (other_runnable(cur_i) >= 0) { zcpu_cont[z] = zcpu_cont[z] + 1; }
+            if (other_runnable(cur_i) >= 0) {
+                zcpu_cont[z] = zcpu_cont[z] + 1;
+            } else {
+                zcpu_solo[z] = zcpu_solo[z] + 1;
+            }
         }
+    } else if (idle_on != 0) {
+        // Tarea ociosa: el tick no se cobra a nadie; se anota a la zona
+        // que espera con la cuota agotada.
+        let zi = proc_zone[cur_i];
+        if (zi >= 0 && zi < 8) { zcpu_idle[zi] = zcpu_idle[zi] + 1; }
     }
     zcpu_win = zcpu_win + 1;
     if (zcpu_win >= 20) {
@@ -255,17 +273,88 @@ fn zcpu_tick() -> i64 {
     return 0;
 }
 
+// Proceso que puede correr ahora: listo (1) o corriendo (2), con marco
+// forjado y con la cuota de su zona sin agotar. -1 si no hay ninguno.
+fn eligible_proc() -> i64 {
+    let i = 0;
+    while (i < 2) {
+        if ((proc_state[i] == 1 || proc_state[i] == 2) && proc_ksp[i] != 0 && zcpu_throttled(proc_zone[i]) == 0) { return i; }
+        i = i + 1;
+    }
+    return -1;
+}
+
+// Marco de la tarea ociosa: iretq a anillo 0 (CS 0x18, SS 0x20) sobre su
+// propia pila, con IF prendido. Devuelve la base del marco (20 qwords).
+fn idle_forge() -> i64 {
+    let top = (idle_stack as i64) + 4096;
+    let base = top - 160;
+    let s: *u64 = base as *u64;
+    let i = 0;
+    while (i < 15) {
+        s[i] = 0;
+        i = i + 1;
+    }
+    s[15] = &idle_loop;
+    s[16] = 0x18;
+    s[17] = 0x202;
+    s[18] = top;
+    s[19] = 0x20;
+    return base;
+}
+
+fn idle_loop() -> i64 {
+    while (1) { hlt(); }
+    return 0;
+}
+
+// Tope duro (FS-05/1). Dos casos en el tick del PIT:
+//  - Tarea ociosa activa: si ya hay un proceso con cuota disponible (la
+//    ventana se renovó, o despertó otro), se lo reanuda.
+//  - El proceso en anillo 3 agotó la cuota: pasa a otro proceso con cuota o,
+//    si no hay, a la tarea ociosa (hlt hasta que la ventana se renueve).
+// Devuelve 1 si cambió saved_ksp (el manejador del PIT cambia el marco).
+fn timer_idle_switch() -> i64 {
+    if (idle_on != 0) {
+        let e = eligible_proc();
+        if (e < 0) { return 0; }
+        idle_on = 0;
+        if (e != cur_i) {
+            switch_to(e);
+        } else {
+            proc_state[e] = 2;
+            saved_ksp = proc_ksp[e];
+        }
+        return 1;
+    }
+    if (zcpu_throttled(proc_zone[cur_i]) == 0) { return 0; }
+    let z = proc_zone[cur_i];
+    zcpu_thr[z] = zcpu_thr[z] + 1;
+    proc_ksp[cur_i] = saved_ksp;
+    let e2 = eligible_proc();
+    if (e2 >= 0) {
+        switch_to(e2);
+        nswitch_timer = nswitch_timer + 1;
+        return 1;
+    }
+    proc_state[cur_i] = 1;
+    idle_on = 1;
+    saved_ksp = idle_forge();
+    return 1;
+}
+
 fn timer_should_switch() -> i64 {
     if (sched_on == 0) { return 0; }
+    if (idle_on != 0) { return timer_idle_switch(); }
     if ((saved_cs & 3) != 3) { return 0; }
+    // Cuota agotada: otro proceso con cuota o tarea ociosa, aunque nadie
+    // más espere.
+    if (zcpu_throttled(proc_zone[cur_i]) != 0) { return timer_idle_switch(); }
     let n = other_runnable(cur_i);
     if (n < 0) { return 0; }
     if (proc_ksp[n] == 0) { return 0; }
     // El otro agotó su cuota y yo no: sigo yo. Si es al revés, me saco.
     if (zcpu_throttled(proc_zone[n]) != 0 && zcpu_throttled(proc_zone[cur_i]) == 0) { return 0; }
-    if (zcpu_throttled(proc_zone[cur_i]) != 0 && zcpu_throttled(proc_zone[n]) == 0) {
-        zcpu_thr[proc_zone[cur_i]] = zcpu_thr[proc_zone[cur_i]] + 1;
-    }
     proc_ksp[cur_i] = saved_ksp;
     switch_to(n);
     nswitch_timer = nswitch_timer + 1;

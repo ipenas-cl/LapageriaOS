@@ -109,7 +109,7 @@ lee de la raíz global, no de la de la zona.
 `zone cpu <nombre> <n>` limita la CPU de una zona: puede gastar `n` ticks del
 PIT (de 1 a 20) en cada ventana fija de 20 ticks; `0` quita el límite (es el
 valor de una zona nueva). `zone cpu <nombre>` muestra
-`zone cpu <nombre> quota=<n>/20 tot=<ticks> cont=<ticks> thr=<veces>`.
+`zone cpu <nombre> quota=<n>/20 tot=<ticks> cont=<ticks> thr=<veces> idle=<ticks> solo=<ticks>`.
 `zone fail 11` si el nombre no existe, es `global` o `n` no es un número de
 0 a 20. Poner la cuota pone en cero los contadores.
 
@@ -123,9 +123,16 @@ valor de una zona nueva). `zone cpu <nombre>` muestra
 - Todo se mide en ticks, no en tiempo del anfitrión: con `-icount shift=4` el
   reparto sale igual (2/20 da `cont` de la zona acotada un 11% del de la
   otra, 392 frente a 3524 en una corrida).
-- Límite: no hay tarea ociosa. Si el único proceso listo es de una zona con
-  la cuota agotada, sigue corriendo (la cuota reparte la CPU entre procesos
-  que compiten; no deja la CPU ociosa). Son dos procesos como máximo.
+- Tope duro (FS-05/1): si no hay otro proceso con cuota disponible, la CPU
+  pasa a una tarea ociosa (`idle_loop` en `sched.lap`: `hlt` sobre su propia
+  pila, con un marco `iretq` a anillo 0 que forja `idle_forge`). La zona
+  acotada no corre, aunque esté sola, hasta que la ventana se renueva; ahí el
+  PIT la reanuda. Los ticks ociosos no se cobran a nadie: se cuentan en
+  `idle=` (de la zona que esperaba) y los cobrados sin otro proceso listo en
+  `solo=`. Son dos procesos como máximo.
+- Límite: el corte ocurre en el tick del PIT y solo si el proceso está en
+  anillo 3; uno que esté dentro de una syscall en ese tick sigue hasta el
+  siguiente (puede pasarse de la cuota por un tick).
 
 La prueba es `tests/qemu_cpu_test.sh` (`make qemu-cpu-test`): `zone pair za zb
 par` con el modo `h` de `par` (100 millones de vueltas sin syscalls).

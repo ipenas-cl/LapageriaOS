@@ -158,14 +158,15 @@ fn do_d(s: i64) {
     put_result(1, 5);
 }
 
-// 'h' gasta CPU: 100 millones de vueltas sin una sola syscall, y sale. Sirve
-// para medir la cuota de CPU de la zona (`zone cpu`): lo que importa son los
-// ticks que el kernel le cobra, no cuánto tarda el anfitrión.
-fn hog() {
+// Un dígito de '0' a '9' gasta CPU: 2^(d+19) vueltas sin una sola
+// syscall (d = 0: 0,5 millones; d = 4: 8 millones; d = 7: 67 millones), y sale.
+// Sirve para medir la cuota de CPU de la zona (`zone cpu`): lo que importa son
+// los ticks que el kernel le cobra, no cuánto tarda el anfitrión. El reloj
+// de QEMU con -icount va unas 10 veces más lento por vuelta, así que la
+// prueba elige el dígito según el modo.
+fn hog(n: i64) {
     let i: i64 = 0;
-    let s: i64 = 0;
-    while (i < 100000000) {
-        s = s + i;
+    while (i < n) {
         i = i + 1;
     }
 }
@@ -189,7 +190,7 @@ fn run() {
     if (m == 115) { do_s(s); }
     if (m == 103) { do_g(s); }
     if (m == 100) { do_d(s); }
-    if (m == 104) { hog(); }
+    if (m >= 48 && m <= 57) { hog(1 << (m - 29)); }
 }
 
 // El modo por defecto es 'y': un archivo que no se puede leer deja ahí la

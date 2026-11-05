@@ -884,6 +884,10 @@ fn zone_cpu_cmd(pos: i64) -> i64 {
         put_int(zcpu_cont[z]);
         puts(" thr=");
         put_int(zcpu_thr[z]);
+        puts(" idle=");
+        put_int(zcpu_idle[z]);
+        puts(" solo=");
+        put_int(zcpu_solo[z]);
         putc('\n');
         return 0;
     }
