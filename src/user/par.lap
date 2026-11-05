@@ -18,6 +18,8 @@
 //       pid 2 de dz sigue vivo: -16 (busy). Lo mata (26), la destrucción da
 //       0 y una segunda da -11 (ya no existe). Para `zone pair global dz par`.
 //
+// El modo de CPU por zona ('k') está en parcpu.lap: en par ya no cabía.
+//
 // Cada proceso deja una cadena de '1' (bien) y '0' (mal) en el archivo
 // `r<pid>` de su zona; el shell la lee con `fs cat`. Las zonas son la 1 y la
 // 2 cuando son dos zonas distintas (la contraria es 3 - zona).
@@ -156,20 +158,6 @@ fn do_d(s: i64) {
     put_result(1, 5);
 }
 
-// Modo 'k' + un dígito d (k6): gasta CPU, sin ceder, hasta que el kernel le
-// haya cobrado a la zona 10*d ticks (syscall 28), y sale. Sirve para medir la
-// cuota de CPU (`zone cpu`): lo que importa son los ticks que el kernel cobra,
-// no cuántas vueltas da el anfitrión, así que el gasto se pide en ticks y da
-// lo mismo en un anfitrión rápido, lento o con -icount. Mira el contador cada
-// 1024 vueltas. Sin tope de lecturas (no cabe): si el contador no avanza la
-// prueba lo nota por su plazo.
-fn hog_ticks(d: i64) {
-    while (syscall(28) < d * 10) {
-        let i: i64 = 0;
-        while (i < 1024) { i = i + 1; }
-    }
-}
-
 fn run() {
     let s: i64 = syscall(25, 0);
     let m: i64 = *(0x401C00 as *u8) & 255;
@@ -187,7 +175,6 @@ fn run() {
     if (m == 115) { do_s(s); }
     if (m == 103) { do_g(s); }
     if (m == 100) { do_d(s); }
-    if (m == 107) { hog_ticks(*(0x401C01 as *u8) - 48); }
 }
 
 // El modo por defecto es 'y': un archivo que no se puede leer deja ahí la

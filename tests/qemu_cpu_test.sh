@@ -8,7 +8,7 @@
 #   tot   ticks cobrados a la zona
 #   cont  ticks cobrados con otro proceso listo (los que disputó)
 #   thr   veces que la cuota la sacó de la CPU
-# Se corre `zone pair za zb par` con los procesos en modo `k<d>` de par.lap:
+# Se corre `zone pair za zb parcpu` con los procesos en modo `k<d>` de parcpu.lap:
 # gastan CPU sin ceder hasta que el kernel ha cobrado 10*d ticks a su zona
 # (syscall 28) y salen. El gasto se pide en ticks, no en vueltas, así que la
 # prueba da lo mismo en un anfitrión rápido, lento o con -icount. Tres corridas:
@@ -113,12 +113,30 @@ win() {
         END { printf "%s", buf }'
 }
 
-# pair_run za zb: corre `zone pair`. Deja la salida en $w.
+# Contenido del archivo $1 (la línea `fs live <contenido>` de `fs cat`).
+catf() {
+    typewait "fs cat $1" 30
+    win "fs cat $1" | sed -n 's/^fs live //p'
+}
+
+# pair_run za zb [solo1]: corre `zone pair za zb parcpu`. Deja la salida en $w.
+# parcpu deja '0' en /zonas/<z>/r<pid> si agotó su tope de lecturas con el
+# contador sin llegar (el test lo dice en vez de esperar el plazo); si llegó no
+# escribe nada. Con solo1 no se mira el resultado de la copia 2.
 pair_run() {
-    typewait "zone pair $1 $2 par" 600
-    w=$(win "zone pair $1 $2 par")
+    typewait "fs rm /zonas/$1/r1" 30
+    typewait "fs rm /zonas/$2/r2" 30
+    typewait "zone pair $1 $2 parcpu" 600
+    w=$(win "zone pair $1 $2 parcpu")
     printf '%s\n' "$w" | grep -qx 'zone pair ok' || fail "zone pair $1 $2: $(printf '%s' "$w" | tr '\n' '|')"
     printf '%s\n' "$w" | grep -q 'zone leak\|user killed' && fail "zone pair $1 $2: leak o proceso muerto"
+    local r1 r2
+    r1=$(catf "/zonas/$1/r1")
+    [ "$r1" != 0 ] || fail "zone pair $1 $2: parcpu pid 1 agotó su tope de lecturas: el contador de ticks no avanza"
+    if [ "${3:-}" != solo1 ]; then
+        r2=$(catf "/zonas/$2/r2")
+        [ "$r2" != 0 ] || fail "zone pair $1 $2: parcpu pid 2 agotó su tope de lecturas: el contador de ticks no avanza"
+    fi
     return 0
 }
 
@@ -142,8 +160,8 @@ for _ in $(seq 150); do grep -q "lapageria> " "$SERIAL" 2>/dev/null && break; sl
 grep -q "lapageria> " "$SERIAL" || fail "no shell prompt"
 
 typewait "fs format" 50
-typewait "zone par" 50
-has "zone par plant ok" || fail "zone par"
+typewait "zone parcpu" 50
+has "zone parcpu plant ok" || fail "zone parcpu"
 typewait "zone create za 12" 30
 typewait "zone create zb 12" 30
 for z in za zb; do
@@ -191,7 +209,7 @@ read_cpu
 echo "ok   cuota 2/20 en za, zb sin límite: cont za=$ca zb=$cb (za*4 <= zb), tot za=$tota zb=$totb, thr za=$ta zb=$tb; los dos terminan sin fuga"
 
 # 3. Tope duro (FS-05/1): za sola con cuota 5 de 20. zb solo cede 6 veces y
-# sale; za gasta CPU (modo k4 de par) y queda sola. Sin tarea
+# sale; za gasta CPU (modo k4 de parcpu) y queda sola. Sin tarea
 # ociosa seguiría corriendo todo el tiempo; con ella, en cada ventana de 20
 # ticks gasta como mucho 5 y el resto es idle. Se mide en ticks del PIT:
 #   solo  ticks cobrados a za sin otro proceso listo
@@ -202,7 +220,7 @@ typewait "fs write /zonas/za/q k4" 30
 typewait "fs write /zonas/zb/q y" 30
 typewait "zone cpu za 5" 30
 typewait "zone cpu zb 0" 30
-pair_run za zb
+pair_run za zb solo1
 typewait "zone cpu za" 30
 typewait "zone cpu zb" 30
 totb=$(cpuf zb tot); tot=$(cpuf za tot); solo=$(cpuf za solo); idle=$(cpuf za idle); thr=$(cpuf za thr)
@@ -215,6 +233,18 @@ windows=$(( (tot + idle + ${totb:-0} + 19) / 20 ))
 [ "$tot" -le $((5 * windows)) ] || fail "tope duro: za gastó $tot ticks en $windows ventanas (cuota 5/ventana = $((5 * windows)))"
 [ "$idle" -ge $((solo * 2)) ] || fail "tope duro: idle=$idle contra solo=$solo; esperaba idle >= 2*solo con cuota 5/20"
 echo "ok   tope duro 5/20 con za sola: tot=$tot solo=$solo idle=$idle en $windows ventanas (tot <= 5*ventanas), thr=$thr; termina sin fuga"
+
+# 4. Tope de lecturas (OB-03): el modo n9 pide 90 ticks pero lee el contador
+# solo 1000 veces (unos ms), así que no llega y debe salir solo, dejando '0' en
+# r1, mucho antes del plazo de 60 s.
+typewait "fs write /zonas/za/q n9" 30
+typewait "zone cpu za 0" 30
+typewait "fs rm /zonas/za/r1" 30
+typewait "zone pair za zb parcpu" 600
+win "zone pair za zb parcpu" | grep -qx 'zone pair ok' || fail "tope de lecturas: zone pair: $(win 'zone pair za zb parcpu' | tr '\n' '|')"
+r1=$(catf /zonas/za/r1)
+[ "$r1" = 0 ] || fail "tope de lecturas: r1=[$r1], esperaba [0] (salida por tope)"
+echo "ok   tope de lecturas: n9 sale solo por tope y deja 0 en r1, sin esperar el plazo"
 
 typewait "zone ls" 30
 win "zone ls" | grep -q '^zone 1 za root=/zonas/za .* proc=0/2 pag=0 ' || fail "za quedó con procesos o páginas: $(win 'zone ls' | tr '\n' '|')"

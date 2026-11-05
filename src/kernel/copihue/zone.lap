@@ -753,6 +753,16 @@ fn zone_plant_par() -> i64 {
     return 0;
 }
 
+// `zone parcpu`: escribe `parcpu` (src/user/parcpu.lap) en el disco.
+fn zone_plant_parcpu() -> i64 {
+    let n = parcpu_fill(exec_buf);
+    if (n < 16 || n > 4096) { return exec_fail(9); }
+    let r = fs_write("parcpu", exec_buf, n);
+    if (r != 0) { return exec_fail(r); }
+    puts("zone parcpu plant ok\n");
+    return 0;
+}
+
 // `zone pair za zb programa`: el mismo programa del disco dos veces a la
 // vez, la copia 1 (pid 1) en la zona za y la 2 (pid 2) en la zb. Las
 // reparte el planificador (yield y PIT). Imprime los contadores de
@@ -922,6 +932,7 @@ fn cmd_zone() -> i64 {
     if (fs_is("plant")) { return zone_plant(); }
     if (fs_is("atk")) { return zone_plant_atk(); }
     if (fs_is("par")) { return zone_plant_par(); }
+    if (fs_is("parcpu")) { return zone_plant_parcpu(); }
     if (fs_is("sched")) { return zone_sched(pos); }
     if (fs_is("trace")) { return zone_trace(pos); }
     if (fs_is("pair")) { return zone_pair_run(pos); }
