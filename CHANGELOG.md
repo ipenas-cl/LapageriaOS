@@ -21,6 +21,12 @@ OVMF). (3) `docs/hr03-ahci-blk.md`. Falta: elegir puerto/controlador AHCI,
 multi-sector, interrupciones, NVMe, GOP, hardware real. Kernel: 535691 bytes,
 1047 sectores (antes 535528 y 1046).
 
+HR-03d, CI de `qemu-uefi-blk-test`. (1) `ahci_init` prueba cada controlador
+AHCI del bus 0 hasta dar con un disco, y `ahci_find_port` reinicia con COMRESET
+y espera el enlace (≤ 200 ms) en un puerto sin DET 3. (2) La prueba UEFI cuelga
+el SATA de un `-device ahci` explícito, como `qemu-ahci-fs-test`. No se pudo
+reproducir el fallo de Ubuntu aquí (ver RESUMEN).
+
 EX-09, pin de Copihue v0.44.4 (`dd708bc`). (1) `f(x)[0] = v` y `*f(x) = v` con
 `-> *volatile u32` emiten el store volatile al ancho del pointee; asignar a un
 no-lvalue (`f(1) = 5`) es error de compilación con archivo y línea. Cierra el

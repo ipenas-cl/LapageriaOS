@@ -74,7 +74,9 @@ La ESP va en virtio-blk a propósito: si estuviera en el SATA (como en
 ## Qué falta
 
 - **Elegir el puerto/controlador AHCI.** `ahci_find_port` toma el primer puerto
-  con disco SATA y `ahci_scan` el primer controlador 01:06:01 del bus 0. Con la
+  con disco SATA (si el enlace no está arriba, COMRESET y espera ≤ 200 ms) y
+  `ahci_init` prueba los controladores 01:06:01 del bus 0 en orden hasta dar con
+  un disco (el ICH9 integrado de q35 suele estar vacío). Con la
   ESP en el SATA (`make qemu-uefi`) `disk`/`fs` apuntarían a la ESP. Falta
   `blk ahci <puerto>` o equivalente. No hay protección contra escribir en el
   disco del que arrancó el kernel.
