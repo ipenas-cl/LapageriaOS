@@ -455,5 +455,63 @@ run "fs scrub"
 pick "fs scrub ok bloques=" > /dev/null || fail "scrub tras zone destroy: $OUT"
 echo "ok   zone destroy: busy con un proceso vivo (syscall 27 desde la global), destroyed sin él, ranura reutilizada, archivos quedan"
 
+# ---------------------------------------------------------------- 13. fs rm -r y la raíz de la zona (FS-04)
+# Ni la raíz del sistema, ni /zonas, ni /zonas/<nombre> (exista o no) se borran
+# ni se vacían con `fs rm -r`; tampoco sale de la raíz de la zona `zone rm` con
+# "..", rutas absolutas o componentes vacíos. Todo se niega con un mensaje y el
+# disco queda igual (misma raíz global, mismas raíces de zona, mismo scrub).
+run "fs scrub"
+scrub0=$(pick "fs scrub ok bloques=") || fail "scrub antes de rm -r: $OUT"
+run "fs ls /"; ls_root=$(printf '%s\n' "$OUT" | grep -E '^fs (file|dir) ' | sort | tr '\n' ' ')
+run "fs ls /zonas"; ls_zonas=$(printf '%s\n' "$OUT" | grep -E '^fs (file|dir) ' | sort | tr '\n' ' ')
+run "fs ls /zonas/a"; ls_a=$(printf '%s\n' "$OUT" | grep -E '^fs (file|dir) ' | sort | tr '\n' ' ')
+for p in "/"; do
+    ok "fs rm -r $p" "fs rm -r refused: raiz del sistema"
+done
+for p in /zonas /zonas/ zonas /zonas/a /zonas/a/ zonas/a /zonas/b /zonas/nada; do
+    ok "fs rm -r $p" "fs rm -r refused: raiz de zona"
+done
+for p in // /zonas/a/.. /zonas/a/../b /zonas/a//d /zonas/a/./d /.. /. /zonas/.. /zonas/a/d/../.. //zonas/a; do
+    ok "fs rm -r $p" "fs rm -r refused: ruta con componente vacio, . o .."
+done
+ok "fs rm -r" "fs rm -r refused: raiz del sistema"
+for p in .. ../b/n ../../c d/.. d/../.. ./d d//n; do
+    ok "zone rm a $p" "fs rm -r refused: ruta con componente vacio, . o .."
+done
+for p in /c /zonas/b /zonas/a /zonas/a/n; do
+    ok "zone rm a $p" "fs rm -r refused: ruta absoluta fuera de la zona"
+done
+ok "zone rm a" "fs rm -r refused: raiz de la zona"
+ok "zone rm a /" "fs rm -r refused: ruta absoluta fuera de la zona"
+ok "zone rm nada x" "zone fail 11"
+ok "zone rm global x" "zone fail 11"
+ok "zone rm a zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz" "zone fail 11"
+run "fs ls /";       [ "$(printf '%s\n' "$OUT" | grep -E '^fs (file|dir) ' | sort | tr '\n' ' ')" = "$ls_root" ] || fail "la raíz global cambió tras los rm -r negados: $OUT"
+run "fs ls /zonas";  [ "$(printf '%s\n' "$OUT" | grep -E '^fs (file|dir) ' | sort | tr '\n' ' ')" = "$ls_zonas" ] || fail "/zonas cambió tras los rm -r negados: $OUT"
+run "fs ls /zonas/a"; [ "$(printf '%s\n' "$OUT" | grep -E '^fs (file|dir) ' | sort | tr '\n' ' ')" = "$ls_a" ] || fail "la raíz de a cambió tras los rm -r negados: $OUT"
+expect_cat "/c" "secreto"
+expect_cat "/zonas/a/n" "Z"
+expect_cat "/zonas/a/d/n" "Y"
+run "fs scrub"
+[ "$(pick 'fs scrub ok bloques=')" = "$scrub0" ] || fail "scrub cambió tras los rm -r negados: $OUT (antes: $scrub0)"
+echo "ok   rm -r: /, /zonas, /zonas/<nombre> (existente o no), .., ., // y rutas absolutas desde la zona se niegan con mensaje; el disco no cambia (raíces y scrub iguales)"
+
+# Dentro de la raíz de la zona sí se puede, y no toca nada de afuera.
+ok "zone rm a d" "zone rm ok"
+run "fs ls /zonas/a"
+want "fs file n"
+lack "fs dir d"
+ok "zone rm a d" "fs fail 7"
+ok "fs rm -r /zonas/a/n" "fs rm -r ok"
+run "fs ls /zonas/a"
+[ "$(count_ent)" = 0 ] || fail "la raíz de a debía quedar vacía de entradas, pero sigue existiendo: $OUT"
+run "fs ls /zonas"
+want "fs dir a"
+want "fs dir b"
+expect_cat "/c" "secreto"
+run "fs scrub"
+pick "fs scrub ok bloques=" > /dev/null || fail "scrub tras rm -r en la zona: $OUT"
+echo "ok   rm -r dentro de la zona: zone rm a d y fs rm -r /zonas/a/n borran su contenido; la raíz de a sigue ahí y lo de afuera no se toca"
+
 stop_qemu
 echo "PASS: qemu_fs2_test"

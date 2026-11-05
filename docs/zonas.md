@@ -91,6 +91,7 @@ Solo responden en la zona 0. Si no, `zone denied`.
 ```
 zone create nombre paginas
 zone destroy nombre
+zone rm nombre ruta
 zone ls
 zone exec zona programa
 zone plant
@@ -102,6 +103,42 @@ lee de la raíz global, no de la de la zona.
 
 `zone ls` muestra `root=/zonas/<nombre>` (`root=/` en la global), `cap`,
 `proc`, `pag`, `niega`, `fuga` y `max`.
+
+## Cuota de CPU (FS-04, etapa 7)
+
+`zone cpu <nombre> <n>` limita la CPU de una zona: puede gastar `n` ticks del
+PIT (de 1 a 20) en cada ventana fija de 20 ticks; `0` quita el límite (es el
+valor de una zona nueva). `zone cpu <nombre>` muestra
+`zone cpu <nombre> quota=<n>/20 tot=<ticks> cont=<ticks> thr=<veces>`.
+`zone fail 11` si el nombre no existe, es `global` o `n` no es un número de
+0 a 20. Poner la cuota pone en cero los contadores.
+
+- Un tick se le cobra a la zona del proceso que corría (`zcpu_tick`, en el
+  manejador del PIT con el planificador prendido).
+- Con la cuota de la ventana gastada, la zona sale de la CPU en el siguiente
+  tick si el otro proceso listo es de una zona que no la agotó, y no recibe
+  cesiones (`yield`) de ella hasta que la ventana se renueva.
+- `tot` son los ticks cobrados, `cont` los cobrados con otro proceso listo (la
+  CPU que disputó) y `thr` las veces que la cuota la sacó de la CPU.
+- Todo se mide en ticks, no en tiempo del anfitrión: con `-icount shift=4` el
+  reparto sale igual (2/20 da `cont` de la zona acotada un 11% del de la
+  otra, 392 frente a 3524 en una corrida).
+- Límite: no hay tarea ociosa. Si el único proceso listo es de una zona con
+  la cuota agotada, sigue corriendo (la cuota reparte la CPU entre procesos
+  que compiten; no deja la CPU ociosa). Son dos procesos como máximo.
+
+La prueba es `tests/qemu_cpu_test.sh` (`make qemu-cpu-test`): `zone pair za zb
+par` con el modo `h` de `par` (100 millones de vueltas sin syscalls).
+
+## Borrar dentro de la raíz de una zona
+
+`zone rm nombre ruta` (solo desde el shell) borra recursivamente `ruta`, que es
+relativa a `/zonas/<nombre>`. Se niega, sin tocar el disco, con
+`fs rm -r refused: ...`: ruta absoluta (`ruta absoluta fuera de la zona`),
+`.`, `..` o componentes vacíos (`ruta con componente vacio, . o ..`), y la ruta
+vacía, que sería la raíz de la zona (`raiz de la zona`). `zone fail 11` si la
+zona no existe o es `global`. `fs rm -r` desde el shell (zona global) rechaza
+además `/`, `/zonas` y `/zonas/<nombre>`.
 
 ## Destruir una zona
 

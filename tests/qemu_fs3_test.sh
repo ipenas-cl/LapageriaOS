@@ -395,8 +395,8 @@ ok "fs write /solo uno" "fs write ok"
 ok "fs rm -r /solo" "fs rm -r ok"
 ok "fs rm -r /solo" "fs fail 7"
 ok "fs rm -r /nada/x" "fs fail 7"
-ok "fs rm -r /" "fs fail 11"
-ok "fs rm -r" "fs fail 11"
+ok "fs rm -r /" "fs rm -r refused: raiz del sistema"
+ok "fs rm -r" "fs rm -r refused: raiz del sistema"
 scrub_is 6 "tras rm -r de un archivo"
 
 # Con un snapshot encima: nada de lo que usa se libera, y al borrarlo sí.

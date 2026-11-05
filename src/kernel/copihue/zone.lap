@@ -416,6 +416,7 @@ fn zone_destroy_z(z: i64) -> i64 {
     zone_hi[z] = 0;
     zone_maxproc[z] = 0;
     zone_niega[z] = 0;
+    zcpu_reset(z);
     zone_fuga[z] = 0;
     i = 0;
     while (i < 16) {
@@ -546,6 +547,7 @@ fn zone_create(pos: i64) -> i64 {
     zone_nproc[slot] = 0;
     zone_maxproc[slot] = 2;
     zone_niega[slot] = 0;
+    zcpu_reset(slot);
     zone_fuga[slot] = 0;
     puts("zone created ");
     put_int(slot);
@@ -804,6 +806,7 @@ fn zone_pair_run(pos: i64) -> i64 {
     build_zone = 0;
     forge(0, entry, 0x402000, 0x202);
     forge(1, entry, 0x402000, 0x202);
+    zcpu_window_start();
     zsw_n = 0;
     zsw_chg = 0;
     nswitch_timer = 0;
@@ -827,6 +830,77 @@ fn zone_pair_run(pos: i64) -> i64 {
     return 0;
 }
 
+// zone rm <nombre> <ruta>: borrado recursivo dentro de la raíz de la zona.
+// La ruta es relativa a /zonas/<nombre>: no puede ser absoluta, traer
+// ".", ".." ni componentes vacíos, ni quedar vacía (sería la raíz de la
+// zona). Lo que pase esas pruebas va a fs_remove_tree con la ruta completa.
+fn zone_rm_cmd(pos: i64) -> i64 {
+    let p = fs_scan(pos, fs_name);
+    if (p < 0) { return zone_fail(11); }
+    let z = zone_by_name(fs_name);
+    if (z < 1) { return zone_fail(11); }
+    p = fs_scanp(p, fs_path);
+    if (p < 0) { return zone_fail(11); }
+    let g = fs_rm_guard_rel(fs_path);
+    if (g != 0) { return fs_rm_refused(20 + g); }
+    // zone_path mide 64: "/zonas/" + nombre + "/" + ruta tiene que caber.
+    let n = zone_root_path(z);
+    let i = 0;
+    while ((fs_path[i] & 255) != 0) { i = i + 1; }
+    if (n + 1 + i > 63) { return zone_fail(11); }
+    zone_path[n] = 47;
+    n = n + 1;
+    i = 0;
+    while ((fs_path[i] & 255) != 0) {
+        zone_path[n + i] = fs_path[i];
+        i = i + 1;
+    }
+    zone_path[n + i] = 0;
+    let r = fs_remove_tree(zone_path);
+    if (r >= 21 && r <= 25) { return fs_rm_refused(r); }
+    if (r != 0) { return fs_fail(r); }
+    puts("zone rm ok\n");
+    return 0;
+}
+
+// zone cpu <nombre> <n>: la zona puede gastar n ticks de cada ventana de 20
+// (0 = sin límite; n de 1 a 20). Pone en cero sus contadores.
+// zone cpu <nombre>: muestra la cuota y los contadores:
+//   zone cpu <nombre> quota=<n>/20 tot=<ticks> cont=<ticks con otro listo> thr=<veces>
+fn zone_cpu_cmd(pos: i64) -> i64 {
+    let p = fs_scan(pos, fs_name);
+    if (p < 0) { return zone_fail(11); }
+    let z = zone_by_name(fs_name);
+    if (z < 1) { return zone_fail(11); }
+    while (p < line_len && line[p] == ' ') { p = p + 1; }
+    if (p >= line_len) {
+        puts("zone cpu ");
+        puts(fs_name);
+        puts(" quota=");
+        put_int(zcpu_q[z]);
+        puts("/20 tot=");
+        put_int(zcpu_tot[z]);
+        puts(" cont=");
+        put_int(zcpu_cont[z]);
+        puts(" thr=");
+        put_int(zcpu_thr[z]);
+        putc('\n');
+        return 0;
+    }
+    if (line[p] < '0' || line[p] > '9') { return zone_fail(11); }
+    parse_pos = p;
+    let n = parse_int();
+    if (n > 20) { return zone_fail(11); }
+    zcpu_reset(z);
+    zcpu_q[z] = n;
+    puts("zone cpu set ");
+    puts(fs_name);
+    putc(' ');
+    put_int(n);
+    putc('\n');
+    return 0;
+}
+
 fn cmd_zone() -> i64 {
     if (zone_shell() == 0) {
         puts("zone denied\n");
@@ -836,6 +910,8 @@ fn cmd_zone() -> i64 {
     if (pos < 0) { return zone_fail(11); }
     if (fs_is("create")) { return zone_create(pos); }
     if (fs_is("destroy")) { return zone_destroy_cmd(pos); }
+    if (fs_is("rm")) { return zone_rm_cmd(pos); }
+    if (fs_is("cpu")) { return zone_cpu_cmd(pos); }
     if (fs_is("ls")) { return zone_ls(); }
     if (fs_is("exec")) { return zone_exec_cmd(pos); }
     if (fs_is("net")) { return zone_net(pos); }

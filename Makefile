@@ -13,6 +13,8 @@
 #              (tests/qemu_fs2_test.sh).
 #   qemu-fs3-test  Solo fs migrate, fs snap rm y fs rm -r (tests/qemu_fs3_test.sh;
 #              necesita cc para scripts/mkv1.c).
+#   qemu-ata-test  Solo la prueba del timeout ATA con -icount shift=4 (tests/qemu_ata_test.sh).
+#   qemu-cpu-test  Solo la cuota de CPU por zona (tests/qemu_cpu_test.sh), normal y con -icount shift=4.
 #   debug      Igual que qemu, y espera a gdb en tcp::1234 (-s -S).
 #   clean      Borra build/.
 #   help       Muestra esta lista.
@@ -136,7 +138,7 @@ COPIHUE_KERNEL_SRC = $(KERNEL_SRC)/copihue/console.lap \
                      $(KERNEL_SRC)/copihue/shell.lap \
                      $(KERNEL_SRC)/copihue/kernel.lap
 
-.PHONY: all qemu qemu-test qemu-udp-test qemu-tcp-test qemu-trace-test qemu-zswitch-test qemu-iso-test qemu-fs2-test qemu-fs3-test debug clean help
+.PHONY: all qemu qemu-test qemu-udp-test qemu-tcp-test qemu-trace-test qemu-zswitch-test qemu-iso-test qemu-fs2-test qemu-fs3-test qemu-ata-test qemu-cpu-test debug clean help
 
 # Imagen de arranque: LBA 0 etapa 1, LBA 1 etapa 2, LBA KERNEL_LBA el kernel.
 all: $(OS_IMAGE)
@@ -354,6 +356,9 @@ qemu-test: $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_iso_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_fs2_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_fs3_test.sh $(OS_IMAGE)
+	$(TESTS_DIR)/qemu_ata_test.sh $(OS_IMAGE)
+	$(TESTS_DIR)/qemu_cpu_test.sh $(OS_IMAGE)
+	$(TESTS_DIR)/qemu_cpu_test.sh $(OS_IMAGE) "-icount shift=4"
 	COPIHUE=$(abspath $(COPIHUE)) $(TESTS_DIR)/stage2_big_test.sh $(BUILD_DIR)
 
 # Solo la red por IRQ y UDP. Usa una copia nueva del disco de datos.
@@ -387,6 +392,17 @@ qemu-fs2-test: $(OS_IMAGE)
 qemu-fs3-test: $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_fs3_test.sh $(OS_IMAGE)
 
+# Solo FS-04/1: 6 corridas de la prueba de aislamiento con -icount shift=4,
+# a la vez, sin timeout ATA ("exec fail 1").
+qemu-ata-test: $(OS_IMAGE)
+	$(TESTS_DIR)/qemu_ata_test.sh $(OS_IMAGE)
+
+# Solo FS-04/3: cuota de CPU por zona (zone cpu), con el reloj normal y con
+# -icount shift=4.
+qemu-cpu-test: $(OS_IMAGE)
+	$(TESTS_DIR)/qemu_cpu_test.sh $(OS_IMAGE)
+	$(TESTS_DIR)/qemu_cpu_test.sh $(OS_IMAGE) "-icount shift=4"
+
 # La imagen es un binario plano: gdb no tiene tabla de símbolos ELF.
 debug: $(OS_IMAGE) $(DATA_IMG)
 	qemu-system-$(ARCH) $(QEMU_CPU) $(QEMU_DRIVES) -display curses -s -S
@@ -415,6 +431,8 @@ help:
 	@echo "  make qemu-iso-test  Solo el aislamiento entre zonas (tests/qemu_iso_test.sh)."
 	@echo "  make qemu-fs2-test  Solo directorios, archivos grandes, scrub y raíz por zona (tests/qemu_fs2_test.sh)."
 	@echo "  make qemu-fs3-test  Solo fs migrate, fs snap rm y fs rm -r (tests/qemu_fs3_test.sh)."
+	@echo "  make qemu-ata-test  Solo el timeout ATA con -icount shift=4 (tests/qemu_ata_test.sh)."
+	@echo "  make qemu-cpu-test  Solo la cuota de CPU por zona (tests/qemu_cpu_test.sh)."
 	@echo "  make debug      Igual que qemu, esperando gdb en tcp::1234."
 	@echo "  make clean      Borra build/."
 	@echo "  make help       Esta lista."
