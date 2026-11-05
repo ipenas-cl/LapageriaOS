@@ -1,0 +1,92 @@
+// NVMe: solo detección (HR-01). Busca en el bus 0 un dispositivo PCI de
+// clase 01:08, interfaz 02 (controlador NVM Express) y lee de su BAR0 los
+// registros CAP y VS. No crea colas ni lee sectores: eso es la siguiente
+// tajada (docs/hr01-uefi-ahci.md). Los registros se leen por MMIO en
+// NVME_BAR, dentro del primer GiB mapeado.
+
+let NVME_BAR: i64 = 0x10200000;
+
+let nvme_vid: i64 = 0;
+let nvme_did: i64 = 0;
+let nvme_cap: i64 = 0;
+let nvme_vs: i64 = 0;
+
+fn nvme_scan() -> i64 {
+    let dev = 0;
+    while (dev < 32) {
+        let id0 = pci_rd(0, dev, 0, 0);
+        if ((id0 & 0xFFFF) != 0xFFFF) {
+            let hdr = (pci_rd(0, dev, 0, 0x0C) >> 16) & 255;
+            let nfun = 1;
+            if ((hdr & 128) != 0) { nfun = 8; }
+            let fun = 0;
+            while (fun < nfun) {
+                let id = pci_rd(0, dev, fun, 0);
+                if ((id & 0xFFFF) != 0xFFFF) {
+                    let cls = pci_rd(0, dev, fun, 8) >> 8;
+                    if ((cls & 0xFFFFFF) == 0x010802) {
+                        nvme_vid = id & 0xFFFF;
+                        nvme_did = (id >> 16) & 0xFFFF;
+                        return dev * 8 + fun + 1;
+                    }
+                }
+                fun = fun + 1;
+            }
+        }
+        dev = dev + 1;
+    }
+    return 0;
+}
+
+// Mueve el BAR0 (64 bits, memoria) a NVME_BAR y mapea 4 KiB de registros.
+// 0 listo, 5 BAR inutilizable.
+fn nvme_map(dev: i64, fun: i64) -> i64 {
+    pci_wr(0, dev, fun, 4, 0);
+    let bar = pci_rd(0, dev, fun, 0x10);
+    if ((bar & 1) != 0) { return 5; }
+    pci_wr(0, dev, fun, 0x10, 0xFFFFFFFF);
+    let mask = pci_rd(0, dev, fun, 0x10) & 0xFFFFC000;
+    if (mask == 0) { return 5; }
+    pci_wr(0, dev, fun, 0x10, NVME_BAR);
+    // BAR de 64 bits: la mitad alta en 0.
+    if ((bar & 6) == 4) { pci_wr(0, dev, fun, 0x14, 0); }
+    // Memoria; sin bus master (no hay DMA todavía); bit 10: sin INTx.
+    pci_wr(0, dev, fun, 4, 0x0402);
+    if (map_page(NVME_BAR, NVME_BAR, 0x1B | pte_nx_bit()) == 0) { return 5; }
+    return 0;
+}
+
+fn nvme_rd(off: i64) -> i64 {
+    let p: *volatile u32 = (NVME_BAR + off) as *volatile u32;
+    return p[0] & 0xFFFFFFFF;
+}
+
+// `nvme`: imprime el controlador y su versión, o `nvme none`.
+fn nvme_demo() -> i64 {
+    let found = nvme_scan();
+    if (found == 0) {
+        puts("nvme none\n");
+        return 3;
+    }
+    let dev = (found - 1) / 8;
+    let fun = (found - 1) % 8;
+    if (nvme_map(dev, fun) != 0) {
+        puts("nvme fail bar\n");
+        return 5;
+    }
+    nvme_vs = nvme_rd(0x08);
+    // CAP bajo: MQES en 15:0 (entradas de cola - 1), TO en 31:24 (500 ms).
+    nvme_cap = nvme_rd(0x00);
+    puts("nvme found ");
+    put_hex(nvme_vid);
+    putc(':');
+    put_hex(nvme_did);
+    puts(" vs=");
+    put_hex(nvme_vs);
+    puts(" mqes=");
+    put_int(nvme_cap & 0xFFFF);
+    puts(" to=");
+    put_int((nvme_cap >> 24) & 255);
+    putc('\n');
+    return 0;
+}

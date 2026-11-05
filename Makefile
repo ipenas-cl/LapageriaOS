@@ -155,6 +155,7 @@ COPIHUE_KERNEL_SRC = $(KERNEL_SRC)/copihue/console.lap \
                      $(KERNEL_SRC)/copihue/tcp.lap \
                      $(KERNEL_SRC)/copihue/trace.lap \
                      $(KERNEL_SRC)/copihue/ahci.lap \
+                     $(KERNEL_SRC)/copihue/nvme.lap \
                      $(KERNEL_SRC)/copihue/shell.lap \
                      $(KERNEL_SRC)/copihue/kernel.lap
 

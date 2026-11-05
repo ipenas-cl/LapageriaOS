@@ -53,13 +53,16 @@ fail() {
     exit 1
 }
 
-# start_qemu [con|sin]: con = controlador AHCI y disco SATA; sin = solo IDE.
+# start_qemu [con|sin|nvme]: con = controlador AHCI y disco SATA; sin = solo IDE; nvme = IDE + NVMe.
 start_qemu() {
     : > "$SERIAL"
     rm -f "$MON"
     local extra=""
     if [ "$1" = con ]; then
         extra="-device ahci,id=ahci -drive id=sata0,file=$SATA,format=raw,if=none -device ide-hd,drive=sata0,bus=ahci.0"
+    fi
+    if [ "$1" = nvme ]; then
+        extra="-device nvme,serial=hr01,drive=nv0 -drive id=nv0,if=none,file=$TMP/nvme.img,format=raw"
     fi
     # shellcheck disable=SC2086
     qemu-system-x86_64 -cpu qemu64 ${QEMU_EXTRA:-} -drive format=raw,file="$IMAGE" \
@@ -154,4 +157,19 @@ win "ahci" | grep -qx "ahci none" || fail "sin controlador debía imprimir ahci 
 typewait "disk" 200
 has "ata ok" || fail "sin AHCI: falta ata ok"
 echo "ok   sin AHCI: ahci none y el disco ATA funciona"
+typewait "nvme" 100
+win "nvme" | grep -qx "nvme none" || fail "sin NVMe debía imprimir nvme none"
+echo "ok   sin NVMe: nvme none"
+stop_qemu
+
+# --- NVMe: solo detección ----------------------------------------------------
+dd if=/dev/zero of="$TMP/nvme.img" bs=512 count=2048 status=none
+start_qemu nvme
+typewait "nvme" 100
+w=$(win "nvme")
+printf '%s\n' "$w" | grep -qE '^nvme found 0x00001b36:0x00000010 vs=0x[0-9a-f]{8} mqes=[0-9]+ to=[0-9]+$' \
+    || fail "nvme found line missing or wrong (QEMU nvme es 1b36:0010)"
+typewait "disk" 200
+has "ata ok" || fail "con NVMe: falta ata ok"
+echo "ok   NVMe detectado ($(printf '%s' "$w" | sed 's/^nvme found //')), el disco ATA sigue funcionando"
 echo "ok   qemu_ahci_test"
