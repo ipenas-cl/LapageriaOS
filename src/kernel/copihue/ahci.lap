@@ -1,5 +1,6 @@
-// AHCI 1.x, solo lectura (HR-01). Un puerto SATA, un comando a la vez, un
-// sector de 512 B por DMA (READ DMA EXT, LBA48). Sin interrupciones: se
+// AHCI 1.x (HR-01 lectura, HR-02 escritura). Un puerto SATA, un comando a la
+// vez, un sector de 512 B por DMA (READ/WRITE DMA EXT, LBA48; tras escribir,
+// FLUSH CACHE EXT). Sin NCQ. Sin interrupciones: se
 // sondea PxCI con tope de tiempo del PIT (ata_pit_read, como ata.lap).
 // No toca el camino ATA: el arranque y el disco de datos siguen en el IDE.
 //
@@ -168,8 +169,9 @@ fn ahci_find_port() -> i64 {
     return 3;
 }
 
-// Un comando de un sector sobre la ranura 0. cmd 0x25 lee con LBA48; 0xEC
-// es IDENTIFY. El resultado queda en ahci_buf.
+// Un comando sobre la ranura 0. cmd 0x25 lee un sector con LBA48; 0x35 lo
+// escribe (WRITE DMA EXT, desde ahci_buf); 0xEC es IDENTIFY; 0xEA es FLUSH
+// CACHE EXT (sin datos, sin PRDT). El resultado de una lectura queda en ahci_buf.
 fn ahci_cmd(cmd: i64, lba: i64) -> i64 {
     if (ahci_ready == 0) { return 3; }
     if (ahci_spin(0x20, 0x88, 0) != 0) { return 1; }
@@ -179,8 +181,24 @@ fn ahci_cmd(cmd: i64, lba: i64) -> i64 {
         ahci_mw(ct + i * 4, 0);
         i = i + 1;
     }
-    // Cabecera de la ranura 0: CFL 5 dwords, lectura, una entrada PRDT.
-    ahci_mw(0, 5 | (1 << 16));
+    let hdr = 5 | (1 << 16);
+    let cnt = 1;
+    if (cmd == 0x35) {
+        // Escritura: bit W (6) de la cabecera y el sector va al búfer de DMA.
+        hdr = hdr | 0x40;
+        let q: *u8 = (ahci_pa + 0x800) as *u8;
+        let k = 0;
+        while (k < 512) {
+            q[k] = ahci_buf[k];
+            k = k + 1;
+        }
+    }
+    if (cmd == 0xEA) {
+        hdr = 5;
+        cnt = 0;
+    }
+    // Cabecera de la ranura 0: CFL 5 dwords, una entrada PRDT (ninguna en FLUSH).
+    ahci_mw(0, hdr);
     ahci_mw(4, 0);
     ahci_mw(8, ahci_pa + ct);
     ahci_mw(12, 0);
@@ -188,7 +206,7 @@ fn ahci_cmd(cmd: i64, lba: i64) -> i64 {
     ahci_mw(ct, 0x27 | (0x80 << 8) | (cmd << 16));
     ahci_mw(ct + 4, (lba & 0xFFFFFF) | (0x40 << 24));
     ahci_mw(ct + 8, (lba >> 24) & 0xFFFFFF);
-    ahci_mw(ct + 12, 1);
+    ahci_mw(ct + 12, cnt);
     // PRDT: 512 bytes (DBC = 511) al búfer.
     ahci_mw(ct + 0x80, ahci_pa + 0x800);
     ahci_mw(ct + 0x84, 0);
@@ -203,11 +221,13 @@ fn ahci_cmd(cmd: i64, lba: i64) -> i64 {
         if ((ahci_pr(0x10) & 0x40000000) != 0) { ahci_pw(0x10, 0xFFFFFFFF); return 2; }
         if ((ahci_pr(0x38) & 1) == 0) {
             if ((ahci_pr(0x20) & 1) != 0) { return 2; }
-            let p: *u8 = (ahci_pa + 0x800) as *u8;
-            let k = 0;
-            while (k < 512) {
-                ahci_buf[k] = p[k];
-                k = k + 1;
+            if (cmd == 0x25 || cmd == 0xEC) {
+                let p: *u8 = (ahci_pa + 0x800) as *u8;
+                let k = 0;
+                while (k < 512) {
+                    ahci_buf[k] = p[k];
+                    k = k + 1;
+                }
             }
             return 0;
         }
@@ -275,6 +295,20 @@ fn ahci_read(lba: i64, dst: *u8) -> i64 {
     return 0;
 }
 
+// WRITE DMA EXT de un sector (LBA48) seguido de FLUSH CACHE EXT. Mismos
+// códigos que ahci_read; 4 si el LBA cae fuera del disco.
+fn ahci_write(lba: i64, src: *u8) -> i64 {
+    if (lba < 0 || lba >= ahci_sectors) { return 4; }
+    let i = 0;
+    while (i < 512) {
+        ahci_buf[i] = src[i];
+        i = i + 1;
+    }
+    let r = ahci_cmd(0x35, lba);
+    if (r != 0) { return r; }
+    return ahci_cmd(0xEA, 0);
+}
+
 // Registros del puerto tras un fallo: IS, CMD, TFD, SSTS, SERR, CI.
 fn ahci_dump() -> i64 {
     puts("ahci regs pa=");
@@ -293,6 +327,56 @@ fn ahci_dump() -> i64 {
     put_hex(ahci_pr(0x38));
     putc('\n');
     return 0;
+}
+
+let ahci_wsrc: [u8; 512];
+
+// `ahci w <lba> [patrón]`: escribe un sector con byte[i] = (patrón + i) & 255,
+// lo vuelve a leer por AHCI y compara byte a byte. Líneas que mira
+// tests/qemu_ahci_test.sh: ahci write, ahci verify, ahci write fail.
+fn ahci_wdemo(lba: i64, pat: i64) -> i64 {
+    let r = ahci_init();
+    if (r == 3 && ahci_dev == 0 && ahci_mmio == 0) {
+        puts("ahci none\n");
+        return 3;
+    }
+    if (r != 0) {
+        if (ahci_mmio != 0) { ahci_dump(); }
+        return disk_say("ahci fail", r);
+    }
+    let i = 0;
+    while (i < 512) {
+        ahci_wsrc[i] = ((pat + i) & 255) as u8;
+        ahci_out[i] = 0;
+        i = i + 1;
+    }
+    r = ahci_write(lba, ahci_wsrc);
+    if (r != 0) { return disk_say("ahci write fail", r); }
+    puts("ahci write lba=");
+    put_int(lba);
+    puts(" crc=");
+    put_hex(crc32(ahci_wsrc, 512));
+    putc('\n');
+    r = ahci_read(lba, ahci_out);
+    if (r != 0) { return disk_say("ahci read fail", r); }
+    let bad = 0;
+    i = 0;
+    while (i < 512) {
+        if (ahci_out[i] != ahci_wsrc[i]) { bad = bad + 1; }
+        i = i + 1;
+    }
+    puts("ahci verify lba=");
+    put_int(lba);
+    puts(" crc=");
+    put_hex(crc32(ahci_out, 512));
+    if (bad == 0) {
+        puts(" ok\n");
+        return 0;
+    }
+    puts(" mismatch bytes=");
+    put_int(bad);
+    putc('\n');
+    return 6;
 }
 
 // `ahci [lba]`: detecta, imprime el controlador y el disco, lee el sector
