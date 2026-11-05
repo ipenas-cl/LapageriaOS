@@ -367,6 +367,8 @@ fn zone_sys_alloc() -> i64 {
     let va = proc_uva[pi];
     if (va == 0) { va = 0x402000; }
     if (va >= 0x500000) { return 0 - 3; }
+    // AXE1 con guarda: las páginas pedidas no llegan a la guarda ni a la pila.
+    if (proc_stk[pi] != 0 && va >= proc_stk[pi] - 0x1000) { return 0 - 3; }
     charge_zone = z;
     let pa = alloc_high_page();
     if (pa == 0) {

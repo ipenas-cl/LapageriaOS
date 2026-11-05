@@ -468,9 +468,14 @@ fn uptr_seg_end(p: i64, write: i64, io: i64, ihi: i64, wlo: i64, hi: i64, slo: i
         if (p >= slo && p < hi) { return hi; }
         return 0;
     }
+    // AXE1 con guarda (EX-04): la pila es una página aparte, sin pegar a lo pedido.
+    if (uptr_stk != 0 && p >= uptr_stk && p < uptr_stk + 0x1000) { return uptr_stk + 0x1000; }
     if (p >= io && p < hi) { return hi; }
     return 0;
 }
+
+// Base de la pila de un AXE1 con guarda para el rango que se está validando.
+let uptr_stk: i64 = 0;
 
 fn uptr_range_ok(p: i64, n: i64, write: i64) -> i64 {
     let io = 0x401000;
@@ -485,6 +490,11 @@ fn uptr_range_ok(p: i64, n: i64, write: i64) -> i64 {
         wlo = proc_wlo[pi];
         slo = io + 0x2000;
         hi = io + 0x3000;
+    }
+    uptr_stk = 0;
+    if (pi >= 0 && pi < 2 && proc_stk[pi] != 0) {
+        uptr_stk = proc_stk[pi];
+        if (hi > uptr_stk - 0x1000) { hi = uptr_stk - 0x1000; }
     }
     if (pi >= 0 && pi < 2 && proc_uva[pi] > hi) { hi = proc_uva[pi]; }
     if (hi > 0x500000) { hi = 0x500000; }
@@ -785,9 +795,32 @@ fn udp_selftest() -> i64 {
         if (uptr_range_ok(0x413FF8, 8, 1) != 1) { ax = 76; }
         else if (uptr_range_ok(0x413FF8, 16, 1) != 0) { ax = 77; }
     }
+    // AXE1 con guarda (EX-04): E/S en 0x401000, páginas pedidas hasta
+    // 0x40E000, guarda en 0x40E000 (sin mapa), pila en 0x40F000.
     proc_io[0] = 0;
     proc_ihi[0] = 0;
     proc_wlo[0] = 0;
+    proc_uva[0] = 0;
+    if (ax == 1) {
+        proc_stk[0] = 0x40F000;
+        if (uptr_range_ok(0x40F000, 16, 1) != 1) { ax = 83; }
+        else if (uptr_range_ok(0x40FFF8, 8, 1) != 1) { ax = 84; }
+        else if (uptr_range_ok(0x40FFF8, 16, 1) != 0) { ax = 85; }
+        else if (uptr_range_ok(0x40E000, 1, 0) != 0) { ax = 86; }
+        else if (uptr_range_ok(0x40EFFF, 1, 1) != 0) { ax = 87; }
+        else if (uptr_range_ok(0x410000, 1, 0) != 0) { ax = 88; }
+        else if (uptr_range_ok(0x401800, 16, 1) != 1) { ax = 89; }
+        else if (uptr_range_ok(0x402000, 1, 0) != 0) { ax = 90; }
+        else if (uptr_range_ok(0x401FFF, 2, 1) != 0) { ax = 91; }
+        else if (uptr_range_ok(0x40E000 - 8, 8, 1) != 0) { ax = 92; }
+        if (ax == 1) {
+            proc_uva[0] = 0x40E000;
+            if (uptr_range_ok(0x40DFF8, 8, 1) != 1) { ax = 93; }
+            else if (uptr_range_ok(0x40DFF8, 16, 1) != 0) { ax = 94; }
+            else if (uptr_range_ok(0x40EFF8, 16, 1) != 0) { ax = 95; }
+        }
+    }
+    proc_stk[0] = 0;
     proc_uva[0] = 0;
     cur_i = sv;
     if (ax != 1) { return udp_fail(ax); }

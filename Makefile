@@ -9,7 +9,9 @@
 #   mkaxe-test  Solo scripts/mkaxe.sh en el anfitrión (tests/mkaxe_test.sh).
 #   qemu-axe2-test  Solo AXE2 de mkaxe.sh y ataques de anillo 3 (tests/qemu_axe2_test.sh).
 #   qemu-atk1-test  Solo ataques de anillo 3 contra un AXE1 (tests/qemu_atk1_test.sh).
-#   qemu-stab-test  6 corridas de las dos baterías de ataques con -icount shift=7 y sin icount.
+#   qemu-fast-test  Solo la retransmisión rápida de TCP con pérdida real (tests/qemu_fast_test.sh).
+#   qemu-stab-test  6 corridas de las dos baterías de ataques y de la retransmisión rápida,
+#              con -icount shift=7 y sin icount.
 #   qemu-tcp-test  Solo la prueba de TCP (tests/qemu_tcp_test.sh).
 #   qemu-trace-test  Solo la prueba de trazas (tests/qemu_trace_test.sh).
 #   qemu-zswitch-test  Solo el cambio de zona en switch_to (tests/qemu_zswitch_test.sh).
@@ -140,6 +142,7 @@ COPIHUE_KERNEL_SRC = $(KERNEL_SRC)/copihue/console.lap \
                      $(KERNEL_SRC)/copihue/tcpcli_img.lap \
                      $(KERNEL_SRC)/copihue/tcpmulti_img.lap \
                      $(KERNEL_SRC)/copihue/tcphog_img.lap \
+                     $(KERNEL_SRC)/copihue/tcpsnd_img.lap \
                      $(KERNEL_SRC)/copihue/traza_img.lap \
                      $(KERNEL_SRC)/copihue/udp.lap \
                      $(KERNEL_SRC)/copihue/tcp.lap \
@@ -147,7 +150,7 @@ COPIHUE_KERNEL_SRC = $(KERNEL_SRC)/copihue/console.lap \
                      $(KERNEL_SRC)/copihue/shell.lap \
                      $(KERNEL_SRC)/copihue/kernel.lap
 
-.PHONY: all qemu qemu-test mkaxe-test qemu-axe2-test qemu-atk1-test qemu-stab-test qemu-big-test qemu-udp-test qemu-tcp-test qemu-trace-test qemu-zswitch-test qemu-iso-test qemu-fs2-test qemu-fs3-test qemu-ata-test qemu-cpu-test debug clean help
+.PHONY: all qemu qemu-test mkaxe-test qemu-axe2-test qemu-atk1-test qemu-fast-test qemu-stab-test qemu-big-test qemu-udp-test qemu-tcp-test qemu-trace-test qemu-zswitch-test qemu-iso-test qemu-fs2-test qemu-fs3-test qemu-ata-test qemu-cpu-test debug clean help
 
 # Imagen de arranque: LBA 0 etapa 1, LBA 1 etapa 2, LBA KERNEL_LBA el kernel.
 all: $(OS_IMAGE)
@@ -396,6 +399,16 @@ $(TCPHOG_IMG): src/user/tcphog.lap scripts/mkaxe.sh $(COPIHUE) | $(BUILD_DIR)
 	$(abspath $(COPIHUE)) --flat 0x400000 -o $(TCPHOG_BIN) src/user/tcphog.lap
 	scripts/mkaxe.sh $(TCPHOG_BIN) $(TCPHOG_AXE) $@ tcphog_fill
 
+# Emisor TCP de 32 KiB en trozos de 256 (EX-04): da muchos segmentos en vuelo
+# para la prueba de retransmisión rápida. `tcp plant` lo escribe como tcpsnd.
+TCPSND_BIN = $(BUILD_DIR)/tcpsnd.bin
+TCPSND_AXE = $(BUILD_DIR)/tcpsnd.axe
+TCPSND_IMG = $(KERNEL_SRC)/copihue/tcpsnd_img.lap
+
+$(TCPSND_IMG): src/user/tcpsnd.lap scripts/mkaxe.sh $(COPIHUE) | $(BUILD_DIR)
+	$(abspath $(COPIHUE)) --flat 0x400000 -o $(TCPSND_BIN) src/user/tcpsnd.lap
+	scripts/mkaxe.sh $(TCPSND_BIN) $(TCPSND_AXE) $@ tcpsnd_fill
+
 # Programa de trazas de anillo 3 (OB-01). `trace plant` lo escribe como
 # traza y `traza ...` lo corre. Ver docs/trace.md.
 TRAZA_BIN = $(BUILD_DIR)/traza.bin
@@ -422,6 +435,7 @@ qemu-test: $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_axe2_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_atk1_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_tcp_test.sh $(OS_IMAGE)
+	$(TESTS_DIR)/qemu_fast_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_trace_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_zswitch_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_iso_test.sh $(OS_IMAGE)
@@ -451,7 +465,8 @@ qemu-axe2-test: $(OS_IMAGE)
 qemu-atk1-test: $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_atk1_test.sh $(OS_IMAGE)
 
-# EX-03: estabilidad de las baterías de ataques AXE2 y AXE1. STAB_N corridas de
+# EX-03/EX-04: estabilidad de las baterías de ataques AXE2 y AXE1 y de la
+# retransmisión rápida de TCP (tests/qemu_fast_test.sh). STAB_N corridas de
 # cada una (6 por defecto), STAB_PAR a la vez, con -icount shift=7 y sin icount.
 # Deja los registros en build/stab/ y falla si alguna corrida falla.
 STAB_N   ?= 6
@@ -459,7 +474,7 @@ STAB_PAR ?= 3
 STAB_DIR  = $(BUILD_DIR)/stab
 qemu-stab-test: $(OS_IMAGE)
 	rm -rf $(STAB_DIR) && mkdir -p $(STAB_DIR)
-	@set -e; for t in axe2 atk1; do \
+	@set -e; for t in axe2 atk1 fast; do \
 	  echo "--- $$t, -icount shift=7"; \
 	  bash $(TESTS_DIR)/repeat.sh $(STAB_DIR)/$${t}_icount $(STAB_N) $(STAB_PAR) $(TESTS_DIR)/qemu_$${t}_test.sh $(OS_IMAGE) || rc=1; \
 	  echo "--- $$t, sin icount"; \
@@ -473,6 +488,11 @@ qemu-big-test: $(OS_IMAGE)
 # Solo TCP (RD-02). Usa una copia nueva del disco de datos.
 qemu-tcp-test: $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_tcp_test.sh $(OS_IMAGE)
+
+# EX-04: retransmisión rápida con pérdida real. Usa copias nuevas de imagen y
+# disco; QEMU_EXTRA="-icount shift=7" suma opciones a QEMU.
+qemu-fast-test: $(OS_IMAGE)
+	$(TESTS_DIR)/qemu_fast_test.sh $(OS_IMAGE)
 
 # Solo trazas (OB-01). Usa una copia nueva del disco de datos.
 qemu-trace-test: $(OS_IMAGE)
@@ -514,7 +534,7 @@ debug: $(OS_IMAGE) $(DATA_IMG)
 
 clean:
 	rm -rf $(BUILD_DIR)
-	rm -f $(KERNEL_SRC)/copihue/exec_img.lap $(KERNEL_SRC)/copihue/grande_img.lap $(KERNEL_SRC)/copihue/pag2_img.lap $(KERNEL_SRC)/copihue/atk2_img.lap $(KERNEL_SRC)/copihue/zone_img.lap $(KERNEL_SRC)/copihue/atk_img.lap $(KERNEL_SRC)/copihue/par_img.lap $(KERNEL_SRC)/copihue/parcpu_img.lap $(KERNEL_SRC)/copihue/udpeco_img.lap $(KERNEL_SRC)/copihue/udpdos_img.lap $(KERNEL_SRC)/copihue/udpwait_img.lap $(KERNEL_SRC)/copihue/tcpeco_img.lap $(KERNEL_SRC)/copihue/tcpcli_img.lap $(KERNEL_SRC)/copihue/tcpmulti_img.lap $(KERNEL_SRC)/copihue/tcphog_img.lap $(KERNEL_SRC)/copihue/traza_img.lap
+	rm -f $(KERNEL_SRC)/copihue/exec_img.lap $(KERNEL_SRC)/copihue/grande_img.lap $(KERNEL_SRC)/copihue/pag2_img.lap $(KERNEL_SRC)/copihue/atk2_img.lap $(KERNEL_SRC)/copihue/zone_img.lap $(KERNEL_SRC)/copihue/atk_img.lap $(KERNEL_SRC)/copihue/par_img.lap $(KERNEL_SRC)/copihue/parcpu_img.lap $(KERNEL_SRC)/copihue/udpeco_img.lap $(KERNEL_SRC)/copihue/udpdos_img.lap $(KERNEL_SRC)/copihue/udpwait_img.lap $(KERNEL_SRC)/copihue/tcpeco_img.lap $(KERNEL_SRC)/copihue/tcpcli_img.lap $(KERNEL_SRC)/copihue/tcpmulti_img.lap $(KERNEL_SRC)/copihue/tcphog_img.lap $(KERNEL_SRC)/copihue/tcpsnd_img.lap $(KERNEL_SRC)/copihue/traza_img.lap
 
 help:
 	@echo "LapageriaOS $(VERSION) — kernel y arranque en Copihue $(COPIHUE_COMMIT)"
@@ -534,7 +554,8 @@ help:
 	@echo "  make mkaxe-test  Solo scripts/mkaxe.sh en el anfitrión (tests/mkaxe_test.sh)."
 	@echo "  make qemu-axe2-test  Solo AXE2 de mkaxe.sh y ataques de anillo 3 (tests/qemu_axe2_test.sh)."
 	@echo "  make qemu-atk1-test  Solo ataques de anillo 3 contra un AXE1 (tests/qemu_atk1_test.sh)."
-	@echo "  make qemu-stab-test  6 corridas de las baterías AXE2 y AXE1, con y sin -icount shift=7."
+	@echo "  make qemu-fast-test  Solo la retransmisión rápida de TCP con pérdida real (tests/qemu_fast_test.sh)."
+	@echo "  make qemu-stab-test  6 corridas de las baterías AXE2 y AXE1 y de la retransmisión rápida, con y sin -icount shift=7."
 	@echo "  make qemu-tcp-test  Solo la prueba de TCP (tests/qemu_tcp_test.sh)."
 	@echo "  make qemu-trace-test  Solo la prueba de trazas (tests/qemu_trace_test.sh)."
 	@echo "  make qemu-zswitch-test  Solo el cambio de zona en switch_to (tests/qemu_zswitch_test.sh)."

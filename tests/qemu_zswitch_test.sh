@@ -123,8 +123,10 @@ grep -q "lapageria> " "$SERIAL" || fail "no shell prompt"
 typewait "fs format" 50
 typewait "zone par" 50
 has "zone par plant ok" || fail "zone par"
-typewait "zone create za 12" 30
-typewait "zone create zb 12" 30
+# EX-04: un AXE1 usa 7 páginas (6 antes de la pila con guarda); `zone pair za za`
+# corre dos en la misma zona.
+typewait "zone create za 14" 30
+typewait "zone create zb 14" 30
 typewait "zone sched za" 30
 typewait "zone sched zb" 30
 has "zone sched ok" || fail "zone sched"

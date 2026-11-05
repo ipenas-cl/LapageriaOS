@@ -1,0 +1,133 @@
+// Emisor TCP de anillo 3 (EX-04). copihue --flat 0x400000.
+//
+// Prueba de la retransmisión rápida con pérdida real: el invitado es el que
+// envía, en trozos chicos, para tener muchos segmentos en vuelo a la vez
+// (el búfer de envío es de 4096 bytes: con segmentos de 1460 caben 3 y un
+// solo segmento perdido deja 2 ACK repetidos, que no alcanzan; con trozos de
+// 256 caben 16).
+//
+// Escucha en el 7005 (syscall 17, fd 0), imprime `tcp listen` y acepta una
+// conexión (syscall 18). Manda 32768 bytes en 128 trozos de 256 (byte i =
+// (i*7+3) & 255), cierra (el FIN sale detrás de los datos) y el escuchador, e
+// imprime `tcp snd n=<bytes> sum=<suma>`. Si algo falla: `tcp fail <paso> <r>`.
+// El resto de la recuperación la hace el kernel con el TCB huérfano.
+//
+// Buffer 0x401400 (256 bytes) y totales en 0x401380, en la página de E/S.
+// Sin cadenas: cada mensaje va por la syscall 1, de a 8 bytes (say8).
+
+naked fn emit(c: i64) {
+    rax = 1;
+    syscall();
+}
+
+fn say8(w: i64) {
+    let x: i64 = w;
+    while (x != 0) {
+        emit(x & 255);
+        x = x >> 8;
+    }
+}
+
+fn say_num(n: i64) {
+    let v: i64 = n;
+    if (v < 0) {
+        emit(45);
+        v = 0 - v;
+    }
+    let p: i64 = 1;
+    while (v / p >= 10) { p = p * 10; }
+    while (p > 0) {
+        emit(48 + (v / p) % 10);
+        p = p / 10;
+    }
+}
+
+fn w_tcp() {
+    say8(0x20706374);
+}
+
+fn say_denied() {
+    w_tcp();
+    say8(0x0a6465696e6564);
+}
+
+fn say_listen() {
+    w_tcp();
+    say8(0x0a6e657473696c);
+}
+
+fn say_fail(step: i64, r: i64) {
+    w_tcp();
+    say8(0x206c696166);
+    say_num(step);
+    emit(32);
+    say_num(r);
+    emit(10);
+}
+
+// tcp snd n=<n> sum=<sum>
+fn say_snd(n: i64, sum: i64) {
+    w_tcp();
+    say8(0x3d6e20646e73);
+    say_num(n);
+    say8(0x3d6d757320);
+    say_num(sum);
+    emit(10);
+}
+
+// Manda los 32768 bytes por el fd c. 0 o el error de la syscall 20.
+fn send_all(c: i64) -> i64 {
+    let tot: *i64 = 0x401380 as *i64;
+    tot[0] = 0;
+    tot[1] = 0;
+    let k: i64 = 0;
+    while (k < 128) {
+        let i: i64 = 0;
+        while (i < 256) {
+            let v: i64 = ((k * 256 + i) * 7 + 3) & 255;
+            let q: *u8 = (0x401400 + i) as *u8;
+            q[0] = v as u8;
+            tot[1] = tot[1] + v;
+            i = i + 1;
+        }
+        let off: i64 = 0;
+        while (off < 256) {
+            let s: i64 = syscall(20, c, 0x401400 + off, 256 - off, 1000);
+            if (s <= 0) {
+                if (s == 0) { return 0 - 1; }
+                return s;
+            }
+            off = off + s;
+        }
+        tot[0] = tot[0] + 256;
+        k = k + 1;
+    }
+    return 0;
+}
+
+fn snd_main() {
+    let fd: i64 = syscall(17, 7005);
+    if (fd != 0) {
+        say_denied();
+        return;
+    }
+    say_listen();
+    let c: i64 = syscall(18, 0, 1500);
+    if (c < 0) {
+        say_fail(1, c);
+        syscall(22, 0);
+        return;
+    }
+    let e: i64 = send_all(c);
+    syscall(22, c);
+    syscall(22, 0);
+    let tot: *i64 = 0x401380 as *i64;
+    if (e == 0) { say_snd(tot[0], tot[1]); } else { say_fail(2, e); }
+}
+
+naked fn _start() {
+    snd_main();
+    rax = 5;
+    syscall();
+    hlt();
+}

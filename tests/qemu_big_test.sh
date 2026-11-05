@@ -157,7 +157,7 @@ out=$(since "exec2 grande hola")
 printf '%s\n' "$out" | grep -qx "big ok" || fail "exec2: grande no dijo big ok: $out"
 printf '%s\n' "$out" | grep -qx "desde disco" || fail "exec2: hola no dijo desde disco: $out"
 printf '%s\n' "$out" | grep -qx "exit pid=1 freed=10" || fail "exec2: pid 1 (grande) no devolvió 10: $out"
-printf '%s\n' "$out" | grep -qx "exit pid=2 freed=6" || fail "exec2: pid 2 (hola) no devolvió 6: $out"
+printf '%s\n' "$out" | grep -qx "exit pid=2 freed=7" || fail "exec2: pid 2 (hola) no devolvió 7: $out"
 printf '%s\n' "$out" | grep -qx "exec2 ok" || fail "exec2 no terminó: $out"
 echo "ok   exec2 grande hola: AXE2 y AXE1 a la vez, 10 y 6 páginas devueltas"
 

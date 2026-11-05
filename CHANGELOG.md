@@ -8,6 +8,33 @@ para ese commit es `legacy-tempo`.
 
 ## 0.8
 
+EX-04, página de guarda de la pila de un AXE1 y retransmisión rápida de TCP
+probada en QEMU. (1) La pila de un AXE1 compartía la página `0x401000` con la
+E/S. La E/S sigue sola en `0x401000` y las páginas de la syscall 8 siguen desde
+`0x402000` (llegan hasta `0x40D000`), de modo que los programas existentes y los
+16 ataques no cambian; la pila pasa a `0x40F000` (tope `0x410000`) y `0x40E000`
+queda sin mapa. Solo lo arma `exec_build` (`build_guard`, `proc_stk`); las demos
+`hh`, `nx` y `sched` conservan su distribución. `uptr_range_ok` trata la pila
+como región propia (la autoprueba de UDP suma 13 casos). Cuesta una página: un
+AXE1 devuelve 7 al salir (antes 6), así que `qemu_big_test.sh` espera `freed=7`
+y los cupos de zona de `qemu_zswitch_test.sh` y `qemu_iso_test.sh`, que corren
+dos AXE1 en la misma zona, pasan de 12 a 14. `zatk` suma los modos `s`
+(recursión sin fin), `t` y `v`; `qemu_atk1_test.sh` exige los 16 ataques de
+siempre (negados, mismas direcciones), los 3 nuevos (`#PF` en `0x40Exxx`,
+`0x40E000`, `0x40E7F8`) y que con `exec2 zatk hola` y `exec2 hola zatk` muera
+solo `zatk` mientras `hola` dice `desde disco`, devuelve 7 páginas y el shell
+responde. (2) La retransmisión rápida ya existía, pero en QEMU siempre se
+recuperaba por timeout (`fast 0`). Un segmento de 1460 perdido deja a lo más 2
+ACK repetidos, porque el búfer de envío (4096) solo da para 3 en vuelo. El
+emisor nuevo `tcpsnd` manda 32 KiB en trozos de 256; `tests/qemu_fast_test.sh`
+pierde el segmento 20 (`tcp fault txdrop 20 1`) y exige los datos íntegros en
+el host, `fast +1`, `rtos +0`, `retx +1`, `fdrop +1`, un solo `tcp-retx` con
+`b 0` y, con `tcpdump`, 3 ACK repetidos en la captura antes del reenvío. Con
+la condición cambiada a `tc_dupn[t] == 99` la prueba falla (`rtos +1`). No
+hizo falta tocar la lógica de TCP (solo `tcp plant` escribe `tcpsnd`): la retransmisión rápida estaba bien. `make
+qemu-stab-test` repite ahora también esta prueba. Corridas reales y conteos en
+`patches/RESUMEN.md`. Kernel: 965 sectores (antes 941).
+
 EX-03, página de guarda de la pila y estabilidad de los ataques.
 (1) La pila de un AXE2 iba pegada a la página de E/S (`0x410000`): un desborde
 pisaba el nombre y los datos de las syscalls 6, 7 y 27 y moría recién bajo la E/S,

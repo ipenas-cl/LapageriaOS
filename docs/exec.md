@@ -14,7 +14,7 @@ mide 16 bytes y el código va justo después. Little-endian.
 `Axe` mide 16. `axe_layout` exige `sizeof(Axe) == 16`, tamaño en 4
 y entrada en 8. Un dword alto distinto de cero no cae en la página.
 
-`exec` copia el código a `0x400000` y la pila a `0x401000`, en un PML4
+`exec` copia el código a `0x400000`, deja la E/S en `0x401000` y la pila en `0x40F000` (EX-04), en un PML4
 nuevo (el mismo camino que `sched`: `build_proc` y `sched_go`). El
 punto de entrada tiene que caer en esa página de código. El programa
 vuelve al shell con el syscall 5 (`exit`). El syscall 1 escribe un
@@ -61,10 +61,10 @@ eligen una u otra por el magic.
 | Región | AXE1 (legado) | AXE2 |
 |---|---|---|
 | Imagen | `0x400000`, 1 página, solo lectura y ejecutable | `0x400000`, 1 a 16 páginas; texto RX, datos y bss RW sin ejecución |
-| Página de E/S | `0x401000` (compartida con la pila) | `0x410000`, sola |
-| Guarda | no hay | `0x411000`, sin mapa (EX-03) |
-| Pila | `0x401000`..`0x402000`, tope `0x402000` | `0x412000`..`0x413000`, tope `0x413000` |
-| Páginas de la syscall 8 | desde `0x402000` | desde `0x413000` |
+| Página de E/S | `0x401000`, sola (EX-04; antes compartida con la pila) | `0x410000`, sola |
+| Guarda | `0x40E000`, sin mapa (EX-04) | `0x411000`, sin mapa (EX-03) |
+| Pila | `0x40F000`..`0x410000`, tope `0x410000` (EX-04) | `0x412000`..`0x413000`, tope `0x413000` |
+| Páginas de la syscall 8 | desde `0x402000`, hasta `0x40D000` (12 como máximo) | desde `0x413000` |
 | Nombre de las syscalls 6, 7 y 27 | `0x401800` | `0x410800` |
 | Datos de las syscalls 6 y 7 | `0x401C00` | `0x410C00` |
 
@@ -103,6 +103,35 @@ compilador no sondea la pila, un arreglo local de 8 KiB deja `rsp` más de una
 página abajo y sus escrituras caen en `0x410xxx`, en la E/S, sin pasar por la
 guarda (`atk2` modo `y`; la prueba lo informa y no lo exige). Cerrarlo del todo
 pide sondeo de pila en el compilador (`docs/PEDIDOS_COPIHUE.md`, EX-03).
+
+### Página de guarda de la pila de un AXE1 (EX-04)
+
+Un AXE1 tenía la pila y la E/S en la misma página (`0x401000`): un desborde
+bajaba desde `0x402000`, pisaba los datos (`0x401C00`) y el nombre (`0x401800`) de
+las syscalls 6, 7 y 27 y moría recién bajo la página, en el código de solo
+lectura. Ahora la E/S sigue sola en `0x401000` y las páginas de la syscall 8
+siguen desde `0x402000` (los programas que existen y los 16 ataques de
+`zatk` no cambian: las direcciones que usan son las mismas). Lo que se mueve
+es la pila: `0x40F000`..`0x410000`, con `0x40E000` sin mapa debajo. `build_proc`
+la arma cuando `exec_build` pone `build_guard` (las demos del kernel, `hh`, `nx` y
+`sched`, siguen con la distribución vieja); `proc_stk[pi]` guarda su base.
+
+- El primer acceso de la pila a la guarda es un `#PF` en anillo 3 (`err=0x6`
+  al escribir): el kernel mata solo a ese proceso y devuelve sus páginas.
+- Las páginas de la syscall 8 de un AXE1 llegan hasta `0x40D000` (12 como
+  máximo; `zone_sys_alloc` da `-3` si no); una página pedida nunca queda
+  pegada a la pila ni sobre la guarda.
+- `uptr_range_ok` trata la pila como región propia: un rango no cruza de lo
+  pedido a la guarda ni de la guarda a la pila.
+- Cuesta una página más por AXE1 (7 en vez de 6: 3 tablas, 1 tabla de páginas,
+  código, E/S y pila), que es lo que devuelve `exit` (`freed=7`).
+- Mismo límite que en un AXE2: un marco local de más de 4096 bytes salta la
+  guarda (`docs/PEDIDOS_COPIHUE.md`, EX-03: sin sondeo de pila en el compilador).
+
+`zatk` gana tres modos (`s`, `t`, `v`, ver `docs/zonas.md`) y
+`tests/qemu_atk1_test.sh` corre los 16 de siempre más esos tres, y `exec2 zatk
+hola` / `exec2 hola zatk` con la recursión sin fin: muere solo `zatk` en
+`0x40Exxx`, `hola` dice `desde disco` y devuelve sus 7 páginas, y el shell sigue.
 
 | Línea | Causa |
 |---|---|

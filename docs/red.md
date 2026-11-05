@@ -294,8 +294,8 @@ es inofensivo porque la llamada mira de nuevo. `connect` además guarda su
 TCB pendiente por proceso, para que la repetición no abra otra conexión. Al
 morir el proceso (`release_proc`) se cierran sus fd como un `close`.
 
-Comandos: `tcp test`, `tcp plant` (escribe `tcpeco`, `tcpcli`, `tcpmulti` y
-`tcphog`), `tcp fault` (RD-03), `tcp stat`:
+Comandos: `tcp test`, `tcp plant` (escribe `tcpeco`, `tcpcli`, `tcpmulti`,
+`tcphog` y `tcpsnd`), `tcp fault` (RD-03), `tcp stat`:
 `rx bad tx retx rstout rstin rstdrop est closed dup blk tmo giveup used lst tw
 iss ooo oodrop fast rtos full bklog recyc rtts rtt rto cwmax fdrop peak fswap`.
 `used` es el número de TCB ocupados (la prueba de fugas exige 0 al
@@ -448,8 +448,13 @@ se intentó. El único corte «de red» de las pruebas sigue siendo `set_link`.
   (`fault`). Se verificó con una mutación (se quitó `tcp_oo_absorb`): la prueba
   falló en el chequeo 106.
 - En QEMU con tráfico real: ver «RD-03» en «Prueba».
-- La retransmisión rápida **solo está probada sin dispositivo**: en las
-  corridas reales (`fast 0`) el invitado se recuperó siempre por timeout.
+- La retransmisión rápida está probada sin dispositivo (`tcp test cc`) y, desde
+  EX-04, en QEMU con pérdida real: ver «EX-04: retransmisión rápida» más abajo.
+  En las pruebas de eco de RD-03 sigue sin pasar (`fast 0`, recuperación por
+  timer); no se investigó por qué en esas corridas. Lo que sí se sabe: el
+  búfer de envío es de 4096 bytes, así que con segmentos de 1460 caben 3 en
+  vuelo y uno perdido deja a lo más 2 ACK repetidos, uno menos que los 3 de
+  RFC 5681. Por eso la prueba de EX-04 manda en trozos de 256.
 - Ningún corte de red de un solo segmento: la pérdida real es la del
   `tcp fault`. El reordenamiento también es inyectado.
 - No se probó `exec2` dentro de una zona, ni más de dos procesos.
@@ -539,7 +544,7 @@ P sale de `$RANDOM`.
 | (b) `exec tcpcli` | socat del host escucha en P+100; el invitado conecta (guestfwd), imprime `tcp pause`; la prueba hace `set_link n0 off` 2,4 s y `on`; el cliente manda 3000 bytes durante el corte; `retx` sube >= 1; el host recibe 3000 bytes con la misma suma que imprimió el invitado; recibe «respuesta» y el EOF; `connect` a 10.0.2.2:1 da -111 (`rstin` +1) |
 | (c) RST | socat del host conecta a P+1 (invitado 7999, sin socket): `rstout` +1 y en el pcap un segmento desde el puerto 7999 con `seq 0`, offset 5 y flags `0x14`; con `tcpdump`, `Flags [R.]` y sin checksum malo |
 | (d) zonas | `zone exec n tcpeco` (sin red): `tcp denied`, `niega >= 1`, no llega a las pruebas de punteros; `zone net m` y `zone exec m tcpeco`: dos ecos idénticos |
-| (e) fugas | `tcp stat` llega a `used 0`, `lst 0`, `tw 0`, con `bad 0` y `giveup 0`; todos los procesos liberan las mismas páginas (`freed=6`); `net down` deja 0 TCB y el shell sigue |
+| (e) fugas | `tcp stat` llega a `used 0`, `lst 0`, `tw 0`, con `bad 0` y `giveup 0`; todos los procesos liberan las mismas páginas (`freed=7` desde EX-04: la pila AXE1 tiene página propia); `net down` deja 0 TCB y el shell sigue |
 
 Qué probó cada cosa y qué no:
 
@@ -600,3 +605,33 @@ Qué probó cada cosa y qué no:
 - Las corridas de referencia de `tcp stat` al final dieron, con todo
   lo anterior: `ooo 3 oodrop 0 fast 0 rtos 4 full 1 bklog 0 recyc 0 peak 8
   fdrop 3 fswap 1 giveup 0 bad 0`.
+
+### EX-04: retransmisión rápida con pérdida real, `tests/qemu_fast_test.sh`
+
+La retransmisión rápida (3 ACK repetidos, RFC 5681 / 6582) ya estaba escrita
+y probada sin dispositivo (`tcp test cc`), pero en QEMU el invitado siempre se
+recuperaba por timeout. `tcpsnd` (`src/user/tcpsnd.lap`, escrito por `tcp
+plant`) escucha en el 7005, acepta y manda 32768 bytes en 128 trozos de 256
+(byte i = `(i*7+3) & 255`), cierra y vuelve. Trozos chicos porque el búfer de
+envío es de 4096 bytes: con 256 caben 16 segmentos en vuelo, y uno perdido deja
+muchos ACK repetidos; con segmentos de 1460 caben 3 y a lo más 2 repetidos.
+
+La prueba (QEMU propio, `hostfwd` del host al 7005 y captura `filter-dump`):
+
+1. `tcp stat` parte con `fast 0 rtos 0 retx 0`; `trace on tcp-retx`.
+2. `tcp fault txdrop 20 1`: el TCP del invitado se come el segmento con datos
+   número 20 que manda. Lo que sigue lo hace slirp: recibe los siguientes fuera
+   de orden y contesta un ACK repetido por cada uno.
+3. `exec tcpsnd` y un `socat -u` del host lee hasta el FIN.
+
+Se exige: 32768 bytes en orden y completos (patrón byte a byte y misma suma que
+contó el invitado); `fdrop +1`, **`fast +1`, `rtos +0`, `retx +1`**; un solo
+evento `tcp-retx` con `b 0` (`tc_nre`: un vencimiento del timer lo sube antes
+de reenviar, la retransmisión rápida no); y, si hay `tcpdump`, en la captura un
+ack que el host repite 3 veces (más el original) y el segmento con ese número
+de secuencia reenviado después del tercero.
+
+Se verificó con una mutación: con la condición `tc_dupn[t] == 3` cambiada a
+`== 99` la prueba falla con `fast 0 -> 0 (rtos 0 -> 1, retx 0 -> 1)`. Corridas
+reales: ver `patches/RESUMEN.md` (6 con `-icount shift=7` y 6 sin icount).
+`make qemu-stab-test` la repite junto con las baterías de ataques.

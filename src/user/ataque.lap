@@ -21,6 +21,12 @@
 //   'm' rem_raw(1, 0) (#DE por divisor cero)
 //   'i' int 3 (la puerta de la IDT es DPL 0: da #GP, no #BP)
 //
+// EX-04: la pila de un AXE1 está en 0x40F000 (tope 0x410000) con una guarda
+// sin mapa en 0x40E000, aparte de la página de E/S (0x401000).
+//   's' desbordar la pila con una recursión sin fin (cae en la guarda)
+//   't' leer el primer byte de la guarda
+//   'v' rsp dentro de la guarda y un push
+//
 // Cada ataque tiene que matar al proceso con un fallo, así que el mensaje
 // `atk survived` solo sale si el kernel NO lo negó. Los mensajes comparten
 // letras para caber en 4080 bytes (mkaxe.sh).
@@ -37,6 +43,18 @@ naked fn nl() {
 // Salta a la dirección de rdi. Sin locales: un naked no tiene pila propia.
 naked fn jump_to(a: i64) {
     jmp rdi;
+}
+
+// Pone rsp en a y empuja: el push escribe en a - 8.
+naked fn sp_push(a: i64) {
+    rsp = rdi;
+    push(0);
+}
+
+// Recursión sin fin: cada marco guarda n en la pila.
+fn deep(n: i64) -> i64 {
+    let pad: i64 = n;
+    return deep(n + 1) + pad;
 }
 
 // atk <modo>
@@ -156,6 +174,9 @@ fn attack(m: i64) {
         x = rem_raw(1, z);
     }
     if (m == 105) { int(3); }
+    if (m == 115) { x = deep(0); }
+    if (m == 116) { x = *(0x40E000 as *u8); }
+    if (m == 118) { sp_push(0x40E800); }
     if (x == 123456) { emit(88); }
     say_survived();
 }
