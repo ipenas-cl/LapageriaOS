@@ -1,0 +1,335 @@
+// AHCI 1.x, solo lectura (HR-01). Un puerto SATA, un comando a la vez, un
+// sector de 512 B por DMA (READ DMA EXT, LBA48). Sin interrupciones: se
+// sondea PxCI con tope de tiempo del PIT (ata_pit_read, como ata.lap).
+// No toca el camino ATA: el arranque y el disco de datos siguen en el IDE.
+//
+// Se busca en el bus 0 un dispositivo PCI de clase 01:06 (SATA) con
+// interfaz 01 (AHCI). Su BAR5 (ABAR) se mueve a AHCI_ABAR, dentro del
+// primer GiB que el arranque tiene mapeado (el firmware lo deja arriba de
+// 3 GiB). Memoria y bus master se prenden; INTx queda apagado.
+//
+// Memoria de DMA: una página baja (< 2 MiB, identidad) con
+//   +0x000 lista de comandos (1 KiB, una ranura usada)
+//   +0x400 FIS recibido (256 B)
+//   +0x500 tabla de comando (CFIS + una entrada PRDT en +0x80)
+//   +0x800 búfer de datos (512 B)
+//
+// Códigos (los de ata.lap donde coinciden):
+// 0 listo
+// 1 se agotó el tiempo
+// 2 el disco marcó error (PxTFD.ERR o PxIS.TFES)
+// 3 no hay controlador AHCI o ningún puerto con un disco SATA
+// 4 LBA fuera de rango
+// 5 BAR o memoria de DMA inutilizable
+
+let AHCI_ABAR: i64 = 0x10100000;
+// 10 s del PIT (1.193182 MHz). Los discos SATA de QEMU contestan en ms.
+let AHCI_PIT_TIMEOUT: i64 = 11931820;
+
+let ahci_dev: i64 = 0;
+let ahci_fun: i64 = 0;
+let ahci_vid: i64 = 0;
+let ahci_did: i64 = 0;
+let ahci_mmio: i64 = 0;
+let ahci_pi: i64 = 0;
+let ahci_port: i64 = 0;
+let ahci_pa: i64 = 0;
+let ahci_sectors: i64 = 0;
+let ahci_ready: i64 = 0;
+let ahci_buf: [u8; 512];
+let ahci_out: [u8; 512];
+
+fn ahci_rd(off: i64) -> i64 {
+    let p: *volatile u32 = (ahci_mmio + off) as *volatile u32;
+    return p[0] & 0xFFFFFFFF;
+}
+
+fn ahci_wr(off: i64, v: i64) -> i64 {
+    let p: *volatile u32 = (ahci_mmio + off) as *volatile u32;
+    p[0] = v as u32;
+    return 0;
+}
+
+// Registro del puerto elegido: 0x100 + 0x80 * puerto + reg.
+fn ahci_preg(reg: i64) -> i64 {
+    return 0x100 + ahci_port * 0x80 + reg;
+}
+
+fn ahci_pr(reg: i64) -> i64 { return ahci_rd(ahci_preg(reg)); }
+fn ahci_pw(reg: i64, v: i64) -> i64 { return ahci_wr(ahci_preg(reg), v); }
+
+// Dword de la página de DMA. Puntero local y no `f(x)[0] = v`: Copihue
+// v0.44.2 descarta sin aviso la asignación a un índice de una llamada
+// (docs/PEDIDOS_COPIHUE.md, HR-01).
+fn ahci_mw(off: i64, v: i64) -> i64 {
+    let p: *volatile u32 = (ahci_pa + off) as *volatile u32;
+    p[0] = v as u32;
+    return 0;
+}
+
+// Espera a que (registro del puerto & mask) == want. 0 listo, 1 tiempo.
+fn ahci_spin(reg: i64, mask: i64, want: i64) -> i64 {
+    let prev = ata_pit_read();
+    let acc = 0;
+    let n = 0;
+    while (acc < AHCI_PIT_TIMEOUT) {
+        if ((ahci_pr(reg) & mask) == want) { return 0; }
+        n = n + 1;
+        if ((n & 15) == 0) {
+            let cur = ata_pit_read();
+            let d = prev - cur;
+            if (d < 0) { d = d + ATA_PIT_PERIOD; }
+            acc = acc + d;
+            prev = cur;
+        }
+    }
+    return 1;
+}
+
+fn ahci_scan() -> i64 {
+    let dev = 0;
+    while (dev < 32) {
+        let id0 = pci_rd(0, dev, 0, 0);
+        if ((id0 & 0xFFFF) != 0xFFFF) {
+            let hdr = (pci_rd(0, dev, 0, 0x0C) >> 16) & 255;
+            let nfun = 1;
+            if ((hdr & 128) != 0) { nfun = 8; }
+            let fun = 0;
+            while (fun < nfun) {
+                let id = pci_rd(0, dev, fun, 0);
+                if ((id & 0xFFFF) != 0xFFFF) {
+                    // Clase (31:24), subclase (23:16), interfaz (15:8).
+                    let cls = pci_rd(0, dev, fun, 8) >> 8;
+                    if ((cls & 0xFFFFFF) == 0x010601) {
+                        ahci_dev = dev;
+                        ahci_fun = fun;
+                        ahci_vid = id & 0xFFFF;
+                        ahci_did = (id >> 16) & 0xFFFF;
+                        return 0;
+                    }
+                }
+                fun = fun + 1;
+            }
+        }
+        dev = dev + 1;
+    }
+    return 3;
+}
+
+fn ahci_map_bar() -> i64 {
+    pci_wr(0, ahci_dev, ahci_fun, 4, 0);
+    let bar = pci_rd(0, ahci_dev, ahci_fun, 0x24);
+    if ((bar & 1) != 0) { return 5; }
+    if ((bar & 6) == 4) { return 5; }
+    pci_wr(0, ahci_dev, ahci_fun, 0x24, 0xFFFFFFFF);
+    let mask = pci_rd(0, ahci_dev, ahci_fun, 0x24) & 0xFFFFFFF0;
+    if (mask == 0) { return 5; }
+    let size = ((~mask) + 1) & 0xFFFFFFFF;
+    if (size < 0x1000 || size > 0x10000) { return 5; }
+    pci_wr(0, ahci_dev, ahci_fun, 0x24, AHCI_ABAR);
+    // Memoria + bus master; bit 10 prendido: sin INTx.
+    pci_wr(0, ahci_dev, ahci_fun, 4, 0x0406);
+    let off = 0;
+    while (off < size) {
+        if (map_page(AHCI_ABAR + off, AHCI_ABAR + off, 0x1B | pte_nx_bit()) == 0) { return 5; }
+        off = off + 4096;
+    }
+    ahci_mmio = AHCI_ABAR;
+    return 0;
+}
+
+// Detiene el motor de comandos y el de FIS recibidos del puerto.
+fn ahci_stop() -> i64 {
+    let cmd = ahci_pr(0x18);
+    if ((cmd & 0x11) != 0 || (cmd & 0xC000) != 0) {
+        ahci_pw(0x18, cmd & 0xFFFFFFFE);
+        if (ahci_spin(0x18, 0x8000, 0) != 0) { return 1; }
+        cmd = ahci_pr(0x18);
+        ahci_pw(0x18, cmd & 0xFFFFFFEF);
+        if (ahci_spin(0x18, 0x4000, 0) != 0) { return 1; }
+    }
+    return 0;
+}
+
+// Primer puerto implementado con un disco SATA (DET 3, IPM 1, firma 0x101).
+fn ahci_find_port() -> i64 {
+    let n = 0;
+    while (n < 32) {
+        if (((ahci_pi >> n) & 1) != 0) {
+            ahci_port = n;
+            let ssts = ahci_pr(0x28);
+            if ((ssts & 15) == 3 && ((ssts >> 8) & 15) == 1) {
+                if (ahci_pr(0x24) == 0x101) { return 0; }
+            }
+        }
+        n = n + 1;
+    }
+    ahci_port = 0;
+    return 3;
+}
+
+// Un comando de un sector sobre la ranura 0. cmd 0x25 lee con LBA48; 0xEC
+// es IDENTIFY. El resultado queda en ahci_buf.
+fn ahci_cmd(cmd: i64, lba: i64) -> i64 {
+    if (ahci_ready == 0) { return 3; }
+    if (ahci_spin(0x20, 0x88, 0) != 0) { return 1; }
+    let ct = 0x500;
+    let i = 0;
+    while (i < 0x40) {
+        ahci_mw(ct + i * 4, 0);
+        i = i + 1;
+    }
+    // Cabecera de la ranura 0: CFL 5 dwords, lectura, una entrada PRDT.
+    ahci_mw(0, 5 | (1 << 16));
+    ahci_mw(4, 0);
+    ahci_mw(8, ahci_pa + ct);
+    ahci_mw(12, 0);
+    // FIS H2D: tipo 0x27, bit C, comando, dispositivo LBA, un sector.
+    ahci_mw(ct, 0x27 | (0x80 << 8) | (cmd << 16));
+    ahci_mw(ct + 4, (lba & 0xFFFFFF) | (0x40 << 24));
+    ahci_mw(ct + 8, (lba >> 24) & 0xFFFFFF);
+    ahci_mw(ct + 12, 1);
+    // PRDT: 512 bytes (DBC = 511) al búfer.
+    ahci_mw(ct + 0x80, ahci_pa + 0x800);
+    ahci_mw(ct + 0x84, 0);
+    ahci_mw(ct + 0x88, 0);
+    ahci_mw(ct + 0x8C, 511);
+    ahci_pw(0x10, 0xFFFFFFFF);
+    ahci_pw(0x38, 1);
+    let prev = ata_pit_read();
+    let acc = 0;
+    let n = 0;
+    while (acc < AHCI_PIT_TIMEOUT) {
+        if ((ahci_pr(0x10) & 0x40000000) != 0) { ahci_pw(0x10, 0xFFFFFFFF); return 2; }
+        if ((ahci_pr(0x38) & 1) == 0) {
+            if ((ahci_pr(0x20) & 1) != 0) { return 2; }
+            let p: *u8 = (ahci_pa + 0x800) as *u8;
+            let k = 0;
+            while (k < 512) {
+                ahci_buf[k] = p[k];
+                k = k + 1;
+            }
+            return 0;
+        }
+        n = n + 1;
+        if ((n & 15) == 0) {
+            let cur = ata_pit_read();
+            let d = prev - cur;
+            if (d < 0) { d = d + ATA_PIT_PERIOD; }
+            acc = acc + d;
+            prev = cur;
+        }
+    }
+    return 1;
+}
+
+// Palabra n de ahci_buf tras IDENTIFY.
+fn ahci_word(n: i64) -> i64 {
+    return (ahci_buf[n * 2] & 255) | ((((ahci_buf[n * 2 + 1] & 255) as i64)) << 8);
+}
+
+// Busca el controlador, arma el puerto y lee IDENTIFY. Idempotente.
+fn ahci_init() -> i64 {
+    if (ahci_ready != 0) { return 0; }
+    let r = ahci_scan();
+    if (r != 0) { return r; }
+    r = ahci_map_bar();
+    if (r != 0) { return r; }
+    // GHC.AE (bit 31), IE (bit 1) sigue en 0.
+    ahci_wr(0x04, 0x80000000);
+    ahci_pi = ahci_rd(0x0C);
+    r = ahci_find_port();
+    if (r != 0) { return r; }
+    ahci_pa = alloc_low_page();
+    if (net_pa_ok(ahci_pa) == 0) { return 5; }
+    zero_va(ahci_pa);
+    if (ahci_stop() != 0) { return 1; }
+    ahci_pw(0x00, ahci_pa);
+    ahci_pw(0x04, 0);
+    ahci_pw(0x08, ahci_pa + 0x400);
+    ahci_pw(0x0C, 0);
+    ahci_pw(0x30, 0xFFFFFFFF);
+    ahci_pw(0x10, 0xFFFFFFFF);
+    ahci_pw(0x14, 0);
+    ahci_pw(0x18, ahci_pr(0x18) | 0x10);
+    if (ahci_spin(0x20, 0x88, 0) != 0) { return 1; }
+    ahci_pw(0x18, ahci_pr(0x18) | 0x1);
+    ahci_ready = 1;
+    r = ahci_cmd(0xEC, 0);
+    if (r != 0) { ahci_ready = 0; return r; }
+    // Palabras 100..103: sectores LBA48 (aquí bastan las dos bajas).
+    ahci_sectors = ahci_word(100) | (ahci_word(101) << 16);
+    if (ahci_sectors <= 0) { ahci_ready = 0; return 3; }
+    return 0;
+}
+
+fn ahci_read(lba: i64, dst: *u8) -> i64 {
+    if (lba < 0 || lba >= ahci_sectors) { return 4; }
+    let r = ahci_cmd(0x25, lba);
+    if (r != 0) { return r; }
+    let i = 0;
+    while (i < 512) {
+        dst[i] = ahci_buf[i];
+        i = i + 1;
+    }
+    return 0;
+}
+
+// Registros del puerto tras un fallo: IS, CMD, TFD, SSTS, SERR, CI.
+fn ahci_dump() -> i64 {
+    puts("ahci regs pa=");
+    put_hex(ahci_pa);
+    puts(" is=");
+    put_hex(ahci_pr(0x10));
+    puts(" cmd=");
+    put_hex(ahci_pr(0x18));
+    puts(" tfd=");
+    put_hex(ahci_pr(0x20));
+    puts(" ssts=");
+    put_hex(ahci_pr(0x28));
+    puts(" serr=");
+    put_hex(ahci_pr(0x30));
+    puts(" ci=");
+    put_hex(ahci_pr(0x38));
+    putc('\n');
+    return 0;
+}
+
+// `ahci [lba]`: detecta, imprime el controlador y el disco, lee el sector
+// (0 por omisión) y da su CRC-32 y los dos últimos bytes. Las líneas que
+// mira tests/qemu_ahci_test.sh: ahci none, ahci found, ahci disk, ahci read.
+fn ahci_demo(lba: i64) -> i64 {
+    let r = ahci_init();
+    if (r == 3 && ahci_dev == 0 && ahci_mmio == 0) {
+        puts("ahci none\n");
+        return 3;
+    }
+    if (r != 0) {
+        if (ahci_mmio != 0) { ahci_dump(); }
+        return disk_say("ahci fail", r);
+    }
+    puts("ahci found ");
+    put_hex(ahci_vid);
+    putc(':');
+    put_hex(ahci_did);
+    puts(" abar=");
+    put_hex(ahci_mmio);
+    puts(" pi=");
+    put_hex(ahci_pi);
+    putc('\n');
+    puts("ahci disk port=");
+    put_int(ahci_port);
+    puts(" sectors=");
+    put_int(ahci_sectors);
+    putc('\n');
+    r = ahci_read(lba, ahci_out);
+    if (r != 0) { return disk_say("ahci read fail", r); }
+    puts("ahci read lba=");
+    put_int(lba);
+    puts(" crc=");
+    put_hex(crc32(ahci_out, 512));
+    puts(" tail=");
+    put_hex(((((ahci_out[510] & 255) as i64)) << 8) | (ahci_out[511] & 255));
+    putc('\n');
+    return 0;
+}

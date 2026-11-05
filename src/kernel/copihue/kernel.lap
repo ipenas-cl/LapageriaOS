@@ -44,6 +44,8 @@ import "traza_img.lap";
 import "udp.lap";
 import "tcp.lap";
 import "trace.lap";
+import "ahci.lap";
+import "nvme.lap";
 import "shell.lap";
 
 fn _start() -> i64 {

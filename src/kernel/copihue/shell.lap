@@ -68,6 +68,8 @@ fn cmd_help() -> i64 {
     puts("  user            enter ring 3 and syscall\n");
     puts("  sched           two processes, separate pages\n");
     puts("  disk            data disk checksum\n");
+    puts("  ahci [lba]      controlador AHCI y lectura de un sector SATA\n");
+    puts("  nvme            detecta un controlador NVMe (sin driver)\n");
     puts("  fs              archivos, directorios, snapshots, scrub, migrate\n");
     puts("  exec <nombre>   programa del disco en anillo 3\n");
     puts("  exec2 <a> <b>   dos programas del disco a la vez\n");
@@ -401,6 +403,10 @@ fn run_command() -> i64 {
     if (cmd_is("sched")) { sched_demo(); return 0; }
     // Disco de datos: identify, bloque con CRC y un byte corrompido.
     if (cmd_is("disk")) { disk_test(); return 0; }
+    // AHCI (HR-01): detecta el controlador y lee un sector. `ahci [lba]`.
+    if (cmd_is("ahci")) { parse_pos = 4; ahci_demo(parse_int()); return 0; }
+    // NVMe (HR-01): solo detección del controlador.
+    if (cmd_is("nvme")) { nvme_demo(); return 0; }
     if (cmd_is("fs")) { cmd_fs(); return 0; }
     if (cmd_is("exec")) { cmd_exec(); return 0; }
     if (cmd_is("exec2")) { cmd_exec2(); return 0; }
