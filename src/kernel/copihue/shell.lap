@@ -129,9 +129,19 @@ fn fs_fail(r: i64) -> i64 {
     return r;
 }
 
-// Rechazos de fs_remove_tree (y de `zone rm`): nada se borra.
+// Rechazos de fs_remove_tree (y de `zone rm`): nada se borra. `fs rm` sin -r
+// usa fs_rm_refused_plain (21 y 22, aunque la carpeta esté vacía).
 fn fs_rm_refused(r: i64) -> i64 {
     puts("fs rm -r refused: ");
+    return fs_rm_why(r);
+}
+
+fn fs_rm_refused_plain(r: i64) -> i64 {
+    puts("fs rm refused: ");
+    return fs_rm_why(r);
+}
+
+fn fs_rm_why(r: i64) -> i64 {
     if (r == 21) { puts("raiz del sistema"); }
     if (r == 22) { puts("raiz de zona"); }
     if (r == 23) { puts("ruta con componente vacio, . o .."); }
@@ -281,6 +291,9 @@ fn cmd_fs() -> i64 {
             puts("fs rm -r ok\n");
             return 0;
         }
+        // Sin -r tampoco se borra "/", /zonas ni /zonas/<nombre>, ni vacías.
+        let g = fs_rm_guard(fs_path);
+        if (g == 1 || g == 2) { return fs_rm_refused_plain(20 + g); }
         let r = fs_remove(fs_path);
         if (r != 0) { return fs_fail(r); }
         puts("fs rm ok\n");

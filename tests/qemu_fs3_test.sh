@@ -418,6 +418,22 @@ ok "fs snap rm sn" "fs snap rm ok"
 scrub_is 6 "tras borrar el árbol y el snapshot"
 echo "ok   rm -r con snapshot: lo que el snapshot usa sigue (rollback lo trae intacto, 64 y 72 KiB con su patrón), y al borrar el snapshot se libera todo (scrub 6)"
 
+# FS-05/2: `fs rm` sin -r también se niega a borrar "/", /zonas y
+# /zonas/<nombre>, aunque estén vacías, y no toca el disco.
+ok "zone create zq 12" "zone created 1"
+n_zq=$(nblocks)
+ok "fs rm /" "fs rm refused: raiz del sistema"
+ok "fs rm /zonas" "fs rm refused: raiz de zona"
+ok "fs rm /zonas/" "fs rm refused: raiz de zona"
+ok "fs rm /zonas/zq" "fs rm refused: raiz de zona"
+ok "fs rm /zonas/zq/" "fs rm refused: raiz de zona"
+[ "$(nblocks)" = "$n_zq" ] || fail "fs rm negado cambió el disco (bloques $n_zq -> $(nblocks))"
+run "fs ls /zonas"; printf '%s\n' "$OUT" | grep -q 'zq' || fail "tras fs rm /zonas/zq la zona ya no está: $OUT"
+ok "fs write /zonas/zq/a uno" "fs write ok"
+ok "fs rm /zonas/zq/a" "fs rm ok"
+ok "fs rm /zonas/zq/a" "fs fail 7"
+echo "ok   fs rm sin -r: negado en /, /zonas, /zonas/ y /zonas/zq (con o sin / final), disco intacto; dentro de la zona sigue borrando archivos"
+
 run "version"
 printf '%s\n' "$OUT" | grep -q 'LapageriaOS' || fail "el shell no sigue vivo"
 
