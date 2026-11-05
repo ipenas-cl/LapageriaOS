@@ -12,7 +12,7 @@ Segunda tajada sobre `docs/hr01-uefi-ahci.md`. El camino BIOS + ATA no cambia:
 | Kernel por UEFI | **Arranca en QEMU q35 + OVMF (EDK2 de Homebrew)**: el cargador lee `kernel.bin` de la ESP, sale de los servicios de arranque y salta al kernel, que imprime su banner, lee el mapa de memoria, corre el PIT y atiende el shell por PS/2. Probado por `make qemu-uefi-test`. |
 | UEFI en hardware real | **No probado.** Solo OVMF en QEMU. |
 | Pantalla bajo UEFI | **No funciona**: el kernel escribe en VGA texto `0xB8000`, que bajo OVMF no se ve (la salida es GOP). La evidencia es COM1 y el teclado PS/2. |
-| Disco bajo UEFI | **No probado y no esperado.** q35 no tiene IDE: `ata_*`/`disk`/`fs` hablan con el IDE maestro/esclavo. Falta poner AHCI detrás de `blk.lap` (ver «Siguiente paso»). |
+| Disco bajo UEFI | **No en HR-02; resuelto en HR-03** (`docs/hr03-ahci-blk.md`): AHCI es ahora un backend de `blk.lap` y `disk`/`fs` andan bajo q35 + OVMF (`make qemu-uefi-blk-test`). En HR-02 q35 no tenía IDE y `ata_*`/`disk`/`fs` no servían. |
 | AHCI | Lectura (HR-01) y **escritura de un sector** (`WRITE DMA EXT` + `FLUSH CACHE EXT`), comando `ahci w <lba> [patrón]`. Un sector por comando, sin NCQ, sin interrupciones. |
 | NVMe | Solo detección (sin cambios). |
 
@@ -118,10 +118,9 @@ página (el cargador pesa 5858 bytes): `.reloc` va en la página que sigue.
 
 ## Qué falta
 
-- **Disco bajo UEFI.** El kernel arrancado por UEFI no tiene disco: q35 + OVMF
-  presentan SATA (AHCI), y `blk`/`fs` llaman a `ata_*` directo. Falta una capa de
-  dispositivos de bloque y que `ahci_*` pase a ser un backend (lectura y escritura
-  ya existen, un sector por vez). Ese es el siguiente paso natural.
+- **Disco bajo UEFI.** *(Hecho en HR-03, `docs/hr03-ahci-blk.md`.)* En HR-02 el
+  kernel arrancado por UEFI no tenía disco: q35 + OVMF presentan SATA (AHCI), y
+  `blk`/`fs` llamaban a `ata_*` directo. Ahora `ahci_*` es un backend de `blk`.
 - **Pantalla.** Falta usar el framebuffer GOP (`LocateProtocol(GOP)` antes de
   `ExitBootServices`, pasar base/pitch/formato al kernel y una consola de píxeles).
   Hoy `0xB8000` no se ve.

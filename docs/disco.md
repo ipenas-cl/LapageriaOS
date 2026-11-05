@@ -101,4 +101,7 @@ inodo y su indirecto.
 
 ## Qué falta
 
-Sigue sin otro bus (AHCI, NVMe) ni DMA: todo es PIO.
+NVMe no es backend. El ATA sigue siendo PIO; desde HR-03 `blk` puede ir por
+AHCI (DMA, un sector por comando) en lugar del ATA, ver
+[hr03-ahci-blk.md](hr03-ahci-blk.md). Con el backend AHCI `disk` imprime
+`ahci ok` donde aquí dice `ata ok`; `blk ok` y `blk corrupt detected` no cambian.

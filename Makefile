@@ -24,10 +24,12 @@
 #              necesita cc para scripts/mkv1.c).
 #   qemu-ata-test  Solo la prueba del timeout ATA con -icount shift=4 (tests/qemu_ata_test.sh).
 #   qemu-ahci-test  Solo la lectura de sectores por AHCI (tests/qemu_ahci_test.sh).
+#   qemu-ahci-fs-test  disk y fs sobre el disco SATA, por blk (tests/qemu_ahci_fs_test.sh, HR-03).
 #   uefi-image  Arma la ESP build/uefi/esp: EFI/BOOT/BOOTX64.EFI (cargador UEFI en Copihue, HR-02) y kernel.bin.
 #   uefi-pe-test  Solo la comprobación estática del PE32+ (sin QEMU).
 #   qemu-uefi  Arranca el kernel por UEFI en QEMU con OVMF (OVMF_CODE/OVMF_VARS/OVMF_BIOS; falla si no hay).
 #   qemu-uefi-test  Solo el arranque UEFI del kernel automatizado (tests/qemu_uefi_test.sh).
+#   qemu-uefi-blk-test  Bajo UEFI (q35, sin IDE) disk y fs por AHCI (tests/qemu_uefi_blk_test.sh, HR-03).
 #   qemu-cpu-test  Solo la cuota de CPU por zona (tests/qemu_cpu_test.sh), normal y con -icount shift=4.
 #   debug      Igual que qemu, y espera a gdb en tcp::1234 (-s -S).
 #   clean      Borra build/.
@@ -160,7 +162,7 @@ COPIHUE_KERNEL_SRC = $(KERNEL_SRC)/copihue/console.lap \
                      $(KERNEL_SRC)/copihue/shell.lap \
                      $(KERNEL_SRC)/copihue/kernel.lap
 
-.PHONY: all qemu qemu-test qemu-shell-test mkaxe-test qemu-axe2-test qemu-atk1-test qemu-fast-test qemu-burst-test qemu-stab-test qemu-big-test qemu-udp-test qemu-tcp-test qemu-trace-test qemu-zswitch-test qemu-iso-test qemu-fs2-test qemu-fs3-test qemu-ata-test qemu-ahci-test uefi-image uefi-pe-test qemu-uefi qemu-uefi-check qemu-uefi-test qemu-cpu-test debug clean help
+.PHONY: all ovmf-info qemu qemu-testqemu-shell-test mkaxe-test qemu-axe2-test qemu-atk1-test qemu-fast-test qemu-burst-test qemu-stab-test qemu-big-test qemu-udp-test qemu-tcp-test qemu-trace-test qemu-zswitch-test qemu-iso-test qemu-fs2-test qemu-fs3-test qemu-ata-test qemu-ahci-test qemu-ahci-fs-test uefi-image uefi-pe-test qemu-uefi qemu-uefi-check qemu-uefi-test qemu-uefi-blk-test qemu-cpu-test debug clean help
 
 # Imagen de arranque: LBA 0 etapa 1, LBA 1 etapa 2, LBA KERNEL_LBA el kernel.
 all: $(OS_IMAGE)
@@ -466,6 +468,10 @@ OVMF_VARS ?= $(firstword $(wildcard \
 OVMF_BIOS ?=
 export OVMF_CODE OVMF_VARS OVMF_BIOS
 
+# Qué firmware eligió el Makefile (lo imprime el job de CI antes de las pruebas).
+ovmf-info:
+	@echo "OVMF_CODE=$(OVMF_CODE)"; echo "OVMF_VARS=$(OVMF_VARS)"; echo "OVMF_BIOS=$(OVMF_BIOS)"
+
 $(UEFI_STUB): src/uefi/loader.lap $(COPIHUE) | $(BUILD_DIR)
 	mkdir -p $(UEFI_DIR)
 	$(abspath $(COPIHUE)) --flat 0x1000 -S -o $(UEFI_DIR)/loader.asm $<
@@ -513,6 +519,10 @@ qemu-uefi: qemu-uefi-check $(UEFI_EFI) $(UEFI_KERNEL)
 qemu-uefi-test: qemu-uefi-check $(UEFI_EFI) $(UEFI_KERNEL)
 	bash $(TESTS_DIR)/qemu_uefi_test.sh $(UEFI_ESP)
 
+# HR-03: bajo UEFI (q35, sin IDE) disk y fs por AHCI a través de blk.lap.
+qemu-uefi-blk-test: qemu-uefi-check $(UEFI_EFI) $(UEFI_KERNEL)
+	bash $(TESTS_DIR)/qemu_uefi_blk_test.sh $(UEFI_ESP)
+
 # Consola curses: QEMU entrega el teclado al controlador PS/2 que lee el shell.
 qemu: $(OS_IMAGE) $(DATA_IMG)
 	qemu-system-$(ARCH) $(QEMU_CPU) $(QEMU_DRIVES) -display curses
@@ -538,9 +548,10 @@ qemu-test: $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_fs3_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_ata_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_ahci_test.sh $(OS_IMAGE)
+	$(TESTS_DIR)/qemu_ahci_fs_test.sh $(OS_IMAGE)
 	$(MAKE) uefi-pe-test
-	@if [ -n "$(OVMF_CODE)$(OVMF_BIOS)" ]; then $(MAKE) qemu-uefi-test; \
-	  else echo "SKIP qemu-uefi-test: no hay firmware UEFI (OVMF_CODE/OVMF_BIOS); el kernel NO se arrancó por UEFI"; fi
+	@if [ -n "$(OVMF_CODE)$(OVMF_BIOS)" ]; then $(MAKE) qemu-uefi-test qemu-uefi-blk-test; \
+	  else echo "SKIP qemu-uefi-test, qemu-uefi-blk-test: no hay firmware UEFI (OVMF_CODE/OVMF_BIOS); el kernel NO se arrancó por UEFI"; fi
 	$(TESTS_DIR)/qemu_cpu_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_cpu_test.sh $(OS_IMAGE) "-icount shift=4"
 	COPIHUE=$(abspath $(COPIHUE)) $(TESTS_DIR)/stage2_big_test.sh $(BUILD_DIR)
@@ -559,6 +570,10 @@ qemu-udp-test: $(OS_IMAGE)
 # BIOS+IDE como siempre y cuelga un controlador AHCI con un disco SATA.
 qemu-ahci-test: $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_ahci_test.sh $(OS_IMAGE)
+
+# HR-03: disk y fs sobre el disco SATA por blk (tests/qemu_ahci_fs_test.sh).
+qemu-ahci-fs-test: $(OS_IMAGE)
+	$(TESTS_DIR)/qemu_ahci_fs_test.sh $(OS_IMAGE)
 
 # Solo scripts/mkaxe.sh (EX-02): cabeceras AXE1 y AXE2, relleno, bss y rechazos.
 # No arranca QEMU.

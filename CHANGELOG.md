@@ -8,6 +8,52 @@ para ese commit es `legacy-tempo`.
 
 ## 0.8
 
+HR-03, AHCI detrás de `blk.lap`. Pin de Copihue sin cambios (v0.44.4). (1) `blk`
+tiene un backend (`blk_dev`: ATA o AHCI): `blk_rd`/`blk_wr` reemplazan a
+`ata_read`/`ata_write` en `blk_read`/`blk_write`, `disk` y `fs`; `blk_open` elige
+ATA primero y AHCI si no hay ATA (q35 no tiene IDE), `blk_set_dev` fuerza uno.
+Comando `blk [ata|ahci]`; `disk` imprime `ahci ok` en lugar de `ata ok` con el
+backend AHCI. El layout de bloques (datos+meta, CRC) no cambió. (2) Pruebas:
+`make qemu-ahci-fs-test` (`disk` y `fs` sobre un SATA de datos, con el anfitrión
+leyendo `AFS1`/`ABLK` del archivo) y `make qemu-uefi-blk-test` (lo mismo bajo
+q35 + OVMF sin IDE, y fallo limpio sin disco; SKIP en `qemu-test` si no hay
+OVMF). (3) `docs/hr03-ahci-blk.md`. Falta: elegir puerto/controlador AHCI,
+multi-sector, interrupciones, NVMe, GOP, hardware real. Kernel: 535691 bytes,
+1047 sectores (antes 535528 y 1046).
+
+HR-03d, CI de `qemu-uefi-blk-test`. (1) `ahci_init` prueba cada controlador
+AHCI del bus 0 hasta dar con un disco, y `ahci_find_port` reinicia con COMRESET
+y espera el enlace (≤ 200 ms) en un puerto sin DET 3. (2) La prueba UEFI cuelga
+el SATA de un `-device ahci` explícito, como `qemu-ahci-fs-test`. No se pudo
+reproducir el fallo de Ubuntu aquí (ver RESUMEN).
+
+HR-03e, diagnóstico del CI rojo de `qemu-uefi-blk-test`. (1) Si `ahci_init`
+falla dentro de `blk_set_dev(2)`, `ahci_dbg` imprime líneas `ahci dbg ...`: el
+código real de AHCI (`blk_open` devuelve el del ATA, 3, y lo ocultaba), la
+etapa de `ahci_init`, la página de DMA, y por cada controlador dispositivo,
+función, ID, ABAR, CAP, GHC, PI, BOHC y por puerto SSTS, SIG, CMD, TFD, SERR.
+Solo sale en fallo. (2) `ahci_handoff`: traspaso BIOS/SO (BOHC) si CAP2.BOH.
+(3) CI instala `ovmf` explícito, lista `/usr/share/OVMF` y falla si el Makefile
+no halla firmware (`make ovmf-info`). Causa del `dev=none` en Ubuntu: sin
+confirmar (ver RESUMEN).
+
+HR-03f, `qemu-uefi-blk-test` en el CI (Ubuntu, QEMU 8.2.2, OVMF 2024.02).
+Diagnóstico de HR-03e: puerto con enlace (`ssts=0x113`) pero `sig=0xffffffff`,
+`tfd=0x7f`, `cmd=0x6`. `r=3 stage=3` era "ningún puerto con disco SATA" en
+`ahci_find_port`. Causa probable (no reproducida aquí): el sondeo leía PxSIG
+con PxCMD.FRE=0, y sin FRE el HBA no recibe el FIS D2H que fija la firma; el
+firmware dejó el puerto así. (1) `ahci_probe`: parar, CLB/FB, `FRE|SUD|POD`, esperar FR,
+COMRESET con FRE si no hay enlace, esperar TFD sin BSY/DRQ (tras un reset vale
+0x7F hasta el D2H; 2 s, y otro COMRESET + 4 s), y recién entonces exigir firma 0x101. La página
+de DMA se pide antes de sondear (etapas de `ahci_dbg` renumeradas: 3 página,
+4 puerto, 6 TFD/ST). (2) Tiempos con el PIT (`ahci_spinoff`): COMRESET de 2 ms
+en vez de un lazo de lecturas, handoff BOHC de 2 s. (3) `ahci_map_bar` rechaza
+un HBA cuyo CAP lee todo unos. (4) El kernel debe quedar con el texto bajo
+0x80000 (4 KiB de relleno más y `stage2_big_test` no tiene dónde comparar):
+quedan 7 bytes de margen. Los dos controladores con el mismo ABAR
+del diagnóstico no eran un eco PCI: `ahci_map_bar` asigna `AHCI_ABAR` a cada
+uno y apaga el anterior antes de pasar al siguiente.
+
 EX-09, pin de Copihue v0.44.4 (`dd708bc`). (1) `f(x)[0] = v` y `*f(x) = v` con
 `-> *volatile u32` emiten el store volatile al ancho del pointee; asignar a un
 no-lvalue (`f(1) = 5`) es error de compilación con archivo y línea. Cierra el

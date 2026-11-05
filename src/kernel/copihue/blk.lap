@@ -1,6 +1,14 @@
-// Bloques de 512 B sobre el esclavo ATA. El bloque n vive en dos
-// sectores: datos en LBA 2*n, metadatos en LBA 2*n+1.
+// Bloques de 512 B sobre un disco de sectores de 512 B. El bloque n vive en
+// dos sectores: datos en LBA 2*n, metadatos en LBA 2*n+1.
 //
+// Dispositivo (HR-03). blk_rd/blk_wr mandan el sector al backend activo:
+//   1 ATA   el esclavo IDE (ata.lap), como siempre
+//   2 AHCI  el primer disco SATA (ahci.lap)
+// blk_open elige si todavía no hay uno: ATA primero (el camino BIOS no
+// cambia, aunque haya un SATA colgado) y, si no hay unidad ATA, AHCI (q35 no
+// tiene IDE). blk_set_dev(n) fuerza uno; si falla, el que había sigue activo.
+// blk_sectors es la capacidad del activo; 0 mientras no haya ninguno.
+
 // Metadatos (el resto del sector va en cero):
 //   0..3   magic ABLK (41 42 4C 4B)
 //   4..7   número de bloque, little-endian
@@ -12,10 +20,63 @@
 //
 // blk_write actualiza el checksum. blk_read lo compara y, si no
 // calza el magic, el número o el CRC, devuelve 5. Los otros códigos
-// son los de ata.lap (1 timeout, 2 ERR/DF, 3 sin unidad, 4 LBA malo).
+// son los de ata.lap y ahci.lap (1 timeout, 2 ERR/DF, 3 sin unidad, 4 LBA
+// malo; en AHCI 5 también es BAR/DMA inutilizable).
 
 let blk_data: [u8; 512];
 let blk_meta: [u8; 512];
+let blk_raw: [u8; 512];
+let blk_dev: i64 = 0;
+let blk_sectors: i64 = 0;
+
+fn blk_set_dev(d: i64) -> i64 {
+    let r = 3;
+    if (d == 1) {
+        r = ata_identify();
+        if (r == 0) {
+            blk_dev = 1;
+            blk_sectors = ata_sectors;
+        }
+    } else if (d == 2) {
+        r = ahci_init();
+        if (r == 0) {
+            blk_dev = 2;
+            blk_sectors = ahci_sectors;
+        } else {
+            // Solo en fallo: blk_open devuelve el código del ATA (3) y el de
+            // AHCI se perdería. Líneas `ahci dbg ...` (ver ahci_dbg).
+            ahci_dbg(r);
+        }
+    }
+    return r;
+}
+
+// 0 si hay backend (ya elegido o recién elegido); si no, el código del ATA.
+fn blk_open() -> i64 {
+    if (blk_dev != 0) { return 0; }
+    let r = blk_set_dev(1);
+    if (r == 0) { return 0; }
+    if (blk_set_dev(2) == 0) { return 0; }
+    return r;
+}
+
+fn blk_rd(lba: i64, dst: *u8) -> i64 {
+    if (blk_dev == 1) { return ata_read(lba, dst); }
+    if (blk_dev == 2) { return ahci_read(lba, dst); }
+    return 3;
+}
+
+fn blk_wr(lba: i64, src: *u8) -> i64 {
+    if (blk_dev == 1) { return ata_write(lba, src); }
+    if (blk_dev == 2) { return ahci_write(lba, src); }
+    return 3;
+}
+
+fn blk_dev_name() -> *u8 {
+    if (blk_dev == 1) { return "ata"; }
+    if (blk_dev == 2) { return "ahci"; }
+    return "none";
+}
 
 // 12 bytes al frente del sector de metadatos. El resto queda en cero.
 // sizeof tiene que coincidir con docs/disco.md.
@@ -56,9 +117,9 @@ fn crc32(p: *u8, n: i64) -> i64 {
 
 fn blk_range(n: i64) -> i64 {
     if (n < 0) { return 4; }
-    if (ata_sectors < 2) { return 3; }
+    if (blk_sectors < 2) { return 3; }
     // Cada bloque gasta dos sectores. El último par tiene que entrar.
-    if (n > (ata_sectors - 2) / 2) { return 4; }
+    if (n > (blk_sectors - 2) / 2) { return 4; }
     return 0;
 }
 
@@ -87,8 +148,8 @@ fn blk_write(n: i64) -> i64 {
     if (r == 0) {
         let sum = crc32(blk_data, 512);
         blk_put_meta(n, sum);
-        r = ata_write(n * 2, blk_data);
-        if (r == 0) { r = ata_write(n * 2 + 1, blk_meta); }
+        r = blk_wr(n * 2, blk_data);
+        if (r == 0) { r = blk_wr(n * 2 + 1, blk_meta); }
     }
     if (tr_en[8] != 0) { trace_hit(8, proc_pid[cur_i], n, r); }
     return r;
@@ -101,9 +162,9 @@ fn blk_read(n: i64) -> i64 {
     }
     let r = blk_range(n);
     if (r == 0) {
-        r = ata_read(n * 2, blk_data);
+        r = blk_rd(n * 2, blk_data);
         if (r == 0) {
-            r = ata_read(n * 2 + 1, blk_meta);
+            r = blk_rd(n * 2 + 1, blk_meta);
             if (r == 0) {
                 let m: *BlkMeta = blk_mp();
                 if (m.magic[0] != 0x41 || m.magic[1] != 0x42) { r = 5; }
@@ -125,37 +186,51 @@ fn disk_say(msg: *u8, code: i64) -> i64 {
     return code;
 }
 
+// "<backend> <qué> <código>", p. ej. "ata fail 1" o "ahci fail 3".
+fn disk_dev_say(what: *u8, code: i64) -> i64 {
+    puts(blk_dev_name());
+    putc(' ');
+    puts(what);
+    putc(' ');
+    put_int(code);
+    putc('\n');
+    return code;
+}
+
 // identify, un sector de ida y vuelta, un bloque con CRC y un byte
-// pisado con ata_write (sin pasar por blk). Las líneas que mira
-// qemu-test son exactamente: ata ok, blk ok, blk corrupt detected.
+// pisado con blk_wr (sin pasar por blk_write). Las líneas que mira
+// qemu-test son: ata ok (ahci ok con el backend AHCI), blk ok, blk corrupt
+// detected. Sin ningún backend: "ata fail <código del ATA>".
 fn disk_test() -> i64 {
-    let id = ata_identify();
+    let id = blk_open();
     if (id != 0) { return disk_say("ata fail", id); }
-    if (ata_sectors < 3) { return disk_say("ata fail", 3); }
+    if (blk_sectors < 3) { return disk_dev_say("fail", 3); }
 
     let i = 0;
     while (i < 512) {
-        ata_id[i] = ((i + 0x3C) & 255) as u8;
+        blk_raw[i] = ((i + 0x3C) & 255) as u8;
         i = i + 1;
     }
-    let wr = ata_write(2, ata_id);
-    if (wr != 0) { return disk_say("ata fail", wr); }
+    let wr = blk_wr(2, blk_raw);
+    if (wr != 0) { return disk_dev_say("fail", wr); }
     i = 0;
     while (i < 512) {
-        ata_id[i] = 0;
+        blk_raw[i] = 0;
         i = i + 1;
     }
-    let rd = ata_read(2, ata_id);
-    if (rd != 0) { return disk_say("ata fail", rd); }
+    let rd = blk_rd(2, blk_raw);
+    if (rd != 0) { return disk_dev_say("fail", rd); }
     i = 0;
     while (i < 512) {
-        if ((ata_id[i] & 255) != ((i + 0x3C) & 255)) {
-            puts("ata mismatch\n");
+        if ((blk_raw[i] & 255) != ((i + 0x3C) & 255)) {
+            puts(blk_dev_name());
+            puts(" mismatch\n");
             return 6;
         }
         i = i + 1;
     }
-    puts("ata ok\n");
+    puts(blk_dev_name());
+    puts(" ok\n");
 
     let vec: *u8 = "123456789";
     if (crc32(vec, 9) != 0xCBF43926) {
@@ -189,7 +264,7 @@ fn disk_test() -> i64 {
 
     // Salta blk: el sector de datos queda distinto y el de metadatos no.
     blk_data[100] = (blk_data[100] ^ 0xFF) & 255;
-    let cw = ata_write(0, blk_data);
+    let cw = blk_wr(0, blk_data);
     if (cw != 0) { return disk_say("blk corrupt miss", cw); }
     let cr = blk_read(0);
     if (cr == 5) {
@@ -197,4 +272,24 @@ fn disk_test() -> i64 {
         return 0;
     }
     return disk_say("blk corrupt miss", cr);
+}
+
+// `blk [ata|ahci]`: sin argumento elige (blk_open) y dice cuál quedó; con
+// argumento (1 ATA, 2 AHCI) fuerza ese backend. Líneas: `blk dev=<ata|ahci>
+// sectors=<n>`; si falla, `blk dev=<el que había>` y `blk fail <código>`.
+// Cambiar de backend con un fs ya montado no es seguro: el fs no se entera.
+fn blk_demo(want: i64) -> i64 {
+    let r = 0;
+    if (want == 0) { r = blk_open(); }
+    else { r = blk_set_dev(want); }
+    puts("blk dev=");
+    puts(blk_dev_name());
+    if (r != 0) {
+        putc('\n');
+        return disk_say("blk fail", r);
+    }
+    puts(" sectors=");
+    put_int(blk_sectors);
+    putc('\n');
+    return 0;
 }

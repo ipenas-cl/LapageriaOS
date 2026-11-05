@@ -67,7 +67,8 @@ fn cmd_help() -> i64 {
     puts("  pmm             allocate and free physical pages\n");
     puts("  user            enter ring 3 and syscall\n");
     puts("  sched           two processes, separate pages\n");
-    puts("  disk            data disk checksum\n");
+    puts("  disk            data disk checksum (backend de blk: ATA o AHCI)\n");
+    puts("  blk [ata|ahci]  elige/muestra el backend de bloques (fs y disk)\n");
     puts("  ahci [lba]      controlador AHCI y lectura de un sector SATA\n");
     puts("  ahci w <lba> [p]  escribe un sector SATA (byte i = p+i) y lo verifica\n");
     puts("  nvme            detecta un controlador NVMe (sin driver)\n");
@@ -404,6 +405,22 @@ fn run_command() -> i64 {
     if (cmd_is("sched")) { sched_demo(); return 0; }
     // Disco de datos: identify, bloque con CRC y un byte corrompido.
     if (cmd_is("disk")) { disk_test(); return 0; }
+    // Backend de bloques (HR-03): `blk` elige y dice cuál; `blk ata|ahci` lo fuerza.
+    if (cmd_is("blk")) {
+        parse_pos = 3;
+        while (parse_pos < line_len && line[parse_pos] == ' ') { parse_pos++; }
+        if (parse_pos >= line_len) { blk_demo(0); return 0; }
+        if (line[parse_pos] == 'a' && parse_pos + 1 < line_len && line[parse_pos + 1] == 't') {
+            blk_demo(1);
+            return 0;
+        }
+        if (line[parse_pos] == 'a' && parse_pos + 1 < line_len && line[parse_pos + 1] == 'h') {
+            blk_demo(2);
+            return 0;
+        }
+        puts("usage: blk [ata|ahci]\n");
+        return 0;
+    }
     // AHCI (HR-01): detecta el controlador y lee un sector. `ahci [lba]`.
     if (cmd_is("ahci")) {
         parse_pos = 4;
