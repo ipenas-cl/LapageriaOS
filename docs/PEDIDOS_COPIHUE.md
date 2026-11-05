@@ -74,6 +74,46 @@ Siguen abiertos de EX-07: el costo de embeber programas en el kernel (el
 kernel pasó de 523044 a 531240 bytes por `cal`), el `hint: use 'as u8'` y el
 aviso de nasm 3.x.
 
+## HR-02 (cargador UEFI y AHCI con escritura), con Copihue v0.44.3
+
+El pin no cambia y no se parchó el lenguaje. `f(x)[0] = v` **sigue ABIERTO**
+(HR-01 punto 1): `ahci_cmd` y el cargador usan punteros locales (`let p: *u32 =
+…; p[0] = v;`). Los pedidos 3 a 5 de HR-01 (salida PE/EFI, ABI MS x64, datos
+relativos a RIP en `--flat`) siguen abiertos y siguen siendo el rodeo de HR-01:
+`pe.asm` empaqueta y los `naked fn` hacen de puente. Lo nuevo que apareció:
+
+1. **ABI MS x64 con más de 4 argumentos.** `efi_call(fp, a, b, c, d, e)` es un
+   `naked fn` que mueve SysV → MS y pasa el quinto argumento en `[rsp+32]`
+   (`OpenVolume`, `Open`, `GetMemoryMap` y `AllocatePages` lo necesitan). Si
+   aparece `extern "ms64"` / `efi fn` (HR-01 punto 4) tiene que cubrir los
+   argumentos de pila, no solo `rcx, rdx, r8, r9`.
+2. **Dirección de un bloque `data` desde código Copihue.** En `--flat` no hay
+   forma de escribir `&bloque` de modo que salga `lea reg, [rel bloque]`. Se
+   rodeó con un `naked fn` de una línea por símbolo (`efi_guid_lip`,
+   `efi_guid_sfs`, `efi_name_kernel`, `efi_tramp_addr`…) y con una tabla de cadenas
+   recorrida en asm (`efi_str(n)`). No se probó `&bloque` en un `--flat` PIC; este
+   pedido es el de HR-01 punto 5 visto desde el otro lado.
+3. **Un bloque de código con tamaño.** El trampolín que corre con las tablas de
+   páginas nuevas se copia a `0x7000` (el PE no está mapeado allí). Hoy es un
+   `naked fn` con una sola cadena `asm("…; …")` de unas 25 instrucciones: `;`
+   separa instrucciones (no hay comentarios dentro), las etiquetas van dentro
+   de la cadena, la GDT son `dq` en la misma cadena y el tamaño sale de una
+   etiqueta final (`lea rax, [rel efi_tramp_end]`). Se pide `asm` de varias
+   líneas o un `sizeof(fn)` / atributo para el final de una función `naked`, y una
+   forma de decir «este código se enlaza para correr en 0x7000 pero vive aquí».
+4. **Parámetros de salida de un servicio** (`HandleProtocol(h, guid, &x)`).
+   No se probó `&local`: el cargador usa un bloque de 512 bytes reservado en
+   `_start` (`sub rsp, 552`) que se pasa como `sa` y se indexa como `*i64`. Si
+   `&local` funciona en `--flat` y no se usa, el rodeo sobra; falta confirmarlo.
+5. **Cada función reserva un marco de 64 a 96 bytes** (`__frame_*`), también las de
+   dos líneas como `efi_putc`. No estorba (el cargador pesa 5858 bytes), pero
+   cuenta para quien quiera un cargador de una página.
+
+Todo lo demás compiló a la primera: el `asm()` de los `naked fn` con etiquetas
+internas, `*u64` / `*u32` / `*u16` como punteros de E/S, 6 argumentos en
+`efi_call`, `0 - 1` como `0xFFFFFFFFFFFFFFFF`. El cargador se probó solo en
+QEMU + OVMF.
+
 ## HR-01 (UEFI y AHCI), con Copihue v0.44.2
 
 El pin no cambia. Todo **ABIERTO**; HR-01 no cerró ningún pedido anterior.

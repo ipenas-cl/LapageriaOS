@@ -24,10 +24,10 @@
 #              necesita cc para scripts/mkv1.c).
 #   qemu-ata-test  Solo la prueba del timeout ATA con -icount shift=4 (tests/qemu_ata_test.sh).
 #   qemu-ahci-test  Solo la lectura de sectores por AHCI (tests/qemu_ahci_test.sh).
-#   uefi-image  Arma build/uefi/esp/EFI/BOOT/BOOTX64.EFI (stub UEFI en Copihue, HR-01).
+#   uefi-image  Arma la ESP build/uefi/esp: EFI/BOOT/BOOTX64.EFI (cargador UEFI en Copihue, HR-02) y kernel.bin.
 #   uefi-pe-test  Solo la comprobación estática del PE32+ (sin QEMU).
-#   qemu-uefi  Arranca el stub UEFI en QEMU con OVMF (OVMF_CODE/OVMF_VARS/OVMF_BIOS; falla si no hay).
-#   qemu-uefi-test  Solo el arranque UEFI automatizado (tests/qemu_uefi_test.sh).
+#   qemu-uefi  Arranca el kernel por UEFI en QEMU con OVMF (OVMF_CODE/OVMF_VARS/OVMF_BIOS; falla si no hay).
+#   qemu-uefi-test  Solo el arranque UEFI del kernel automatizado (tests/qemu_uefi_test.sh).
 #   qemu-cpu-test  Solo la cuota de CPU por zona (tests/qemu_cpu_test.sh), normal y con -icount shift=4.
 #   debug      Igual que qemu, y espera a gdb en tcp::1234 (-s -S).
 #   clean      Borra build/.
@@ -438,14 +438,16 @@ $(TRAZA_IMG): src/user/traza.lap scripts/mkaxe.sh $(COPIHUE) | $(BUILD_DIR)
 	$(abspath $(COPIHUE)) --flat 0x400000 -o $(TRAZA_BIN) src/user/traza.lap
 	scripts/mkaxe.sh $(TRAZA_BIN) $(TRAZA_AXE) $@ traza_fill
 
-# UEFI (HR-01). Solo un stub: una aplicación EFI en Copihue (src/uefi/stub.lap)
-# envuelta en PE32+ por src/uefi/pe.asm. No carga el kernel todavía; ver
-# docs/hr01-uefi-ahci.md. El stub se compila con --flat 0x1000 (RVA de .text) y es
+# UEFI (HR-01 stub, HR-02 cargador). Una aplicación EFI en Copihue
+# (src/uefi/loader.lap) envuelta en PE32+ por src/uefi/pe.asm. Lee kernel.bin de
+# la ESP, sale de los servicios de arranque y salta al kernel; ver
+# docs/hr02-uefi-ahci.md. Se compila con --flat 0x1000 (RVA de .text) y es
 # independiente de la posición. La ESP es un directorio (fat:rw:), sin mkfs.
 UEFI_DIR = $(BUILD_DIR)/uefi
-UEFI_STUB = $(UEFI_DIR)/stub.bin
+UEFI_STUB = $(UEFI_DIR)/loader.bin
 UEFI_ESP = $(UEFI_DIR)/esp
 UEFI_EFI = $(UEFI_ESP)/EFI/BOOT/BOOTX64.EFI
+UEFI_KERNEL = $(UEFI_ESP)/kernel.bin
 
 # Firmware: OVMF_CODE (+ OVMF_VARS) o OVMF_BIOS a mano, o la primera ruta conocida.
 OVMF_CODE ?= $(firstword $(wildcard \
@@ -464,37 +466,42 @@ OVMF_VARS ?= $(firstword $(wildcard \
 OVMF_BIOS ?=
 export OVMF_CODE OVMF_VARS OVMF_BIOS
 
-$(UEFI_STUB): src/uefi/stub.lap $(COPIHUE) | $(BUILD_DIR)
+$(UEFI_STUB): src/uefi/loader.lap $(COPIHUE) | $(BUILD_DIR)
 	mkdir -p $(UEFI_DIR)
-	$(abspath $(COPIHUE)) --flat 0x1000 -S -o $(UEFI_DIR)/stub.asm $<
+	$(abspath $(COPIHUE)) --flat 0x1000 -S -o $(UEFI_DIR)/loader.asm $<
 	$(abspath $(COPIHUE)) --flat 0x1000 -o $@ $<
-	@test $$(wc -c < $@ | tr -d ' ') -le 4096 || { echo "uefi stub: pasa de una página"; rm -f $@; exit 1; }
+	@test $$(wc -c < $@ | tr -d ' ') -le 32768 || { echo "uefi loader: pasa de 32 KiB"; rm -f $@; exit 1; }
 
 $(UEFI_EFI): $(UEFI_STUB) src/uefi/pe.asm
 	mkdir -p $(dir $@)
 	@set -eu; \
 	  size=$$(wc -c < $(UEFI_STUB) | tr -d ' '); \
 	  raw=$$(( (size + 511) / 512 * 512 )); \
-	  echo "uefi stub: $$size bytes (.text $$raw en el archivo)"; \
+	  echo "uefi loader: $$size bytes (.text $$raw en el archivo)"; \
 	  nasm -f bin -DSTUB_FILE='"$(UEFI_STUB)"' -DSTUB_SIZE=$$size -DTEXT_RAW=$$raw -o $@ src/uefi/pe.asm
 
-# build/uefi/esp/EFI/BOOT/BOOTX64.EFI
-uefi-image: $(UEFI_EFI)
+# kernel.bin en la raíz de la ESP: el mismo binario plano del camino BIOS.
+$(UEFI_KERNEL): $(KERNEL)
+	mkdir -p $(UEFI_ESP)
+	cp $(KERNEL) $@
+
+# build/uefi/esp/EFI/BOOT/BOOTX64.EFI y build/uefi/esp/kernel.bin
+uefi-image: $(UEFI_EFI) $(UEFI_KERNEL)
 
 # Comprobación estática del PE32+ (sin QEMU ni OVMF). Entra en qemu-test.
 uefi-pe-test: $(UEFI_EFI)
-	bash $(TESTS_DIR)/uefi_pe_test.sh $(UEFI_EFI) $(UEFI_STUB) $(UEFI_DIR)/stub.asm
+	bash $(TESTS_DIR)/uefi_pe_test.sh $(UEFI_EFI) $(UEFI_STUB) $(UEFI_DIR)/loader.asm
 
-# Arranca el stub en QEMU con OVMF. Falla con un mensaje claro si no hay firmware.
+# Arranca el cargador y el kernel en QEMU con OVMF. Falla con un mensaje claro si no hay firmware.
 qemu-uefi-check:
 	@if [ -z "$(OVMF_CODE)$(OVMF_BIOS)" ]; then \
 	  echo "qemu-uefi: no encuentro firmware UEFI (OVMF/EDK2)."; \
 	  echo "  Instálalo y pasa OVMF_CODE=/ruta/OVMF_CODE.fd [OVMF_VARS=/ruta/OVMF_VARS.fd]"; \
-	  echo "  o OVMF_BIOS=/ruta/OVMF.fd. Ver docs/hr01-uefi-ahci.md."; \
+	  echo "  o OVMF_BIOS=/ruta/OVMF.fd. Ver docs/hr02-uefi-ahci.md."; \
 	  exit 1; \
 	fi
 
-qemu-uefi: qemu-uefi-check $(UEFI_EFI)
+qemu-uefi: qemu-uefi-check $(UEFI_EFI) $(UEFI_KERNEL)
 	@set -eu; \
 	  if [ -n "$(OVMF_BIOS)" ]; then fw="-bios $(OVMF_BIOS)"; \
 	  else \
@@ -503,7 +510,7 @@ qemu-uefi: qemu-uefi-check $(UEFI_EFI)
 	  fi; \
 	  qemu-system-$(ARCH) -machine q35 -m 256 $$fw -drive format=raw,file=fat:rw:$(UEFI_ESP) -net none -nographic -no-reboot
 
-qemu-uefi-test: qemu-uefi-check $(UEFI_EFI)
+qemu-uefi-test: qemu-uefi-check $(UEFI_EFI) $(UEFI_KERNEL)
 	bash $(TESTS_DIR)/qemu_uefi_test.sh $(UEFI_ESP)
 
 # Consola curses: QEMU entrega el teclado al controlador PS/2 que lee el shell.
@@ -533,7 +540,7 @@ qemu-test: $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_ahci_test.sh $(OS_IMAGE)
 	$(MAKE) uefi-pe-test
 	@if [ -n "$(OVMF_CODE)$(OVMF_BIOS)" ]; then $(MAKE) qemu-uefi-test; \
-	  else echo "SKIP qemu-uefi-test: no hay firmware UEFI (OVMF_CODE/OVMF_BIOS); el stub UEFI NO se arrancó"; fi
+	  else echo "SKIP qemu-uefi-test: no hay firmware UEFI (OVMF_CODE/OVMF_BIOS); el kernel NO se arrancó por UEFI"; fi
 	$(TESTS_DIR)/qemu_cpu_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_cpu_test.sh $(OS_IMAGE) "-icount shift=4"
 	COPIHUE=$(abspath $(COPIHUE)) $(TESTS_DIR)/stage2_big_test.sh $(BUILD_DIR)

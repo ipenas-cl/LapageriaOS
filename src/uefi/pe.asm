@@ -1,15 +1,15 @@
-; Envoltorio PE32+ del stub UEFI (HR-01). Solo empaqueta: el código es
-; build/uefi/stub.bin, compilado de src/uefi/stub.lap con `copihue --flat 0x1000`.
+; Envoltorio PE32+ del cargador UEFI (HR-01 stub, HR-02 cargador). Solo empaqueta: el código es
+; build/uefi/loader.bin, compilado de src/uefi/loader.lap con `copihue --flat 0x1000`.
 ;
-;   nasm -f bin -DSTUB_FILE='"build/uefi/stub.bin"' -DSTUB_SIZE=<bytes> \
+;   nasm -f bin -DSTUB_FILE='"build/uefi/loader.bin"' -DSTUB_SIZE=<bytes> \
 ;        -DTEXT_RAW=<bytes redondeado a 512> -o BOOTX64.EFI src/uefi/pe.asm
 ;
 ; Disposición (FileAlignment 0x200, SectionAlignment 0x1000):
 ;   file 0x000  cabeceras (DOS, PE, opcional, 2 secciones), relleno hasta 0x200
 ;   file 0x200  .text   RVA 0x1000  el stub; AddressOfEntryPoint = 0x1000
-;   file +TEXT_RAW  .reloc  RVA 0x2000  un bloque vacío (una entrada ABSOLUTE)
+;   file +TEXT_RAW  .reloc  RVA = página que sigue a .text  un bloque vacío (una entrada ABSOLUTE)
 ; Subsistema 10 (EFI application), máquina x86-64, sin relocaciones reales
-; porque el stub es independiente de la posición.
+; porque el cargador es independiente de la posición.
 
 bits 64
 default rel
@@ -20,8 +20,9 @@ default rel
 
 IMAGE_BASE      equ 0x0000000140000000
 TEXT_RVA        equ 0x1000
-RELOC_RVA       equ 0x2000
-SIZE_OF_IMAGE   equ 0x3000
+; .reloc va en la página que sigue a .text, sea cual sea su tamaño.
+RELOC_RVA       equ TEXT_RVA + ((STUB_SIZE + 0xFFF) & ~0xFFF)
+SIZE_OF_IMAGE   equ RELOC_RVA + 0x1000
 HEADERS_RAW     equ 0x200
 
 ; --- DOS ---------------------------------------------------------------
