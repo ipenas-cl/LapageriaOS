@@ -128,6 +128,63 @@ ok "más de 16 páginas, texto de 65537 y datos que desbordan: rechazados"
 "$MK" "$TMP/t.bin" "$TMP/e7.axe" "$TMP/e7.lap" "1mala" 2> /dev/null > /dev/null && fail "nombre de función malo debía fallar"
 ok "payload vacío, datos vacíos o ausentes, bss malo, opción y nombre malos: rechazados"
 
+# 10. EX-05, -a: un AXE2 que armó el compilador (copihue --flat --axe2). Aquí se
+# arma a mano con printf, con la forma de la salida del compilador: texto
+# redondeado a páginas, entrada = dirección virtual de _start, datos pegados
+# detrás del texto. mkaxe.sh no lo toca: solo lo valida y deja el .lap.
+oct3() { printf '%03o' "$1"; }
+le32() { printf "\\$(oct3 $(($1 & 255)))\\$(oct3 $((($1 >> 8) & 255)))\\$(oct3 $((($1 >> 16) & 255)))\\$(oct3 $((($1 >> 24) & 255)))"; }
+# ccaxe archivo imagen entrada texto memoria reservado-byte0 magic
+ccaxe() {
+    {
+        printf '%s' "${7:-AXE2}"
+        le32 "$2"
+        le32 "$3"; le32 0
+        le32 "$4"
+        le32 "$5"
+        le32 "${6:-0}"; le32 0
+        head -c "$2" /dev/zero | tr '\0' 'x'
+    } > "$1"
+}
+ccaxe "$TMP/c1.axe" 4108 4194304 4096 8192
+cp "$TMP/c1.axe" "$TMP/c1.orig"
+"$MK" -a "$TMP/c1.axe" "$TMP/c1.lap" cc_fill > /dev/null || fail "-a: AXE2 válido"
+cmp -s "$TMP/c1.axe" "$TMP/c1.orig" || fail "-a: mkaxe.sh tocó el AXE2 del compilador"
+grep -q '^fn cc_fill(p: \*u8) -> i64 {$' "$TMP/c1.lap" || fail "-a: nombre de la función"
+grep -q 'return 4140;' "$TMP/c1.lap" || fail "-a: return"
+grep -q 'p\[z\] = 0;' "$TMP/c1.lap" || fail "-a: sin limpieza del buffer"
+ok "-a: el AXE2 del compilador queda tal cual y el .lap lo reproduce (4140 bytes)"
+# la entrada en la segunda página de texto (align(4096)) es válida
+ccaxe "$TMP/c2.axe" 8204 4198400 8192 12288
+"$MK" -a "$TMP/c2.axe" "$TMP/c2.lap" > /dev/null || fail "-a: entrada en la segunda página de texto"
+ok "-a: entrada 0x401000 con 2 páginas de texto: aceptada"
+ccaxe "$TMP/c3.axe" 4108 4198400 4096 8192
+"$MK" -a "$TMP/c3.axe" "$TMP/c3.lap" 2> "$TMP/err" > /dev/null && fail "-a: entrada fuera del texto debía fallar"
+grep -q 'fuera del texto' "$TMP/err" || fail "-a entrada: mensaje $(cat "$TMP/err")"
+ccaxe "$TMP/c4.axe" 4108 4194304 4096 8192 1
+"$MK" -a "$TMP/c4.axe" "$TMP/c4.lap" 2> /dev/null > /dev/null && fail "-a: reservado distinto de cero debía fallar"
+ccaxe "$TMP/c5.axe" 4108 4194304 4096 4000
+"$MK" -a "$TMP/c5.axe" "$TMP/c5.lap" 2> /dev/null > /dev/null && fail "-a: memoria menor que la imagen debía fallar"
+ccaxe "$TMP/c6.axe" 4108 4194304 8192 8192
+"$MK" -a "$TMP/c6.axe" "$TMP/c6.lap" 2> /dev/null > /dev/null && fail "-a: texto mayor que la imagen debía fallar"
+ccaxe "$TMP/c7.axe" 4108 4194304 4096 8192 0 AXE1
+"$MK" -a "$TMP/c7.axe" "$TMP/c7.lap" 2> /dev/null > /dev/null && fail "-a: magic AXE1 debía fallar"
+ccaxe "$TMP/c8.axe" 4108 4194304 4096 70000
+"$MK" -a "$TMP/c8.axe" "$TMP/c8.lap" 2> /dev/null > /dev/null && fail "-a: más de 16 páginas debía fallar"
+head -c 3000 "$TMP/c1.axe" > "$TMP/c9.axe"
+"$MK" -a "$TMP/c9.axe" "$TMP/c9.lap" 2> /dev/null > /dev/null && fail "-a: archivo corto debía fallar"
+"$MK" -a -b 100 "$TMP/c1.axe" "$TMP/c10.lap" 2> /dev/null > /dev/null && fail "-a con -b debía fallar"
+"$MK" -a "$TMP/no-existe.axe" "$TMP/c11.lap" 2> /dev/null > /dev/null && fail "-a: archivo inexistente debía fallar"
+ok "-a: entrada fuera del texto, reservado, memoria corta, texto largo, magic AXE1, más de 16 páginas, archivo corto, -b y archivo ausente: rechazados"
+
+# 11. Si ya hay salida del compilador (make all), la de pag2 y atk2 pasa -a.
+for p in pag2 atk2; do
+    f=$(dirname "$0")/../build/$p.axe
+    [ -f "$f" ] || continue
+    "$MK" -a "$f" "$TMP/$p.lap" "${p}_fill" > /dev/null || fail "-a: build/$p.axe"
+    ok "-a: build/$p.axe, salida real de copihue --axe2, validada"
+done
+
 if [ "$fails" -ne 0 ]; then
     echo "mkaxe_test: $fails fallas"
     exit 1
