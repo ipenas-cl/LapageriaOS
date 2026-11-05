@@ -8,6 +8,20 @@ para ese commit es `legacy-tempo`.
 
 ## 0.8
 
+HR-02, UEFI que carga el kernel y AHCI con escritura. El camino BIOS + ATA no
+cambia. (1) AHCI: `WRITE DMA EXT` (LBA48, un sector) y `FLUSH CACHE EXT`; comando
+`ahci w <lba> [patrón]`; `qemu_ahci_test.sh` escribe el LBA 2000 del disco SATA,
+lo relee por AHCI y, con QEMU parado, compara el archivo del disco con el
+patrón y el resto con la imagen. (2) UEFI: `src/uefi/stub.lap` pasa a `loader.lap`
+y ahora lee `kernel.bin` de la ESP, lo deja en `0x400000`, llama a
+`ExitBootServices`, convierte el mapa a E820 en `0x8000` (16 entradas), arma las
+tablas y la GDT de stage2 y salta al kernel. `make qemu-uefi-test` ve el banner,
+`e820`/`pmm`, el PIT y un `echo` por PS/2 bajo OVMF, y una ESP sin `kernel.bin`
+falla en el paso 4 y apaga. Solo QEMU + OVMF: sin pantalla (VGA texto), sin disco
+bajo q35, sin hardware real. Kernel: 531432 bytes, 1038 sectores. Documentado en
+`docs/hr02-uefi-ahci.md`; `docs/PEDIDOS_COPIHUE.md` suma cinco notas (HR-02) y
+`f(x)[0] = v` sigue abierto.
+
 EX-08, pin de Copihue v0.44.3 (`ad9fd12`). (1) `zatk` se arma con
 `copihue --flat 0x400000 --axe1 --sizes`; el AXE1 es idéntico byte por byte al
 de `mkaxe.sh` y los ataques de AXE1, incluido el marco de 8 KiB, siguen en

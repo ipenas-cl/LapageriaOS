@@ -1,5 +1,11 @@
 # HR-01: arranque UEFI y disco AHCI/NVMe (primera tajada)
 
+> **HR-02 ya superó parte de esto** (ver `docs/hr02-uefi-ahci.md`): el stub de esta
+> página es ahora `src/uefi/loader.lap` y **sí carga el kernel** en QEMU + OVMF, y
+> AHCI **escribe** un sector. Lo que sigue describe HR-01 tal como quedó entonces;
+> la sección «Qué falta» está desactualizada en los puntos UEFI (1) a (4) y en la
+> escritura AHCI.
+
 Esta tajada empieza el camino a hardware moderno **sin tocar** el camino
 BIOS + ATA: la imagen `build/lapageriaos.img`, el cargador de dos etapas y el
 disco de datos IDE siguen igual, y `make qemu-test` los sigue ejerciendo.

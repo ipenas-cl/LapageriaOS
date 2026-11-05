@@ -53,18 +53,20 @@ Consola `lapageria>` en QEMU: la imagen se construye con `make` y el shell muest
 
 `sched` construye dos espacios de direcciones y no reutiliza el PML4 del bootloader. Cada proceso tiene su PML4, su PDPT y su PD. PD[0] apunta a la tabla baja de 4 KiB: ahí la imagen del kernel ya no está. PML4[256..511] apuntan a un solo PDPT de kernel, sin bit de usuario. Ese PDPT mapea los primeros 2 MiB en `0xFFFF800000000000` y, en el slot 510, la PD de `0x5000`, que es por donde el kernel corre en `0xFFFFFFFF80000000`. El proceso A tiene una página de usuario en `0x500000`. El proceso B no. `exit` devuelve al asignador las páginas de cada proceso y no libera el PDPT compartido. PML4[511] queda con el bit de acceso; la prueba enmascara ese bit al comparar la mitad compartida.
 
-## UEFI, AHCI y NVMe (HR-01, primera tajada)
+## UEFI, AHCI y NVMe (HR-01 y HR-02)
 
-El kernel sigue arrancando solo por BIOS y hablando ATA PIO; lo nuevo se suma sin
-tocar ese camino. Detalle, líneas de QEMU y lo que falta: `docs/hr01-uefi-ahci.md`.
+El camino BIOS + ATA PIO no cambia. Detalle, líneas de QEMU y lo que falta:
+`docs/hr02-uefi-ahci.md` (y `docs/hr01-uefi-ahci.md`).
 
-- **UEFI:** `make qemu-uefi` arranca un *stub* en Copihue (`src/uefi/stub.lap`) con
-  OVMF: imprime por COM1 y por la consola del firmware y apaga. **No carga el
-  kernel.** Sin firmware, el target falla con un mensaje claro
-  (`OVMF_CODE=... OVMF_VARS=...` o `OVMF_BIOS=...`).
-- **AHCI:** el comando `ahci [lba]` lee un sector de un disco SATA por DMA
-  (`-device ahci`). Solo lectura. `make qemu-ahci-test` compara su CRC-32 con el
-  del anfitrión.
+- **UEFI:** `make qemu-uefi-test` arranca en QEMU + OVMF un cargador en Copihue
+  (`src/uefi/loader.lap`) que lee `kernel.bin` de la ESP, sale de los servicios de
+  arranque y salta al kernel: banner, mapa de memoria, PIT y shell por PS/2. Solo
+  probado en QEMU; **la pantalla no funciona** (VGA texto, no GOP) y **no hay disco**
+  bajo q35 (el kernel habla con el IDE). Sin firmware, el target falla con un
+  mensaje claro (`OVMF_CODE=... OVMF_VARS=...` o `OVMF_BIOS=...`).
+- **AHCI:** `ahci [lba]` lee un sector de un disco SATA por DMA (`-device ahci`) y
+  `ahci w <lba> [patrón]` escribe uno y lo verifica. `make qemu-ahci-test` compara
+  el CRC-32 con el del anfitrión y lee el archivo del disco tras escribir.
 - **NVMe:** el comando `nvme` solo detecta el controlador.
 
 ## Qué comprueba `make qemu-test`
@@ -181,11 +183,11 @@ src/kernel/copihue/
   zone.lap                    zonas: cuota, máscara, raíz propia (/zonas/nombre) y tope de procesos
   net.lap                     e1000, ARP, IPv4 e ICMP
   trace.lap                   sondas estáticas y anillo de eventos
-  ahci.lap                    AHCI: lee un sector SATA por DMA (comando ahci, HR-01)
+  ahci.lap                    AHCI: lee y escribe un sector SATA por DMA (comando ahci, HR-01/HR-02)
   nvme.lap                    NVMe: solo detección del controlador (comando nvme, HR-01)
   shell.lap                   editor de línea y comandos
-src/uefi/stub.lap             stub UEFI en Copihue: imprime por COM1 y ConOut y apaga (HR-01)
-src/uefi/pe.asm               envoltorio PE32+ del stub (BOOTX64.EFI)
+src/uefi/loader.lap           cargador UEFI en Copihue: lee kernel.bin de la ESP, ExitBootServices y salta al kernel (HR-02)
+src/uefi/pe.asm               envoltorio PE32+ del cargador (BOOTX64.EFI)
 src/user/hola.lap             programa de anillo 3 que imprime «desde disco»
 src/user/zona.lap             programa de prueba de la zona `a`
 src/user/grande.lap           programa de varias páginas (AXE2): lee y escribe sus páginas de datos
@@ -201,10 +203,11 @@ tests/qemu_burst_test.sh      pérdida de varios segmentos en una ráfaga de TCP
 tests/repeat.sh               repite una prueba N veces en paralelo, con -icount shift=7 o sin icount (make qemu-stab-test: ataques AXE2 y AXE1, retransmisión rápida y pérdida en ráfaga)
 scripts/chksizes.sh           compara la salida de copihue --sizes con lo esperado (pag2 y atk2)
 tests/mkaxe_test.sh           scripts/mkaxe.sh en el anfitrión (make mkaxe-test)
-tests/qemu_ahci_test.sh       AHCI (CRC de los sectores 0 y 9 contra gzip), nvme none/found y ATA intacto (make qemu-ahci-test)
-tests/uefi_pe_test.sh         comprobación estática del PE32+ del stub UEFI (make uefi-pe-test)
-tests/qemu_uefi_test.sh       el stub UEFI arranca en QEMU con OVMF (make qemu-uefi-test; necesita firmware)
+tests/qemu_ahci_test.sh       AHCI (CRC de lectura contra gzip, escritura verificada en el anfitrión), nvme none/found y ATA intacto (make qemu-ahci-test)
+tests/uefi_pe_test.sh         comprobación estática del PE32+ del cargador UEFI (make uefi-pe-test)
+tests/qemu_uefi_test.sh       el kernel arranca por UEFI en QEMU con OVMF (make qemu-uefi-test; necesita firmware)
 docs/hr01-uefi-ahci.md        HR-01: qué arranca por UEFI, AHCI y NVMe, qué falta y cómo probarlo
+docs/hr02-uefi-ahci.md        HR-02: UEFI que carga el kernel, AHCI con escritura, qué falta y cómo probarlo
 docs/disco.md                 layout del disco de datos
 docs/fs.md                    sistema de archivos copy-on-write
 docs/exec.md                  ejecutables planos AXE1 y AXE2, distribución de memoria de usuario y el comando exec
