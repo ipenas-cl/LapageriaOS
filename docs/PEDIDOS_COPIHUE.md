@@ -16,6 +16,25 @@ Sin `asm()` nuevo. Una función de 7 parámetros (`udp_recv`; el séptimo es
 el plazo) compila y la prueba de plazo la ejerce; `udp_park` usa globales
 por prudencia, no porque haya fallado algo.
 
+## EX-04 (guarda de pila de un AXE1, prueba de retransmisión rápida), con Copihue v0.42.5
+
+Compiló todo sin `asm()` nuevo: la recursión sin fin (`deep`), `rsp = rdi;` y
+`push(0);` en un `naked fn` (como en `atk2`), y un global declarado después de
+la función que lo usa. Lo que apareció y lo que se pide:
+
+1. **Estrechamiento implícito en un store a `*u8`.** `q[0] = v;` con `q: *u8`
+   y `v: i64` da `expected u8, found i64`, pero `*(0x401C00 as *u8) = 0;` con una
+   constante compila. Se resolvió con `q[0] = v as u8;`, sin pedido de cambio de
+   semántica; solo que el mensaje no dice que el `as u8` es la salida. Un
+   `hint: use 'as u8'` en el error bastaría.
+2. **Sondeo de pila** (sigue abierto, ya pedido en EX-03). La guarda de un AXE1
+   cubre la recursión y los `push` y no un marco local de más de 4096 bytes. No
+   se probó `atk` con un arreglo grande en un AXE1 porque el resultado es el del
+   AXE2 (`atk2` modo `y`).
+
+Nada del lenguaje obligó a un parche externo: los programas de usuario
+(`tcpsnd`, `ataque`) y el kernel son Copihue y las pruebas son `bash` y `awk`.
+
 ## EX-03 (página de guarda de la pila), con Copihue v0.42.5
 
 `rsp = rdi;` y `push(0);` dentro de un `naked fn`, y un arreglo local
