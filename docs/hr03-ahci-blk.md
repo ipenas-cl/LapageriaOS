@@ -84,16 +84,23 @@ ahci dbg ctrls=<n>
 ```
 
 `r` es el código real de `ahci_init`; `blk fail 3` es el del ATA y lo oculta
-(`blk_open` devuelve el primero). `stage`: 1 buscar controlador, 2 BAR, 3 puerto
-con disco, 4 página de DMA (`pa=0` o `pmmfree=0` → código 5), 5 parar el
-puerto, 6 TFD, 7 IDENTIFY. Un puerto con disco SATA tiene `ssts=0x..0113` y
+(`blk_open` devuelve el primero). `stage`: 1 buscar controlador, 2 BAR, 3 página
+de DMA (`pa=0` o `pmmfree=0` → código 5), 4 puerto con disco (FRE, enlace, FIS
+D2H, firma), 6 TFD y ST, 7 IDENTIFY (hasta HR-03e: 3 puerto, 4 página, 5 parar
+el puerto). `r=3 stage=4` es "ningún puerto del controlador tenía un disco
+SATA", no un estado ATA. Con `cmd=0x...6` (sin FRE) y `sig=0xffffffff`,
+`tfd=0x7f` el HBA nunca recibió el D2H. Un puerto con disco SATA tiene `ssts=0x..0113` y
 `sig=0x00000101`; `sig=0xeb140101` es ATAPI (el CD que q35 trae en el puerto 2).
 Los registros se leen después del intento de `ahci_init`, con el BAR reabierto.
 
 ## Qué falta
 
 - **Elegir el puerto/controlador AHCI.** `ahci_find_port` toma el primer puerto
-  con disco SATA (si el enlace no está arriba, COMRESET y espera ≤ 200 ms) y
+  con disco SATA (`ahci_probe`: para el puerto, enciende `PxCMD.FRE` con la
+  lista y el FIS recibido en la página de DMA, y solo entonces, si el enlace no
+  está arriba, COMRESET y espera ≤ 200 ms el enlace; luego `PxTFD` sin BSY/DRQ
+  (tras un reset vale 0x7F hasta el D2H) ≤ 2 s, y si no, otro COMRESET y ≤ 4 s;
+  al final exige `PxSIG` = 0x101) y
   `ahci_init` prueba los controladores 01:06:01 del bus 0 en orden hasta dar con
   un disco (el ICH9 integrado de q35 suele estar vacío). Con la
   ESP en el SATA (`make qemu-uefi`) `disk`/`fs` apuntarían a la ESP. Falta

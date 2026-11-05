@@ -37,6 +37,23 @@ Solo sale en fallo. (2) `ahci_handoff`: traspaso BIOS/SO (BOHC) si CAP2.BOH.
 no halla firmware (`make ovmf-info`). Causa del `dev=none` en Ubuntu: sin
 confirmar (ver RESUMEN).
 
+HR-03f, `qemu-uefi-blk-test` en el CI (Ubuntu, QEMU 8.2.2, OVMF 2024.02).
+Diagnóstico de HR-03e: puerto con enlace (`ssts=0x113`) pero `sig=0xffffffff`,
+`tfd=0x7f`, `cmd=0x6`. `r=3 stage=3` era "ningún puerto con disco SATA" en
+`ahci_find_port`. Causa probable (no reproducida aquí): el sondeo leía PxSIG
+con PxCMD.FRE=0, y sin FRE el HBA no recibe el FIS D2H que fija la firma; el
+firmware dejó el puerto así. (1) `ahci_probe`: parar, CLB/FB, `FRE|SUD|POD`, esperar FR,
+COMRESET con FRE si no hay enlace, esperar TFD sin BSY/DRQ (tras un reset vale
+0x7F hasta el D2H; 2 s, y otro COMRESET + 4 s), y recién entonces exigir firma 0x101. La página
+de DMA se pide antes de sondear (etapas de `ahci_dbg` renumeradas: 3 página,
+4 puerto, 6 TFD/ST). (2) Tiempos con el PIT (`ahci_spinoff`): COMRESET de 2 ms
+en vez de un lazo de lecturas, handoff BOHC de 2 s. (3) `ahci_map_bar` rechaza
+un HBA cuyo CAP lee todo unos. (4) El kernel debe quedar con el texto bajo
+0x80000 (4 KiB de relleno más y `stage2_big_test` no tiene dónde comparar):
+quedan 7 bytes de margen. Los dos controladores con el mismo ABAR
+del diagnóstico no eran un eco PCI: `ahci_map_bar` asigna `AHCI_ABAR` a cada
+uno y apaga el anterior antes de pasar al siguiente.
+
 EX-09, pin de Copihue v0.44.4 (`dd708bc`). (1) `f(x)[0] = v` y `*f(x) = v` con
 `-> *volatile u32` emiten el store volatile al ancho del pointee; asignar a un
 no-lvalue (`f(1) = 5`) es error de compilación con archivo y línea. Cierra el
