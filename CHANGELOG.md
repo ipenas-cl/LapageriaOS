@@ -8,6 +8,18 @@ para ese commit es `legacy-tempo`.
 
 ## 0.8
 
+EX-09, pin de Copihue v0.44.4 (`dd708bc`). (1) `f(x)[0] = v` y `*f(x) = v` con
+`-> *volatile u32` emiten el store volatile al ancho del pointee; asignar a un
+no-lvalue (`f(1) = 5`) es error de compilación con archivo y línea. Cierra el
+pedido de prioridad alta de EX-08 / HR-01 punto 1. (2) `make copihue-gaps-test`
+pasa de informar un pedido abierto a ser una prueba de regresión
+(`tests/copihue/storevol.lap`, `nolvalue.lap`; se va `storecall.lap`).
+(3) `ahci.lap`: el rodeo `ahci_mw(off, v)` se reemplaza por `ahci_m(off)[0] = v`
+(con `as u32` en los valores anchos, que v0.44.4 exige). Lectura y escritura AHCI
+siguen verdes. El cargador UEFI conserva sus punteros locales. `make qemu-test`
+completo en verde (218 líneas `ok`). Kernel: 535528 bytes, 1046 sectores (antes
+531432 y 1038).
+
 HR-02, UEFI que carga el kernel y AHCI con escritura. El camino BIOS + ATA no
 cambia. (1) AHCI: `WRITE DMA EXT` (LBA48, un sector) y `FLUSH CACHE EXT`; comando
 `ahci w <lba> [patrón]`; `qemu_ahci_test.sh` escribe el LBA 2000 del disco SATA,

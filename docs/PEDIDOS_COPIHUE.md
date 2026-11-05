@@ -2,10 +2,10 @@
 
 Lapageria rosea es el nombre científico del copihue; antes AtomicOS.
 
-Compilador fijado en el Makefile: v0.44.3, commit
-`ad9fd12372966073ecceea279c82e2b8b15a9262` (EX-08). `git ls-remote` de la
-etiqueta `v0.44.3` devolvió ese commit y `git -C build/copihue rev-parse HEAD`
-después del `make` también. Hasta EX-07 el pin era v0.44.2
+Compilador fijado en el Makefile: v0.44.4, commit
+`dd708bc4854e0cfc9f2037c902c28b8501331211` (EX-09). `git -C build/copihue
+rev-parse HEAD` después del `make` devolvió ese commit. Hasta EX-08 el pin era
+v0.44.3 (`ad9fd12372966073ecceea279c82e2b8b15a9262`). Hasta EX-07 el pin era v0.44.2
 (`eaadb4472935a542979ebfbd2f7d3c7ebf719212`). En EX-05 el pin era v0.44.1
 (`20c46c72ecec4d3190cf5c7ad8a534a259c92b7f`) y hasta EX-04 v0.42.5
 (`ea898c6c2be6f1a1686cf06c5050c31e726ef177`); cada sección de más
@@ -17,6 +17,35 @@ pidió nada: `syscall fn` con 6 parámetros, `syscall(n, a1..a5)` en anillo
 Sin `asm()` nuevo. Una función de 7 parámetros (`udp_recv`; el séptimo es
 el plazo) compila y la prueba de plazo la ejerce; `udp_park` usa globales
 por prudencia, no porque haya fallado algo.
+
+## EX-09 (pin v0.44.4: store por llamada y error en no-lvalue)
+
+**CERRADO, integrado en EX-09: `f(x)[0] = v` (HR-01 punto 1).** Era el pedido
+ABIERTO de prioridad alta de EX-08 y HR-02. Con v0.44.4:
+
+- `mem(off)[0] = v` y `*mem(off) = v` con `fn mem(off: i64) -> *volatile u32`
+  emiten `mov dword [rbx], eax  ; volatile` (store volatile al ancho del
+  pointee), después de llamar a `mem`.
+- Asignar a un no-lvalue (`f(1) = 5`) es error de compilación con archivo y
+  línea: `nolvalue.lap:8:5: error: the assignment target is not assignable: the
+  result of a call`.
+- `p.x = a+b`, `arr[i] = …` y `*p = …` con operandos angostos ya no truncan al
+  destino de 64 bits (no se probó aparte aquí; el kernel compila y pasa
+  `make qemu-test`).
+- Un valor ancho asignado a un destino `u32` pide `as u32` explícito (`expected
+  u32, found i64`); `ahci.lap` lo escribe así.
+
+`make copihue-gaps-test` (`tests/copihue_gaps_test.sh`, fixtures
+`tests/copihue/storevol.lap` y `nolvalue.lap`) ya no informa un pedido abierto:
+falla si el store vuelve a descartarse o si el no-lvalue compila. No quedó
+ningún pedido abierto de prioridad alta. El resto de HR-01 (puntos 2 a 6) sigue
+abierto sin cambios.
+
+Rodeos: `ahci_mw(off, v)` de `ahci.lap` existía solo por este bug y se
+reemplazó por `ahci_m(off)[0] = v` (más corto y sin función intermedia que
+devuelve 0). El cargador UEFI (`src/uefi/loader.lap`) mantiene sus punteros
+locales: ahí no son un rodeo del bug sino el estilo de un búfer que se indexa
+varias veces, y no se tocó para no mover el PE sin necesidad.
 
 ## EX-08 (pin v0.44.3: `--axe1`, `const`, `align(4096) let`)
 
@@ -61,7 +90,7 @@ por prudencia, no porque haya fallado algo.
 4. **`const` en el kernel** (`ATA_PIT_PERIOD`, topes de `parcpu`, etc.): sin
    migrar. Es trabajo de otra tarea, no un fallo de v0.44.3.
 
-**ABIERTO, PRIORIDAD ALTA: `f(x)[0] = v` se descarta sin aviso** (HR-01 punto 1).
+**(Histórico; CERRADO en EX-09, v0.44.4: ver arriba.) `f(x)[0] = v` se descartaba sin aviso** (HR-01 punto 1).
 Confirmado en v0.44.3 con `make copihue-gaps-test`
 (`tests/copihue_gaps_test.sh`, `tests/copihue/storecall.lap`). Con
 `fn mem(off: i64) -> *u32` y `fn poke() { mem(8)[0] = 5; }` el compilador no da
@@ -76,8 +105,8 @@ aviso de nasm 3.x.
 
 ## HR-02 (cargador UEFI y AHCI con escritura), con Copihue v0.44.3
 
-El pin no cambia y no se parchó el lenguaje. `f(x)[0] = v` **sigue ABIERTO**
-(HR-01 punto 1): `ahci_cmd` y el cargador usan punteros locales (`let p: *u32 =
+El pin no cambia y no se parchó el lenguaje. `f(x)[0] = v` **seguía ABIERTO**
+entonces (HR-01 punto 1; CERRADO en EX-09): `ahci_cmd` y el cargador usan punteros locales (`let p: *u32 =
 …; p[0] = v;`). Los pedidos 3 a 5 de HR-01 (salida PE/EFI, ABI MS x64, datos
 relativos a RIP en `--flat`) siguen abiertos y siguen siendo el rodeo de HR-01:
 `pe.asm` empaqueta y los `naked fn` hacen de puente. Lo nuevo que apareció:

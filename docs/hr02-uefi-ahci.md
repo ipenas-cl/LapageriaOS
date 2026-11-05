@@ -2,7 +2,7 @@
 
 Segunda tajada sobre `docs/hr01-uefi-ahci.md`. El camino BIOS + ATA no cambia:
 `make qemu-test` lo sigue ejerciendo igual, y el kernel que arranca por UEFI es
-**el mismo `build/kernel.bin`** que carga la etapa 2 (531432 bytes, 1038 sectores).
+**el mismo `build/kernel.bin`** que carga la etapa 2 (535528 bytes, 1046 sectores desde EX-09).
 
 ## Qué arranca y qué no
 

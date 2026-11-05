@@ -142,7 +142,7 @@ qemu-system-x86_64 -cpu qemu64 -drive format=raw,file=build/lapageriaos.img \
     -display none -serial stdio
 ```
 
-El compilador está fijado en el Makefile (`COPIHUE_COMMIT ?= v0.44.3`, commit `ad9fd12372966073ecceea279c82e2b8b15a9262`, repositorio `https://github.com/ipenas-cl/copihue.git`). `make` lo construye en `build/copihue`. Para un binario ya compilado:
+El compilador está fijado en el Makefile (`COPIHUE_COMMIT ?= v0.44.4`, commit `dd708bc4854e0cfc9f2037c902c28b8501331211`, repositorio `https://github.com/ipenas-cl/copihue.git`). `make` lo construye en `build/copihue`. Para un binario ya compilado:
 
 ```bash
 make COPIHUE=/ruta/al/copihue all
@@ -285,7 +285,8 @@ Falta de la etapa 7 (verificado contra el fuente de OB-03, nada de esto está en
 - La tabla de zonas vive en RAM: se pierde al reiniciar (los archivos de `/zonas/<nombre>` quedan).
 - Hasta 8 zonas, sin zonas anidadas ni migración de procesos entre zonas.
 - Una zona no prende ni apaga sondas ni lee la traza de otra; no hay una vista de trazas agregada por zona fuera de `traza dump zone=<n>` desde la global.
-- EX-08 (Copihue v0.44.3): `zatk` sale de `copihue --flat 0x400000 --axe1` (idéntico al armado a mano; `mkaxe.sh -a` acepta AXE1 y AXE2) y `cal` (`exec cal`) prueba `const N` en `[T; N]` y `align(4096) let` en un AXE2 (datos en `0x401000`, bss en `0x402000`). Abierto, prioridad alta: `f(x)[0] = v` se descarta sin aviso (`make copihue-gaps-test`). Ver `docs/PEDIDOS_COPIHUE.md`.
+- EX-08 (Copihue v0.44.3): `zatk` sale de `copihue --flat 0x400000 --axe1` (idéntico al armado a mano; `mkaxe.sh -a` acepta AXE1 y AXE2) y `cal` (`exec cal`) prueba `const N` en `[T; N]` y `align(4096) let` en un AXE2 (datos en `0x401000`, bss en `0x402000`).
+- EX-09 (Copihue v0.44.4): `f(x)[0] = v` y `*f(x) = v` con `-> *volatile u32` emiten el store, y asignar a un no-lvalue es error de compilación; cierra el pedido de prioridad alta de HR-01 (`make copihue-gaps-test` ahora es una prueba de regresión). `ahci.lap` usa `ahci_m(off)[0] = v` en lugar de `ahci_mw`. Kernel: 535528 bytes, 1046 sectores. Ver `docs/PEDIDOS_COPIHUE.md`.
 - Desde EX-06 el compilador (v0.44.2) también sondea la pila en los prólogos con marco de 4096 bytes o más (pedido EX-03 cerrado, ver `docs/PEDIDOS_COPIHUE.md`). Desde EX-05 el compilador emite el AXE2 completo (`--flat 0x400000 --axe2`: texto, `let` con valor como datos, `let` sin valor como bss) y acepta `align(N)`, así que `pag2` y `atk2` ya no armen páginas a mano. Falta lo que sigue siendo del lenguaje: el AXE2 de Copihue solo sale para `0x400000` y siempre con el layout de la imagen (no hay AXE1 con `--axe2`, así que los programas chicos de una página siguen por `mkaxe.sh` y su cabecera de 16 bytes); no hay forma de poner un `let` en una página o dirección dada (`pag2` direcciona la página de datos con constantes para probarla); y embeber en el kernel cuesta unos 5 bytes de kernel por cada byte no nulo del programa (las palabras en cero se saltan): al pasar `pag2` (ahora con texto de 2 páginas, 1136 escrituras) y `atk2` (795) al compilador el kernel creció de 493621 a 510005 bytes (+16384). `par` y `parcpu` siguen siendo dos programas, y `grande` arma su AXE2 en el kernel (`exec bigplant`). Ver `docs/PEDIDOS_COPIHUE.md`, EX-01, EX-02 y EX-05.
 - Los ecos de RD-03 (`tests/qemu_tcp_test.sh`) siguen recuperando por el timer (`fast +0`): con respuestas de 1024 bytes y un búfer de envío de 4096 caben a lo más 4 segmentos en vuelo y uno perdido deja menos de 3 ACK repetidos. No hay Early Retransmit (RFC 5827) ni Limited Transmit (RFC 3042). Con segmentos chicos y una ráfaga la retransmisión rápida sí funciona (`tests/qemu_burst_test.sh`).
 
