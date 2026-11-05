@@ -36,7 +36,7 @@ let proc_ksp: [i64; 2];
 let proc_sys: [i64; 2];
 let proc_npages: [i64; 2];
 let proc_freed: [i64; 2];
-let proc_pages: [i64; 32];
+let proc_pages: [i64; 64];
 let user_kills: i64 = 0;
 // Cambios de contexto entre procesos (switch_to y la salida de un proceso
 // con el otro vivo) y cuántos cambiaron la zona activa. `zone pair` los
@@ -62,8 +62,8 @@ let released_ok: i64 = 0;
 fn track(pi: i64, pa: i64) -> i64 {
     if (pa == 0) { return 0; }
     let n = proc_npages[pi];
-    if (n < 0 || n >= 16) { return 0; }
-    proc_pages[pi * 16 + n] = pa;
+    if (n < 0 || n >= 32) { return 0; }
+    proc_pages[pi * 32 + n] = pa;
     proc_npages[pi] = n + 1;
     return pa;
 }
@@ -418,7 +418,7 @@ fn release_proc(pi: i64) -> i64 {
     let f = 0;
     let i = 0;
     while (i < n) {
-        let pa = proc_pages[pi * 16 + i];
+        let pa = proc_pages[pi * 32 + i];
         if (free_page(pa) != 0 && page_is_free(pa) != 0) {
             f = f + 1;
             released_ok = released_ok + 1;
@@ -435,6 +435,9 @@ fn release_proc(pi: i64) -> i64 {
     }
     proc_zone[pi] = 0;
     proc_uva[pi] = 0;
+    proc_io[pi] = 0;
+    proc_ihi[pi] = 0;
+    proc_wlo[pi] = 0;
     udp_release(pi);
     tcp_release(pi);
     return f;
@@ -628,7 +631,37 @@ fn copy_user(pi: i64, src: i64, n: i64, code: i64) -> i64 {
     return 1;
 }
 
-fn build_proc(pi: i64, src: i64, n: i64, secret: i64) -> i64 {
+// Distribución de memoria de un proceso (EX-01, docs/exec.md).
+//
+// Legado (AXE1, build_proc y las demos): una página de código en 0x400000,
+// una página de pila y E/S en 0x401000 (pila hasta 0x402000), páginas pedidas
+// con la syscall 8 desde 0x402000. proc_io, proc_ihi y proc_wlo valen 0.
+//
+// AXE2 (build_image): imagen de 1 a 16 páginas desde 0x400000, la página de
+// E/S sola en 0x410000, la pila en 0x411000 (tope 0x412000) y las páginas de
+// la syscall 8 desde 0x412000. Las páginas de texto de la imagen son de solo
+// lectura y ejecutables; el resto de la imagen (datos y bss) es de lectura y
+// escritura sin ejecución.
+//   proc_io[pi]   base de la página de E/S (+0x800 nombre, +0xC00 datos)
+//   proc_ihi[pi]  fin de la imagen, exclusivo
+//   proc_wlo[pi]  desde dónde la imagen se puede escribir
+let proc_io: [i64; 2];
+let proc_ihi: [i64; 2];
+let proc_wlo: [i64; 2];
+let proc_img: [i64; 32];
+
+// Base de la página de E/S del proceso en curso: ahí el kernel lee el nombre
+// (zone_read_name) y los datos (zone_read_data) de las syscalls 6, 7 y 27.
+fn uio_base() -> i64 {
+    let pi = cur_i;
+    if (pi >= 0 && pi < 2 && proc_io[pi] != 0) { return proc_io[pi]; }
+    return 0x401000;
+}
+
+// Lo común de build_proc y build_image: pid, pilas del kernel, zona, y las
+// tres tablas (PML4, PDPT, PD) con la mitad del kernel. 1 si salió bien. Deja
+// charge_zone en la zona; el que sigue lo pone en 0 al terminar o fallar.
+fn proc_begin(pi: i64) -> i64 {
     if (pi == 0) {
         proc_pid[0] = 1;
         proc_rsp0[0] = 0x60000;
@@ -642,6 +675,9 @@ fn build_proc(pi: i64, src: i64, n: i64, secret: i64) -> i64 {
     proc_held[pi] = 0;
     uline_n[pi] = 0;
     proc_lbuf[pi] = 0;
+    proc_io[pi] = 0;
+    proc_ihi[pi] = 0;
+    proc_wlo[pi] = 0;
     udp_release(pi);
     tcp_release(pi);
     proc_zone[pi] = build_zone;
@@ -664,6 +700,18 @@ fn build_proc(pi: i64, src: i64, n: i64, secret: i64) -> i64 {
     p2[0] = low_pd_entry();
     proc_pml4[pi] = pml4;
     attach_half(pml4);
+    return 1;
+}
+
+fn build_fail() -> i64 {
+    charge_zone = 0;
+    zone_errno = 6;
+    return 0;
+}
+
+// Una página de código y una de pila: la distribución de legado.
+fn build_proc(pi: i64, src: i64, n: i64, secret: i64) -> i64 {
+    if (proc_begin(pi) == 0) { return 0; }
     let code = take_page(pi, 0);
     let stack = take_page(pi, 0);
     if (code == 0 || stack == 0) {
@@ -705,6 +753,66 @@ fn build_proc(pi: i64, src: i64, n: i64, secret: i64) -> i64 {
         return 0;
     }
     forge(pi, 0x400000, 0x402000, 0x202);
+    proc_state[pi] = 1;
+    charge_zone = 0;
+    return 1;
+}
+
+// Un proceso con imagen de varias páginas (AXE2). src son los n bytes de la
+// imagen; text_n los del texto (desde el principio) y mem_n el tamaño en
+// memoria (lo que pasa de n queda en cero: bss). 1 a 16 páginas; las de texto
+// quedan de solo lectura y ejecutables, las demás de lectura y escritura sin
+// ejecución. La E/S y la pila van aparte (ver proc_io arriba). Deja un marco
+// con entrada 0x400000; el que llama hace forge con la entrada del archivo.
+fn build_image(pi: i64, src: i64, n: i64, text_n: i64, mem_n: i64) -> i64 {
+    let npg = (mem_n + 4095) >> 12;
+    let tpg = (text_n + 4095) >> 12;
+    if (npg < 1 || npg > 16 || tpg < 1 || tpg > npg || n < 1 || n > mem_n) {
+        zone_errno = 9;
+        return 0;
+    }
+    if (proc_begin(pi) == 0) { return 0; }
+    let i = 0;
+    while (i < npg) {
+        let pg = take_page(pi, 0);
+        if (pg == 0) { return build_fail(); }
+        proc_img[pi * 16 + i] = pg;
+        if (map_user(pi, 0x400000 + i * 4096, pg, 7 | pte_nx_bit()) == 0) { return build_fail(); }
+        i = i + 1;
+    }
+    let io = take_page(pi, 0);
+    let stack = take_page(pi, 0);
+    if (io == 0 || stack == 0) { return build_fail(); }
+    if (map_user(pi, 0x410000, io, 7 | pte_nx_bit()) == 0) { return build_fail(); }
+    if (map_user(pi, 0x411000, stack, 7 | pte_nx_bit()) == 0) { return build_fail(); }
+    // El kernel escribe por las tablas del propio proceso, mientras todas
+    // las páginas son de escritura (como copy_user).
+    write_cr3(proc_pml4[pi]);
+    i = 0;
+    while (i < npg) {
+        zero_va(0x400000 + i * 4096);
+        i = i + 1;
+    }
+    zero_va(0x410000);
+    zero_va(0x411000);
+    let dst: *u8 = 0x400000;
+    let s: *u8 = src as *u8;
+    i = 0;
+    while (i < n) {
+        dst[i] = s[i];
+        i = i + 1;
+    }
+    write_cr3(0x1000);
+    i = 0;
+    while (i < tpg) {
+        if (map_in(proc_pml4[pi], 0x400000 + i * 4096, proc_img[pi * 16 + i], 5) == 0) { return build_fail(); }
+        i = i + 1;
+    }
+    proc_io[pi] = 0x410000;
+    proc_ihi[pi] = 0x400000 + npg * 4096;
+    proc_wlo[pi] = 0x400000 + tpg * 4096;
+    proc_uva[pi] = 0x412000;
+    forge(pi, 0x400000, 0x412000, 0x202);
     proc_state[pi] = 1;
     charge_zone = 0;
     return 1;

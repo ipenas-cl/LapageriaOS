@@ -1,0 +1,161 @@
+// Programa de varias páginas (EX-01). copihue --flat 0x400000.
+// Corre como AXE2 (`exec bigplant` lo arma, `exec grande` lo corre): la
+// imagen son 4 páginas desde 0x400000. La primera es este código (texto, solo
+// lectura); la 2 y la 3 llegan del archivo con el patrón pat(k); la 4 es bss
+// (en cero, sin archivo). Todas las de datos son de lectura y escritura.
+//
+//   1 lee las 2 páginas con datos y compara con pat()
+//   2 comprueba que la página de bss está en cero
+//   3 escribe la segunda página entera y la lee de vuelta
+//   4 escribe el último byte de la tercera página y lo lee de vuelta
+//   5 escribe la página de bss y la lee de vuelta
+//   6 deja un archivo con la syscall 6 (nombre y datos en la página de E/S,
+//     0x410800 y 0x410C00: la distribución de un AXE2)
+//   7 lo lee de vuelta con la syscall 7 y compara
+//
+// Imprime `big ok`, o `big fail N` con el paso que falló. En `grandew` el
+// texto son 2 páginas: el paso 3 escribe en la segunda y el kernel mata al
+// proceso (#PF de escritura en una página de solo lectura).
+// Sin cadenas: cada mensaje va por la syscall 1, de a 8 bytes (say8).
+
+naked fn emit(c: i64) {
+    rax = 1;
+    syscall();
+}
+
+fn say8(w: i64) {
+    let x: i64 = w;
+    while (x != 0) {
+        emit(x & 255);
+        x = x >> 8;
+    }
+}
+
+fn say_ok() {
+    say8(0x0a6b6f20676962);
+}
+
+fn say_fail(n: i64) {
+    say8(0x6c69616620676962);
+    emit(32);
+    emit(48 + n);
+    emit(10);
+}
+
+// Byte k de la imagen (k >= 4096), el mismo que big_pat en exec.lap.
+fn pat(k: i64) -> i64 {
+    return (k * 7 + (k >> 8) + 3) & 255;
+}
+
+fn get(k: i64) -> i64 {
+    let p: *u8 = (0x400000 + k) as *u8;
+    let v: i64 = p[0];
+    return v & 255;
+}
+
+fn put(k: i64, v: i64) {
+    let p: *u8 = (0x400000 + k) as *u8;
+    p[0] = v as u8;
+}
+
+fn io_put(off: i64, v: i64) {
+    let p: *u8 = (0x410000 + off) as *u8;
+    p[0] = v as u8;
+}
+
+fn io_get(off: i64) -> i64 {
+    let p: *u8 = (0x410000 + off) as *u8;
+    let v: i64 = p[0];
+    return v & 255;
+}
+
+fn check_read() -> i64 {
+    let k: i64 = 4096;
+    while (k < 12288) {
+        if (get(k) != pat(k)) { return 1; }
+        k = k + 1;
+    }
+    return 0;
+}
+
+fn check_bss() -> i64 {
+    let k: i64 = 12288;
+    while (k < 16384) {
+        if (get(k) != 0) { return 2; }
+        k = k + 1;
+    }
+    return 0;
+}
+
+fn write_second() -> i64 {
+    let k: i64 = 4096;
+    while (k < 8192) {
+        put(k, pat(k) ^ 255);
+        k = k + 1;
+    }
+    k = 4096;
+    while (k < 8192) {
+        if (get(k) != (pat(k) ^ 255)) { return 3; }
+        k = k + 1;
+    }
+    return 0;
+}
+
+fn write_third_end() -> i64 {
+    put(12287, 0x5A);
+    if (get(12287) != 0x5A) { return 4; }
+    if (get(12286) != pat(12286)) { return 4; }
+    return 0;
+}
+
+fn write_bss() -> i64 {
+    let k: i64 = 12288;
+    while (k < 16384) {
+        put(k, k & 255);
+        k = k + 1;
+    }
+    k = 12288;
+    while (k < 16384) {
+        if (get(k) != (k & 255)) { return 5; }
+        k = k + 1;
+    }
+    return 0;
+}
+
+// Nombre «gdat» y datos «big» en la página de E/S; escribe y lee de vuelta.
+fn disk_io() -> i64 {
+    io_put(0x800, 103);
+    io_put(0x801, 100);
+    io_put(0x802, 97);
+    io_put(0x803, 116);
+    io_put(0x804, 0);
+    io_put(0xC00, 98);
+    io_put(0xC01, 105);
+    io_put(0xC02, 103);
+    let w: i64 = syscall(6, 3);
+    if (w != 0) { return 6; }
+    io_put(0xC00, 0);
+    io_put(0xC01, 0);
+    io_put(0xC02, 0);
+    let n: i64 = syscall(7, 8);
+    if (n != 3) { return 7; }
+    if (io_get(0xC00) != 98 || io_get(0xC01) != 105 || io_get(0xC02) != 103) { return 7; }
+    return 0;
+}
+
+fn big_main() {
+    let r: i64 = check_read();
+    if (r == 0) { r = check_bss(); }
+    if (r == 0) { r = write_second(); }
+    if (r == 0) { r = write_third_end(); }
+    if (r == 0) { r = write_bss(); }
+    if (r == 0) { r = disk_io(); }
+    if (r == 0) { say_ok(); } else { say_fail(r); }
+}
+
+naked fn _start() {
+    big_main();
+    rax = 5;
+    syscall();
+    hlt();
+}
