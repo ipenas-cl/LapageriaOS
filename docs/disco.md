@@ -13,8 +13,11 @@ primario (`ide0-hd1`):
 ```
 
 `ata.lap` solo selecciona ese esclavo (bit 4 del registro 0x1F6, LBA28,
-PIO). No escribe el disco de arranque. Cada espera de estado tiene tope;
-si la unidad no responde, la función devuelve error.
+PIO). No escribe el disco de arranque. Cada espera de estado tiene un tope de
+5 s de tiempo real (FS-05/3): lee el contador del canal 0 del PIT directo
+(puertos 0x43 y 0x40), sin depender de interrupciones ni de `ticks`, y vale
+con IF=0, con procesos corriendo y con el planificador apagado. Si la unidad
+no responde, la función devuelve error.
 
 ## Layout
 
