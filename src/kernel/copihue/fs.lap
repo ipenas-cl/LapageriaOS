@@ -297,8 +297,8 @@ fn fs_reload() -> i64 {
         puts("fs layout\n");
         return 8;
     }
-    if (ata_sectors == 0) {
-        let id = ata_identify();
+    if (blk_sectors == 0) {
+        let id = blk_open();
         if (id != 0) { return id; }
     }
     let b: *FsSuper = fs_sb(blk_data);
@@ -771,11 +771,11 @@ fn fs_publish() -> i64 {
 }
 
 fn fs_format() -> i64 {
-    if (ata_sectors == 0) {
-        let id = ata_identify();
+    if (blk_sectors == 0) {
+        let id = blk_open();
         if (id != 0) { return id; }
     }
-    if (ata_sectors < 16) { return 3; }
+    if (blk_sectors < 16) { return 3; }
     if (fs_layout() == 0) {
         puts("fs layout\n");
         return 8;
@@ -788,7 +788,7 @@ fn fs_format() -> i64 {
     s.magic[3] = 0x31;
     s.version = 2;
     s.gen = 1;
-    let count = (ata_sectors - 2) / 2 + 1;
+    let count = (blk_sectors - 2) / 2 + 1;
     if (count > 1024) { count = 1024; }
     s.limit = count as u32;
     s.first = 4;
@@ -1233,8 +1233,8 @@ fn fs_migrate() -> i64 {
         puts("fs layout\n");
         return 8;
     }
-    if (ata_sectors == 0) {
-        let id = ata_identify();
+    if (blk_sectors == 0) {
+        let id = blk_open();
         if (id != 0) { return id; }
     }
     let b: *FsSuper = fs_sb(blk_data);
@@ -1267,7 +1267,7 @@ fn fs_migrate() -> i64 {
     }
     let s: *FsSuper = fs_sb(fs_super);
     let ns = s.nsnaps;
-    let cap = (ata_sectors - 2) / 2 + 1;
+    let cap = (blk_sectors - 2) / 2 + 1;
     if (cap > 1024) { cap = 1024; }
     if (ns > 8 || s.limit > cap || s.limit < 8 || s.first != 4) { return 8; }
 
@@ -1420,7 +1420,7 @@ fn fs_corrupt(path: *u8) -> i64 {
     r = blk_read(b);
     if (r != 0) { return r; }
     blk_data[0] = (blk_data[0] ^ 0xFF) & 255;
-    return ata_write(b * 2, blk_data);
+    return blk_wr(b * 2, blk_data);
 }
 
 // ---- scrub ----
