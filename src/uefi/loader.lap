@@ -10,32 +10,27 @@
 // El kernel es el mismo binario plano que carga el camino BIOS. Ver
 // docs/hr02-uefi-ahci.md para lo que esto NO resuelve (VGA, ACPI, Secure Boot).
 //
-// Se compila con `copihue --flat 0x1000` y src/uefi/pe.asm lo envuelve en un
-// PE32+ (BOOTX64.EFI, subsistema 10). 0x1000 es el RVA de .text; el entry es el
-// primer byte (`_start`).
+// Se compila con `copihue --flat 0x1000 --pic` y src/uefi/pe.asm lo envuelve en
+// un PE32+ (BOOTX64.EFI, subsistema 10). 0x1000 es el RVA de .text; el entry es
+// el primer byte (`_start`).
 //
-// Independiente de la posición: ninguna global, ninguna cadena de Copihue (esas
-// se direccionan en absoluto). Los datos van en bloques `data` y se alcanzan con
-// `lea reg, [rel etiqueta]` desde funciones `naked`. Lo que el firmware escribe
+// Independiente de la posición (--pic): ninguna global. Los datos van en bloques
+// `data` y se alcanzan con `&bloque` (el compilador emite `lea reg, [rel ..]`).
+// Quedan tres `naked fn`: _start (entrada MS, ver abajo), el trampolín (se copia
+// a 0x7000 y usa `lea [rel]` de sí mismo) y efi_enter. Lo que el firmware escribe
 // por puntero (HandleProtocol, Open, GetMemoryMap...) cae en un bloque de
 // 512 bytes de la pila de _start, que se pasa como `sa`: w[0..63].
 //
 // ABI: UEFI usa Microsoft x64 (rcx, rdx, r8, r9 + 32 bytes de sombra); Copihue
-// usa System V. El paso de una a otra son los `naked fn` efi_call y _start.
-// Todo el código de aquí es Copihue; el asm() de los naked fn solo hace de
-// puente de ABI, de tabla de datos y de trampolín.
+// usa System V. Las llamadas al firmware van por una variable `ms64 fn` (el
+// compilador alinea la pila y reserva la sombra); la entrada es el `naked fn`
+// _start. Todo el código de aquí es Copihue; el asm() de los naked fn solo hace
+// de puente de ABI, de tabla de datos y de trampolín.
 
 // Entrada. rcx = ImageHandle, rdx = EFI_SYSTEM_TABLE*. Al entrar rsp = 8 mod 16;
 // los 552 bytes (512 de w[] + 40) dejan la pila alineada a 16 en la llamada.
 naked fn _start() {
     asm("sub rsp, 552; mov rdi, rdx; mov rsi, rcx; mov rdx, rsp; call efi_main; add rsp, 552; ret");
-}
-
-// fp(a, b, c, d, e) con ABI MS. SysV: rdi = fp, rsi = a, rdx = b, rcx = c,
-// r8 = d, r9 = e. MS: rcx = a, rdx = b, r8 = c, r9 = d, [rsp+32] = e. Alinea la
-// pila a 16 (el firmware usa movaps) y reserva sombra de 32 + 16 bytes.
-naked fn efi_call(fp: i64, a: i64, b: i64, c: i64, d: i64, e: i64) -> i64 {
-    asm("mov rax, rdi; mov r10, r9; mov r11, rcx; mov rcx, rsi; mov r9, r8; mov r8, r11; push rbp; mov rbp, rsp; and rsp, -16; sub rsp, 48; mov [rsp+32], r10; call rax; leave; ret");
 }
 
 // GUID de EFI_LOADED_IMAGE_PROTOCOL y de EFI_SIMPLE_FILE_SYSTEM_PROTOCOL.
@@ -65,12 +60,15 @@ data efi_strs {
     db "uefi: e820 truncated, entries dropped=", 0;
 }
 
-naked fn efi_guid_lip() -> i64 { asm("lea rax, [rel efi_g_lip]; ret"); }
-naked fn efi_guid_sfs() -> i64 { asm("lea rax, [rel efi_g_sfs]; ret"); }
-naked fn efi_name_kernel() -> i64 { asm("lea rax, [rel efi_w_kernel]; ret"); }
-
-naked fn efi_str(n: i64) -> i64 {
-    asm("lea rax, [rel efi_strs]; efi_str_l: test rdi, rdi; jz efi_str_d; efi_str_s: cmp byte [rax], 0; lea rax, [rax+1]; jne efi_str_s; dec rdi; jmp efi_str_l; efi_str_d: ret");
+fn efi_str(n: i64) -> i64 {
+    let p: *u8 = &efi_strs as *u8;
+    let i = 0;
+    while (n > 0) {
+        while (p[i] != 0) { i = i + 1; }
+        i = i + 1;
+        n = n - 1;
+    }
+    return (p as i64) + i;
 }
 
 fn efi_putc(c: i64) -> i64 {
@@ -148,7 +146,8 @@ fn efi_die(systab: i64, step: i64, status: i64) -> i64 {
     efi_crlf();
     let st: *i64 = systab as *i64;
     let rt: *i64 = st[11] as *i64;
-    efi_call(rt[13], 2, 0, 0, 0, 0);
+    let reset: ms64 fn = rt[13];
+    reset(2, 0, 0, 0);
     while (1) {
         cli();
         hlt();
@@ -231,11 +230,11 @@ fn efi_tables() -> i64 {
 // 0xFFFFFFFF80090000 y salta a 0xFFFFFFFF80400000. Ya estamos en modo largo
 // con PAE: no hay nada que cambiar de modo.
 naked fn efi_tramp() {
-    asm("cli; mov rsp, 0x90000; lgdt [rel efi_t_gdtr]; mov rax, 0x1000; mov cr3, rax; lea rax, [rel efi_t_cs]; push 0x18; push rax; retfq; efi_t_cs: mov ax, 0x20; mov ds, ax; mov es, ax; mov fs, ax; mov gs, ax; mov ss, ax; mov rsp, 0xFFFFFFFF80090000; mov rax, 0xFFFFFFFF80400000; jmp rax; efi_t_gdtr: dw 39; dq 0x7000 + efi_t_gdt - efi_tramp; efi_t_gdt: dq 0; dq 0x00CF9A000000FFFF; dq 0x00CF92000000FFFF; dq 0x00AF9A0000000000; dq 0x0000920000000000; efi_tramp_end:");
+    asm("cli; mov rsp, 0x90000; lea rax, [rel efi_t_gdt]; mov [rel efi_t_gdtr+2], rax; lgdt [rel efi_t_gdtr]; mov rax, 0x1000; mov cr3, rax; lea rax, [rel efi_t_cs]; push 0x18; push rax; retfq; efi_t_cs: mov ax, 0x20; mov ds, ax; mov es, ax; mov fs, ax; mov gs, ax; mov ss, ax; mov rsp, 0xFFFFFFFF80090000; mov rax, 0xFFFFFFFF80400000; jmp rax; efi_t_gdtr: dw 39; dq 0; efi_t_gdt: dq 0; dq 0x00CF9A000000FFFF; dq 0x00CF92000000FFFF; dq 0x00AF9A0000000000; dq 0x0000920000000000;");
 }
 
-naked fn efi_tramp_addr() -> i64 { asm("lea rax, [rel efi_tramp]; ret"); }
-naked fn efi_tramp_len() -> i64 { asm("lea rax, [rel efi_tramp_end]; lea rcx, [rel efi_tramp]; sub rax, rcx; ret"); }
+// Marca el final del trampolín: sigue a efi_tramp en la imagen.
+naked fn efi_tramp_end() { asm("ret"); }
 naked fn efi_enter() { asm("mov rax, 0x7000; jmp rax"); }
 
 // EFI_SYSTEM_TABLE: RuntimeServices +0x58, BootServices +0x60.
@@ -253,26 +252,32 @@ fn efi_main(systab: i64, image: i64, sa: i64) -> i64 {
     efi_crlf();
 
     // 1. Volumen del que salió esta imagen.
-    let r = efi_call(bs[19], image, efi_guid_lip(), sa, 0, 0);
+    let f: ms64 fn = bs[19];
+    let r = f(image, &efi_g_lip, sa);
     if (r != 0) { return efi_die(systab, 1, r); }
     let lip: *i64 = w[0] as *i64;
-    r = efi_call(bs[19], lip[3], efi_guid_sfs(), sa + 8, 0, 0);
+    r = f(lip[3], &efi_g_sfs, sa + 8);
     if (r != 0) { return efi_die(systab, 2, r); }
     let sfs: *i64 = w[1] as *i64;
-    r = efi_call(sfs[1], w[1], sa + 16, 0, 0, 0);
+    f = sfs[1];
+    r = f(w[1], sa + 16);
     if (r != 0) { return efi_die(systab, 3, r); }
     let root: *i64 = w[2] as *i64;
     // Open(root, &file, L"kernel.bin", EFI_FILE_MODE_READ = 1, 0)
-    r = efi_call(root[1], w[2], sa + 24, efi_name_kernel(), 1, 0);
+    f = root[1];
+    r = f(w[2], sa + 24, &efi_w_kernel, 1, 0);
     if (r != 0) { return efi_die(systab, 4, r); }
     let file: *i64 = w[3] as *i64;
 
     // 2. Tamaño: SetPosition al final (0xFFFF...F) y GetPosition.
-    r = efi_call(file[7], w[3], 0 - 1, 0, 0, 0);
+    f = file[7];
+    r = f(w[3], 0 - 1);
     if (r != 0) { return efi_die(systab, 5, r); }
-    r = efi_call(file[6], w[3], sa + 32, 0, 0, 0);
+    f = file[6];
+    r = f(w[3], sa + 32);
     if (r != 0) { return efi_die(systab, 6, r); }
-    r = efi_call(file[7], w[3], 0, 0, 0, 0);
+    f = file[7];
+    r = f(w[3], 0);
     if (r != 0) { return efi_die(systab, 7, r); }
     let size = w[4];
     efi_sayv(3, size);
@@ -282,34 +287,41 @@ fn efi_main(systab: i64, image: i64, sa: i64) -> i64 {
     // 3. La página de 2 MiB del kernel, en 0x400000 (AllocateAddress = 2,
     // EfiLoaderData = 2, 512 páginas).
     w[5] = 0x400000;
-    r = efi_call(bs[5], 2, 2, 512, sa + 40, 0);
+    f = bs[5];
+    r = f(2, 2, 512, sa + 40);
     if (r != 0) { return efi_die(systab, 9, r); }
     efi_sayv(4, w[5]);
-    r = efi_call(file[4], w[3], sa + 32, w[5], 0, 0);
+    f = file[4];
+    r = f(w[3], sa + 32, w[5]);
     if (r != 0) { return efi_die(systab, 10, r); }
     if (w[4] != size) { return efi_die(systab, 11, w[4]); }
-    efi_call(file[2], w[3], 0, 0, 0, 0);
-    efi_call(root[2], w[2], 0, 0, 0, 0);
+    f = file[2];
+    f(w[3]);
+    f = root[2];
+    f(w[2]);
 
     // 4. Páginas bajas de stage2: tablas 0x1000..0x5FFF, mapa E820 0x8000,
     // trampolín 0x7000, pila 0x90000. Si el firmware las tiene ocupadas, falla.
     w[6] = 0x1000;
-    r = efi_call(bs[5], 2, 2, 159, sa + 48, 0);
+    f = bs[5];
+    r = f(2, 2, 159, sa + 48);
     if (r != 0) { return efi_die(systab, 12, r); }
     efi_say(5);
     efi_crlf();
 
     // 5. Búfer del mapa (64 KiB) y ExitBootServices con la clave al día.
-    r = efi_call(bs[5], 0, 2, 16, sa + 56, 0);
+    r = f(0, 2, 16, sa + 56);
     if (r != 0) { return efi_die(systab, 13, r); }
     let mm = w[7];
     let tries = 0;
     let done = 0;
     while (done == 0 && tries < 8) {
         w[8] = 65536;
-        r = efi_call(bs[7], sa + 64, mm, sa + 72, sa + 80, sa + 88);
+        f = bs[7];
+        r = f(sa + 64, mm, sa + 72, sa + 80, sa + 88);
         if (r != 0) { return efi_die(systab, 14, r); }
-        r = efi_call(bs[29], image, w[9], 0, 0, 0);
+        f = bs[29];
+        r = f(image, w[9]);
         if (r == 0) { done = 1; }
         tries = tries + 1;
     }
@@ -322,9 +334,9 @@ fn efi_main(systab: i64, image: i64, sa: i64) -> i64 {
     efi_sayv(7, n);
     if (w[20] != 0) { efi_sayv(10, w[20]); }
     efi_tables();
-    let src: *u8 = efi_tramp_addr() as *u8;
+    let src: *u8 = &efi_tramp as *u8;
     let dst: *u8 = 0x7000 as *u8;
-    let len = efi_tramp_len();
+    let len = (&efi_tramp_end as i64) - (&efi_tramp as i64);
     let i = 0;
     while (i < len) {
         dst[i] = src[i];
