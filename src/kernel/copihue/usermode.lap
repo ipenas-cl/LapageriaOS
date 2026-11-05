@@ -1,5 +1,6 @@
 // Ring 3. enter_user maps a code page at 0x400000 and a stack page at
-// 0x401000, both with the user bit, then iretq. The program writes
+// 0x40F000 (top 0x410000, EX-05), both with the user bit, with the page below
+// the stack (0x40E000) unmapped as a guard, then iretq. The program writes
 // "user ok" through syscall/sysret and then reads 0x10000. That is a
 // kernel page whose low identity mapping was retired, so the read is a
 // not-present #PF from ring 3 (err bit 2 set, bit 0 clear). The handler
@@ -225,7 +226,7 @@ fn enter_user() -> i64 {
         puts("user fail alloc\n");
         return 0;
     }
-    if (map_page(0x400000, code, 3 | pte_nx_bit()) == 0 || map_page(0x401000, stack, 7 | pte_nx_bit()) == 0) {
+    if (map_page(0x400000, code, 3 | pte_nx_bit()) == 0 || map_page(0x40F000, stack, 7 | pte_nx_bit()) == 0) {
         puts("user fail map\n");
         return 0;
     }
@@ -234,8 +235,19 @@ fn enter_user() -> i64 {
         puts("user fail copy\n");
         return 0;
     }
-    zero_va(0x401000);
+    zero_va(0x40F000);
     map_page(0x400000, code, 5);
+    // EX-05: guarda debajo de la pila. La pila está en 0x40F000 (tope
+    // 0x410000); 0x40E000 queda sin mapa y un desborde cae ahí. Se comprueba
+    // la hoja de la pila y una lectura de verdad de la guarda desde el kernel.
+    unmap_page(0x40E000);
+    let sl = nx_leaf(cr3_root(), 0x40F000);
+    let gl = nx_leaf(cr3_root(), 0x40E000);
+    if ((sl & 7) != 7 || (sl >> 63) == 0 || (gl & 1) != 0 || guard_probe(cr3_root()) == 0) {
+        puts("user fail guard\n");
+        return 0;
+    }
+    puts("user ok guard\n");
     puts("user bytes=");
     put_int(n);
     puts("\n");
@@ -250,7 +262,7 @@ fn enter_user() -> i64 {
     if (save_context(&shell_ctx) == 0) {
         shell_ctx.rip = label_addr(after_user);
         push(0x33);
-        push(0x402000);
+        push(0x410000);
         push(0x2);
         push(0x3B);
         push(0x400000);

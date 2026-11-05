@@ -150,7 +150,7 @@ COPIHUE_KERNEL_SRC = $(KERNEL_SRC)/copihue/console.lap \
                      $(KERNEL_SRC)/copihue/shell.lap \
                      $(KERNEL_SRC)/copihue/kernel.lap
 
-.PHONY: all qemu qemu-test mkaxe-test qemu-axe2-test qemu-atk1-test qemu-fast-test qemu-burst-test qemu-stab-test qemu-big-test qemu-udp-test qemu-tcp-test qemu-trace-test qemu-zswitch-test qemu-iso-test qemu-fs2-test qemu-fs3-test qemu-ata-test qemu-cpu-test debug clean help
+.PHONY: all qemu qemu-test qemu-shell-test mkaxe-test qemu-axe2-test qemu-atk1-test qemu-fast-test qemu-burst-test qemu-stab-test qemu-big-test qemu-udp-test qemu-tcp-test qemu-trace-test qemu-zswitch-test qemu-iso-test qemu-fs2-test qemu-fs3-test qemu-ata-test qemu-cpu-test debug clean help
 
 # Imagen de arranque: LBA 0 etapa 1, LBA 1 etapa 2, LBA KERNEL_LBA el kernel.
 all: $(OS_IMAGE)
@@ -436,6 +436,12 @@ qemu-test: $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_cpu_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_cpu_test.sh $(OS_IMAGE) "-icount shift=4"
 	COPIHUE=$(abspath $(COPIHUE)) $(TESTS_DIR)/stage2_big_test.sh $(BUILD_DIR)
+
+# Solo el arranque y las demos (tests/qemu_shell_test.sh): nx, hh, user, sched,
+# disco, fs, exec, zonas, red de usuario y trazas. Reescribe el disco de datos.
+qemu-shell-test: $(OS_IMAGE)
+	dd if=/dev/zero of=$(DATA_IMG) bs=512 count=$(DATA_SECTORS) status=none
+	$(TESTS_DIR)/qemu_shell_test.sh $(OS_IMAGE)
 
 # Solo la red por IRQ y UDP. Usa una copia nueva del disco de datos.
 qemu-udp-test: $(OS_IMAGE)
