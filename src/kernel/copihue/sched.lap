@@ -438,6 +438,7 @@ fn release_proc(pi: i64) -> i64 {
     proc_io[pi] = 0;
     proc_ihi[pi] = 0;
     proc_wlo[pi] = 0;
+    proc_stk[pi] = 0;
     udp_release(pi);
     tcp_release(pi);
     return f;
@@ -636,6 +637,10 @@ fn copy_user(pi: i64, src: i64, n: i64, code: i64) -> i64 {
 // Legado (AXE1, build_proc y las demos): una página de código en 0x400000,
 // una página de pila y E/S en 0x401000 (pila hasta 0x402000), páginas pedidas
 // con la syscall 8 desde 0x402000. proc_io, proc_ihi y proc_wlo valen 0.
+// Los AXE1 de exec (build_guard, EX-04) separan la pila: la E/S sigue sola en
+// 0x401000, las páginas pedidas siguen desde 0x402000 y llegan hasta 0x40D000,
+// 0x40E000 es una guarda sin mapa y la pila va en 0x40F000 (tope 0x410000,
+// proc_stk). Un desborde cae en la guarda y mata solo a ese proceso.
 //
 // AXE2 (build_image): imagen de 1 a 16 páginas desde 0x400000, la página de
 // E/S sola en 0x410000, una página de guarda sin mapa en 0x411000, la pila en
@@ -650,6 +655,10 @@ fn copy_user(pi: i64, src: i64, n: i64, code: i64) -> i64 {
 let proc_io: [i64; 2];
 let proc_ihi: [i64; 2];
 let proc_wlo: [i64; 2];
+// Base de la pila de un AXE1 con guarda (0x40F000), o 0 (demos y AXE2).
+let proc_stk: [i64; 2];
+// exec_build lo pone en 1 antes de build_proc: pide la pila con guarda.
+let build_guard: i64 = 0;
 let proc_img: [i64; 32];
 
 // Base de la página de E/S del proceso en curso: ahí el kernel lee el nombre
@@ -680,6 +689,7 @@ fn proc_begin(pi: i64) -> i64 {
     proc_io[pi] = 0;
     proc_ihi[pi] = 0;
     proc_wlo[pi] = 0;
+    proc_stk[pi] = 0;
     udp_release(pi);
     tcp_release(pi);
     proc_zone[pi] = build_zone;
@@ -731,6 +741,24 @@ fn build_proc(pi: i64, src: i64, n: i64, secret: i64) -> i64 {
         zone_errno = 6;
         return 0;
     }
+    // EX-04: con guarda, 0x401000 queda solo para la E/S y la pila va en
+    // 0x40F000 (tope 0x410000), con 0x40E000 sin mapa debajo.
+    let top = 0x402000;
+    if (build_guard != 0) {
+        let stk = take_page(pi, 0);
+        if (stk == 0) {
+            charge_zone = 0;
+            zone_errno = 6;
+            return 0;
+        }
+        if (map_user(pi, 0x40F000, stk, 7 | pte_nx_bit()) == 0) {
+            charge_zone = 0;
+            zone_errno = 6;
+            return 0;
+        }
+        proc_stk[pi] = 0x40F000;
+        top = 0x410000;
+    }
     if (secret != 0) {
         let data = take_page(pi, 0);
         if (data == 0) {
@@ -754,7 +782,7 @@ fn build_proc(pi: i64, src: i64, n: i64, secret: i64) -> i64 {
         zone_errno = 6;
         return 0;
     }
-    forge(pi, 0x400000, 0x402000, 0x202);
+    forge(pi, 0x400000, top, 0x202);
     proc_state[pi] = 1;
     charge_zone = 0;
     return 1;

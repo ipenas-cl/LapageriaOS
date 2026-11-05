@@ -171,6 +171,15 @@ exc_run z 0 0x00000000 '(48)?f7'
 exc_run r 0 0x00000000 '(48)?f7'
 exc_run m 0 0x00000000 '(48)?f7'
 exc_run i 13 0x0000001a 'cd03'
+# EX-04: la pila de un AXE1 (0x40F000, tope 0x410000) tiene una guarda sin mapa
+# en 0x40E000, aparte de la página de E/S (0x401000). Una recursión sin fin tiene
+# que caer en la guarda (0x40Exxx, escritura sin página: error 6); tocarla y un
+# push con rsp dentro de ella, también.
+base_n=$attack_n
+atk_run s 14 0x00000006 '0x000000000040e[0-9a-f]{3}'
+atk_run t 14 0x00000004 0x000000000040e000
+atk_run v 14 0x00000006 0x000000000040e7f8
+guard_n=$((attack_n - base_n))
 typewait "zone ls" 100
 zk=$(tr -d '\r' < "$SERIAL" | grep -E '^zone [0-9]+ k root=/zonas/k ' | tail -1)
 [ -n "$zk" ] || fail "zone k missing after the attacks"
@@ -178,7 +187,34 @@ printf '%s\n' "$zk" | grep -q ' pag=0 ' || fail "zone k kept pages after being k
 printf '%s\n' "$zk" | grep -q 'proc=0/' || fail "zone k kept a process after being killed ($zk)"
 typewait "echo vivo2" 50
 has "vivo2" || fail "shell did not answer after the attacks"
-echo "ok   ring 3 vs AXE1: $attack_n ataques (leer/escribir kernel, ejecutar kernel, ejecutar pila y página NX, escribir su código, no canónica, sin mapa, #UD, #DE x3, int 3) mataron solo al proceso"
+[ "$base_n" = 16 ] || fail "esperaba 16 ataques AXE1 de base, corrieron $base_n"
+[ "$guard_n" = 3 ] || fail "esperaba 3 ataques a la guarda, corrieron $guard_n"
+echo "ok   ring 3 vs AXE1: $base_n ataques (leer/escribir kernel, ejecutar kernel, ejecutar pila y página NX, escribir su código, no canónica, sin mapa, #UD, #DE x3, int 3) mataron solo al proceso"
+echo "ok   guarda de la pila AXE1 (0x40E000): recursión sin fin, leer la guarda y push con rsp en ella ($guard_n ataques) mataron solo al proceso, zona k sin páginas"
+
+# EX-04: el desborde mata solo a ese proceso. exec2 corre dos AXE1 a la vez en la
+# zona 0, zatk en modo 's' (recursión sin fin) y hola; hola termina bien y
+# devuelve todas sus páginas (7: 3 tablas, 1 tabla de páginas, código, E/S y
+# pila), y el shell sigue. En los dos órdenes (el primero nombrado es el pid 1).
+typewait "exec plant" 100
+has "exec plant ok" || fail "exec plant no escribió hola"
+typewait "fs write q s" 100
+for pair in "zatk hola" "hola zatk"; do
+    off=$(wc -c < "$SERIAL" | tr -d ' ')
+    typewait "exec2 $pair" 900
+    win=$(tail -c +$((off + 1)) "$SERIAL" | tr -d '\r')
+    printf '%s\n' "$win" | grep -qx 'atk s' || fail "exec2 $pair: el ataque no arrancó: $win"
+    printf '%s\n' "$win" | grep -qx 'desde disco' || fail "exec2 $pair: hola no terminó bien: $win"
+    printf '%s\n' "$win" | grep -qx 'atk survived' && fail "exec2 $pair: zatk sobrevivió: $win"
+    printf '%s\n' "$win" | grep -Eqx 'user killed pid=[12] vec=14 err=0x00000006 addr=0x000000000040e[0-9a-f]{3}' || fail "exec2 $pair: el desborde no cayó en la guarda: $win"
+    [ "$(printf '%s\n' "$win" | grep -c '^user killed ')" = 1 ] || fail "exec2 $pair: murió más de un proceso: $win"
+    printf '%s\n' "$win" | grep -Eqx 'exit pid=[12] freed=7' || fail "exec2 $pair: hola no devolvió sus 7 páginas: $win"
+    printf '%s\n' "$win" | grep -qx 'exec2 ok' || fail "exec2 $pair no terminó: $win"
+    printf '%s\n' "$win" | grep -q 'zone leak' && fail "exec2 $pair: fuga: $win"
+    typewait "echo vivo-$pair" 50
+    has "vivo-$pair" || fail "exec2 $pair: el shell no respondió"
+done
+echo "ok   desborde de pila AXE1 con otro proceso vivo (exec2 zatk hola y hola zatk): muere solo zatk en la guarda, hola dice 'desde disco' y devuelve 7 páginas, el shell sigue"
 
 # Punteros del kernel como argumento de syscalls: se niegan y nada se filtra.
 typewait "fs write /zonas/k/q d" 100

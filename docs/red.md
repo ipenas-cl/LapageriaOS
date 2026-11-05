@@ -539,7 +539,7 @@ P sale de `$RANDOM`.
 | (b) `exec tcpcli` | socat del host escucha en P+100; el invitado conecta (guestfwd), imprime `tcp pause`; la prueba hace `set_link n0 off` 2,4 s y `on`; el cliente manda 3000 bytes durante el corte; `retx` sube >= 1; el host recibe 3000 bytes con la misma suma que imprimió el invitado; recibe «respuesta» y el EOF; `connect` a 10.0.2.2:1 da -111 (`rstin` +1) |
 | (c) RST | socat del host conecta a P+1 (invitado 7999, sin socket): `rstout` +1 y en el pcap un segmento desde el puerto 7999 con `seq 0`, offset 5 y flags `0x14`; con `tcpdump`, `Flags [R.]` y sin checksum malo |
 | (d) zonas | `zone exec n tcpeco` (sin red): `tcp denied`, `niega >= 1`, no llega a las pruebas de punteros; `zone net m` y `zone exec m tcpeco`: dos ecos idénticos |
-| (e) fugas | `tcp stat` llega a `used 0`, `lst 0`, `tw 0`, con `bad 0` y `giveup 0`; todos los procesos liberan las mismas páginas (`freed=6`); `net down` deja 0 TCB y el shell sigue |
+| (e) fugas | `tcp stat` llega a `used 0`, `lst 0`, `tw 0`, con `bad 0` y `giveup 0`; todos los procesos liberan las mismas páginas (`freed=7` desde EX-04: la pila AXE1 tiene página propia); `net down` deja 0 TCB y el shell sigue |
 
 Qué probó cada cosa y qué no:
 

@@ -344,7 +344,7 @@ queda con `pag=0` y `proc=0/`.
 | 1 / 2 | leer / escribir `0xFFFFFFFF80400000` (texto del kernel) | #PF `err=0x5` / `0x7` |
 | 3 / 4 | leer / escribir `0xFFFF800000001000` (alias alto de las tablas) | #PF `0x5` / `0x7` |
 | 5 | leer `0x1000` (identidad baja, tablas) | #PF `0x5` |
-| 6 | ejecutar la pila (`0x401800`, NX) | #PF `0x15` |
+| 6 | ejecutar la página de E/S (`0x401800`, NX; antes de EX-04 era también la pila) | #PF `0x15` |
 | 7 | ejecutar la página pedida con la syscall 8 (`0x402000`, NX) | #PF `0x15` |
 | 8 | escribir su página de código (solo lectura) | #PF `0x7` |
 | 9 | ejecutar el texto del kernel | #PF `0x15` |
@@ -355,6 +355,9 @@ queda con `pag=0` y `proc=0/`.
 | r | `div_raw(1, 0)` (divisor cero sin guarda) | #DE, vec 0, addr = RIP del `idiv` |
 | m | `rem_raw(1, 0)` (divisor cero sin guarda) | #DE, vec 0, addr = RIP del `idiv` |
 | i | `int 3` | #GP vec 13 `err=0x1a` (3·8+2): la puerta 3 es DPL 0, no #BP |
+| s | recursión sin fin (EX-04) | #PF `0x6` en `0x40Exxx`: cae en la guarda de la pila |
+| t | leer el primer byte de la guarda `0x40E000` (EX-04) | #PF `0x4` en `0x40E000` |
+| v | `rsp` en `0x40E800` y un `push` (EX-04) | #PF `0x6` en `0x40E7F8` |
 
 **Bug encontrado y arreglado.** Antes de este cambio, el modo 1 (y todos
 los demás) paraba la máquina: un proceso de `exec` o de zona no tiene
