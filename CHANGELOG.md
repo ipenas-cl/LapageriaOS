@@ -8,6 +8,20 @@ para ese commit es `legacy-tempo`.
 
 ## 0.8
 
+EX-06, Copihue v0.44.2 y marco local de más de 4 KiB. (1) El pin sube de
+v0.44.1 a v0.44.2 (commit `eaadb4472935a542979ebfbd2f7d3c7ebf719212`). El
+compilador sondea la pila en los prólogos con marco N ≥ 4096: tras `push rbp` /
+`mov rbp, rsp` hace `mov r11, N` y en bucle `sub rsp, 4096` + `or qword [rsp], 0`
++ `sub r11, 4096` + `cmp` / `ja`, y al final `sub rsp, r11` + `or qword [rsp],
+0`; los marcos de menos de 4096 quedan igual y la ABI no cambia. Kernel y
+programas de usuario se recompilaron sin cambios de código: `kernel.bin` sigue en
+514363 bytes (1005 sectores). (2) `atk2 y` (`let b: [u8; 8192]`), que hasta
+v0.44.1 saltaba la guarda y caía en la E/S, ahora muere en `0x411xxx` (`vec=14
+err=0x4`) con el prólogo, antes de que corra el cuerpo, y solo muere el proceso.
+`tests/qemu_axe2_test.sh` ya no lo informa: lo exige (`atk_run y`). (3)
+`docs/PEDIDOS_COPIHUE.md` marca como cerrado el pedido de sondeo de pila (EX-03).
+Corridas reales y conteos en `patches/RESUMEN.md`.
+
 EX-05, Copihue v0.44.1, AXE2 desde el compilador, pérdida de varios segmentos
 en una ráfaga de TCP y guarda en las demos. (1) El pin sube de v0.42.5 a
 v0.44.1 (commit `20c46c72ecec4d3190cf5c7ad8a534a259c92b7f`). `pag2` y `atk2` ya

@@ -107,7 +107,7 @@ QEMU_CPU = -cpu qemu64
 # existir antes de esas reglas: si no, la etapa 1 y la etapa 2 no esperan
 # al compilador (el CI de la etapa 2 falló así la primera vez).
 COPIHUE_REPO   ?= https://github.com/ipenas-cl/copihue.git
-COPIHUE_COMMIT ?= v0.44.1
+COPIHUE_COMMIT ?= v0.44.2
 COPIHUE_DIR     = $(BUILD_DIR)/copihue
 COPIHUE       ?= $(COPIHUE_DIR)/copihue
 
@@ -259,7 +259,7 @@ $(GRANDE_IMG): src/user/grande.lap scripts/mkaxe.sh $(COPIHUE) | $(BUILD_DIR)
 	$(abspath $(COPIHUE)) --flat 0x400000 -o $(GRANDE_BIN) src/user/grande.lap
 	scripts/mkaxe.sh $(GRANDE_BIN) $(GRANDE_AXE) $@ grande_fill
 
-# Programa de tres páginas (EX-02, EX-05). El compilador (v0.44.1) arma el AXE2
+# Programa de tres páginas (EX-02, EX-05). El compilador (v0.44.2) arma el AXE2
 # entero: `copihue --flat 0x400000 --axe2 --sizes`. pag2.lap tiene texto en dos
 # páginas (`where` va con align(4096)), los `let` con valor como datos y un
 # `let` sin valor como bss, hasta cerrar la tercera página. --sizes se compara

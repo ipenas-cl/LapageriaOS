@@ -261,19 +261,14 @@ for pair in "atk2 pag2" "pag2 atk2"; do
 done
 echo "ok   desborde de pila con otro proceso vivo (exec2 atk2 pag2 y pag2 atk2): muere solo atk2 en la guarda, pag2 dice pag2 ok y devuelve 9 páginas, el shell sigue"
 
-# Límite conocido (informativo, no se exige): un marco local de más de una
-# página salta la guarda; el compilador no sondea la pila (PEDIDOS_COPIHUE.md).
-typewait "fs write /zonas/k/q y" 100
-off=$(wc -c < "$SERIAL" | tr -d ' ')
-typewait "zone exec k atk2" 300
-win=$(tail -c +$((off + 1)) "$SERIAL" | tr -d '\r')
-if printf '%s\n' "$win" | grep -q 'atk2 survived'; then
-    echo "info marco local de 8 KiB (atk2 y): salta la guarda y sobrevive (por la geometría, b[0] cae en 0x410xxx, la E/S; no se observó el contenido)"
-else
-    echo "info marco local de 8 KiB (atk2 y): $(printf '%s\n' "$win" | grep '^user killed ' || echo 'sin user killed')"
-fi
-typewait "echo vivo-y" 50
-has "vivo-y" || fail "el shell no respondió tras el marco de 8 KiB"
+# EX-06: cerrado por Copihue v0.44.2 (sondeo de pila, PEDIDOS_COPIHUE.md EX-03).
+# Antes de v0.44.2 un marco local de más de una página saltaba la guarda de un
+# salto (b[0] caía en 0x410xxx, la E/S); desde v0.44.2 el prólogo de `big_frame`
+# (`let b: [u8; 8192]`) sondea la pila de a una página y tiene que caer en la
+# guarda (0x411000, sin mapa) antes de que el cuerpo de la función corra:
+# sigue siendo un solo `user killed`, sin `atk2 survived`.
+atk_run y 14 0x00000004 '0x0000000000411[0-9a-f]{3}'
+echo "ok   marco local de 8 KiB (atk2 y): el sondeo de pila de v0.44.2 cae en la guarda (0x411xxx) antes de que el cuerpo de la función corra, mata solo al proceso"
 
 # Control: la misma escritura en la segunda página de atk2 (datos) no mata a nadie.
 typewait "fs write /zonas/k/q w" 100

@@ -98,11 +98,23 @@ pila.
 
 Cubre la pila que baja en pasos de menos de una página (recursión, `push`,
 `call`), y el `rsp` puesto a mano en la guarda o bajo la E/S (el hueco sin mapa
-hasta el fin de la imagen). No cubre un marco local de más de 4096 bytes: el
-compilador no sondea la pila, un arreglo local de 8 KiB deja `rsp` más de una
-página abajo y sus escrituras caen en `0x410xxx`, en la E/S, sin pasar por la
-guarda (`atk2` modo `y`; la prueba lo informa y no lo exige). Cerrarlo del todo
-pide sondeo de pila en el compilador (`docs/PEDIDOS_COPIHUE.md`, EX-03).
+hasta el fin de la imagen).
+
+**Marco local de más de 4096 bytes (EX-06, cerrado por Copihue v0.44.2).** Hasta
+v0.44.1 el compilador bajaba `rsp` de una vez (`sub rsp, 8192`) y las escrituras
+del cuerpo caían en `0x410xxx`, en la E/S, sin pasar por la guarda. Desde
+v0.44.2 el prólogo de una función con marco N ≥ 4096 sondea la pila: tras
+`push rbp` / `mov rbp, rsp` hace `mov r11, N` y, en bucle, `sub rsp, 4096` +
+`or qword [rsp], 0` + `sub r11, 4096` + `cmp` / `ja`; al final `sub rsp, r11` +
+`or qword [rsp], 0`. Con la pila en `0x412000..0x413000`, el segundo sondeo
+(`rsp` ya bajo `0x412000`) toca `0x411xxx`, la guarda, y es un `#PF` de
+escritura antes de que corra una sola línea del cuerpo (`atk2` modo `y`:
+`vec=14 err=0x4 addr=0x411xxx`, el error que informó QEMU con el `or` sobre una
+página sin mapa; la prueba lo fija así). La prueba ya lo exige. Los marcos de
+menos de 4096 bytes no cambian. Como el sondeo toca cada página del camino, la
+guarda no se puede saltar con ningún tamaño de marco compilado con v0.44.2.
+No se probó un marco en un AXE1 (`atk`/`zatk`); por el mismo prólogo debería caer
+en `0x40Exxx`.
 
 ### Página de guarda de la pila de un AXE1 (EX-04)
 
@@ -125,8 +137,9 @@ la arma cuando `exec_build` pone `build_guard`; desde EX-05 también las demos d
   pedido a la guarda ni de la guarda a la pila.
 - Cuesta una página más por AXE1 (7 en vez de 6: 3 tablas, 1 tabla de páginas,
   código, E/S y pila), que es lo que devuelve `exit` (`freed=7`).
-- Mismo límite que en un AXE2: un marco local de más de 4096 bytes salta la
-  guarda (`docs/PEDIDOS_COPIHUE.md`, EX-03: sin sondeo de pila en el compilador).
+- Un marco local de más de 4096 bytes: desde Copihue v0.44.2 el prólogo sondea
+  la pila (ver arriba, EX-06). Hasta v0.44.1 saltaba la guarda. Sin prueba propia
+  en un AXE1.
 
 `zatk` gana tres modos (`s`, `t`, `v`, ver `docs/zonas.md`) y
 `tests/qemu_atk1_test.sh` corre los 16 de siempre más esos tres, y `exec2 zatk
@@ -240,7 +253,7 @@ kernel, en la mitad alta o con el bit 63; magic `AXE3`.
 | `s` | desbordar la pila hacia abajo (recursión) | `err=0x6` en `0x411xxx`: cae en la guarda sin tocar la E/S |
 | `t` `u` `r` | leer el primer byte de la guarda, escribir el último, ejecutarla | `err=0x4` en `0x411000`, `err=0x6` en `0x411fff`, `err=0x14` en `0x411000` |
 | `v` `x` | `rsp` dentro de la guarda y un `push`; `rsp` bajo la E/S y un `push` | `err=0x6` en `0x4117f8` y en `0x40f7f8` |
-| `y` | marco local de 8 KiB | nada la detiene: salta la guarda (límite conocido, arriba) |
+| `y` | marco local de 8 KiB | el sondeo de pila de v0.44.2 cae en la guarda (`0x411xxx`) |
 | `l` `m` `n` | leer el kernel, escribir la mitad alta, leer `0x1000` | `err=0x5`, `0x7`, `0x5` |
 | `o` | dirección no canónica | `#GP` o `#PF`, según el QEMU |
 | `w` en `atk2w` | escribir la segunda página (texto) | `err=0x7` en `0x401000` |
