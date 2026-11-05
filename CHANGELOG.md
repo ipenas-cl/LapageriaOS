@@ -8,6 +8,38 @@ para ese commit es `legacy-tempo`.
 
 ## 0.8
 
+OB-03, espacio en `par`, `zone ls` con CPU y cierre de la etapa 7.
+`par.bin` estaba en 4078 de los 4080 bytes que admite `mkaxe.sh`. El modo de
+CPU por zona (`k<d>`) pasa a un programa propio, `src/user/parcpu.lap`
+(`zone parcpu` lo escribe como `parcpu`; Makefile, `kernel.lap` y `.gitignore`
+lo registran), y `par.bin` baja a 3919 bytes (`parcpu.bin`: 665). No se subió el
+tope: el código de usuario es una página de 4 KiB y sus búferes están en
+direcciones fijas (`docs/PEDIDOS_COPIHUE.md`). `parcpu` ya no depende solo del
+plazo de 60 s: lee el contador a lo sumo 2000000 veces y, si no llega, sale
+solo y deja `0` en `r<pid>`; el modo `n9` (1000 lecturas) ejerce esa salida y
+`tests/qemu_cpu_test.sh` la comprueba y exige que ningún `parcpu` haya salido
+por tope. `zone ls` agrega `cpu=<cuota>/20 tot=<ticks>` al final de cada línea
+(las pruebas que anclaban `max=N$` ahora buscan `max=N cpu=`). `docs/zonas.md`
+gana «Administración de zonas» (todos los comandos `zone` y una receta) y el
+README anota lo que falta de la etapa 7.
+
+FS-05b, prueba de CPU independiente de la velocidad (PR 44). La prueba pedía
+67 millones de vueltas fijas y esperaba de ahí ticks disputados; en el runner
+de CI una zona tuvo 30 y falló. Ahora el programa gasta CPU hasta que el kernel
+le ha cobrado N ticks a su zona (modo `k<d>`, syscall 28 `cpu_ticks`, en la
+máscara de `zone sched`). Las cotas no cambian; `tests/repeat.sh` acepta
+`sin-icount`.
+
+FS-05, límite de CPU estricto por zona, `fs rm` protegido y disco por tiempo
+real (PR 44). (1) Una zona con la cuota agotada y sin otro proceso listo ya no
+sigue corriendo: pasa a una tarea ociosa (`idle_loop`, `hlt` sobre pila propia)
+hasta que la ventana de 20 ticks se renueva; `zone cpu` muestra `idle=` y
+`solo=`. (2) `fs rm` sin `-r` también pasa por la guarda: `/`, `/zonas` y
+`/zonas/<nombre>` se rechazan sin tocar el disco. (3) El ATA espera por tiempo
+real, leyendo el contador del canal 0 del PIT (cada 16 sondeos, rendición a los
+5 s), sin ticks, `hlt` ni interrupciones; `tests/qemu_ata_test.sh` con
+`-icount shift=4`.
+
 FS-04. (1) El `exec fail 1` con `-icount shift=4` era un timeout ATA: las
 esperas del estado (BSY, DRQ, fin de escritura) acababan a las 200000
 lecturas de `inb`, que miden instrucciones, mientras QEMU completa la E/S en

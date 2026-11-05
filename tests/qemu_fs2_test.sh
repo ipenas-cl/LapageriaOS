@@ -404,7 +404,7 @@ for kv in niega=91 fuga=5 max=12 pag=0; do
 done
 printf '%s\n' "$za" | grep -q ' proc=0/2 ' || fail "la zona a retuvo un proceso: $za"
 zb=$(pick "zone 2 b ") || fail "zone 2 desapareció"
-printf '%s\n' "$zb" | grep -q ' pag=0 niega=0 fuga=0 max=0$' || fail "la zona b se tocó: $zb"
+printf '%s\n' "$zb" | grep -q ' pag=0 niega=0 fuga=0 max=0 cpu=' || fail "la zona b se tocó: $zb"
 expect_cat "/zonas/a/n" "Z"
 expect_cat "/zonas/a/d/n" "Y"
 run "fs cat /zonas/b/n"

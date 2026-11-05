@@ -122,6 +122,7 @@ COPIHUE_KERNEL_SRC = $(KERNEL_SRC)/copihue/console.lap \
                      $(KERNEL_SRC)/copihue/zone_img.lap \
                      $(KERNEL_SRC)/copihue/atk_img.lap \
                      $(KERNEL_SRC)/copihue/par_img.lap \
+                     $(KERNEL_SRC)/copihue/parcpu_img.lap \
                      $(KERNEL_SRC)/copihue/zone.lap \
                      $(KERNEL_SRC)/copihue/net.lap \
                      $(KERNEL_SRC)/copihue/udpeco_img.lap \
@@ -264,6 +265,16 @@ PAR_IMG = $(KERNEL_SRC)/copihue/par_img.lap
 $(PAR_IMG): src/user/par.lap scripts/mkaxe.sh $(COPIHUE) | $(BUILD_DIR)
 	$(abspath $(COPIHUE)) --flat 0x400000 -o $(PAR_BIN) src/user/par.lap
 	scripts/mkaxe.sh $(PAR_BIN) $(PAR_AXE) $@ par_fill
+
+# Programa de la prueba de cuota de CPU (OB-03), salido de par: `zone parcpu`
+# lo escribe como parcpu y `zone pair za zb parcpu` corre dos copias.
+PARCPU_BIN = $(BUILD_DIR)/parcpu.bin
+PARCPU_AXE = $(BUILD_DIR)/parcpu.axe
+PARCPU_IMG = $(KERNEL_SRC)/copihue/parcpu_img.lap
+
+$(PARCPU_IMG): src/user/parcpu.lap scripts/mkaxe.sh $(COPIHUE) | $(BUILD_DIR)
+	$(abspath $(COPIHUE)) --flat 0x400000 -o $(PARCPU_BIN) src/user/parcpu.lap
+	scripts/mkaxe.sh $(PARCPU_BIN) $(PARCPU_AXE) $@ parcpu_fill
 
 # Programa de eco UDP de anillo 3 (RD-01). `udp plant` lo escribe como
 # udpeco. Ver docs/red.md.
@@ -409,7 +420,7 @@ debug: $(OS_IMAGE) $(DATA_IMG)
 
 clean:
 	rm -rf $(BUILD_DIR)
-	rm -f $(KERNEL_SRC)/copihue/exec_img.lap $(KERNEL_SRC)/copihue/zone_img.lap $(KERNEL_SRC)/copihue/atk_img.lap $(KERNEL_SRC)/copihue/par_img.lap $(KERNEL_SRC)/copihue/udpeco_img.lap $(KERNEL_SRC)/copihue/udpdos_img.lap $(KERNEL_SRC)/copihue/udpwait_img.lap $(KERNEL_SRC)/copihue/tcpeco_img.lap $(KERNEL_SRC)/copihue/tcpcli_img.lap $(KERNEL_SRC)/copihue/tcpmulti_img.lap $(KERNEL_SRC)/copihue/tcphog_img.lap $(KERNEL_SRC)/copihue/traza_img.lap
+	rm -f $(KERNEL_SRC)/copihue/exec_img.lap $(KERNEL_SRC)/copihue/zone_img.lap $(KERNEL_SRC)/copihue/atk_img.lap $(KERNEL_SRC)/copihue/par_img.lap $(KERNEL_SRC)/copihue/parcpu_img.lap $(KERNEL_SRC)/copihue/udpeco_img.lap $(KERNEL_SRC)/copihue/udpdos_img.lap $(KERNEL_SRC)/copihue/udpwait_img.lap $(KERNEL_SRC)/copihue/tcpeco_img.lap $(KERNEL_SRC)/copihue/tcpcli_img.lap $(KERNEL_SRC)/copihue/tcpmulti_img.lap $(KERNEL_SRC)/copihue/tcphog_img.lap $(KERNEL_SRC)/copihue/traza_img.lap
 
 help:
 	@echo "LapageriaOS $(VERSION) — kernel y arranque en Copihue $(COPIHUE_COMMIT)"

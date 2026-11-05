@@ -1,0 +1,81 @@
+// parcpu: programa de la prueba de cuota de CPU por zona (copihue --flat
+// 0x400000). Sale de `par` (src/user/par.lap), que llegó a 4078 de los 4080
+// bytes que admite mkaxe.sh. Se corre con `zone pair za zb parcpu`. Cada copia
+// lee su modo del archivo `q` de su zona (0x401800 nombre, 0x401C00 datos):
+//
+//   'k' + un dígito d (k6): gasta CPU, sin ceder, hasta que el kernel le haya
+//       cobrado a la zona 10*d ticks (syscall 28), y sale. Sirve para medir la
+//       cuota de CPU (`zone cpu`): lo que importa son los ticks que el kernel
+//       cobra, no cuántas vueltas da el anfitrión, así que el gasto se pide en
+//       ticks y da lo mismo en un anfitrión rápido, lento o con -icount.
+//   'y' (o cualquier otro modo, o sin archivo q) cede 6 veces y sale.
+//
+// Tope de lecturas: el contador se mira una vez cada 1024 vueltas y a lo sumo
+// 2000000 veces ('k'; 1000 en el modo de prueba 'n'). Si el contador no avanza (por ejemplo, si el PIT no
+// cuenta) el programa sale solo y lo dice: deja un '0' en el archivo `r<pid>`
+// de su zona. Si llegó a los 10*d ticks no escribe nada: una escritura al
+// disco después de llegar cobra un tick más a la zona, dentro de la syscall, y
+// la prueba del tope duro cuenta esos ticks. La prueba lee r<pid> con `fs cat`
+// y falla con un mensaje claro, sin esperar el plazo de 60 s. Sin cadenas ni
+// globales: un let global cae en la página de código.
+
+// Gasta CPU hasta que la zona lleva 10*d ticks cobrados. 1 si lo logró, 0 si
+// agotó las `cap` lecturas del contador (vueltas del bucle exterior) sin llegar.
+fn hog_ticks(d: i64, cap: i64) -> i64 {
+    let reads: i64 = 0;
+    while (reads < cap) {
+        if (syscall(28) >= d * 10) { return 1; }
+        let i: i64 = 0;
+        while (i < 1024) { i = i + 1; }
+        reads = reads + 1;
+    }
+    return 0;
+}
+
+// Deja un '0' en el archivo r<pid>: el contador no llegó.
+fn put_fail() {
+    let s: i64 = syscall(25, 0);
+    let pid: i64 = (s >> 8) & 255;
+    *(0x401C00 as *u8) = 48 as u8;
+    *(0x401800 as *u8) = 114;
+    *(0x401801 as *u8) = (48 + pid) as u8;
+    *(0x401802 as *u8) = 0;
+    syscall(6, 1);
+}
+
+fn yields(n: i64) {
+    let i: i64 = 0;
+    while (i < n) {
+        syscall(4);
+        i = i + 1;
+    }
+}
+
+fn run() {
+    let m: i64 = *(0x401C00 as *u8) & 255;
+    if (m == 107) {
+        if (hog_ticks(*(0x401C01 as *u8) - 48, 2000000) == 0) { put_fail(); }
+        return;
+    }
+    // 'n' + dígito: como 'k' pero con solo 1000 lecturas. Con d = 9 (90 ticks)
+    // no llega nunca: la prueba lo usa para ver la salida por tope.
+    if (m == 110) {
+        if (hog_ticks(*(0x401C01 as *u8) - 48, 1000) == 0) { put_fail(); }
+        return;
+    }
+    yields(6);
+}
+
+// Sin archivo q legible queda la 'y' de abajo.
+naked fn _start() {
+    *(0x401C00 as *u8) = 121;
+    *(0x401800 as *u8) = 113;
+    *(0x401801 as *u8) = 0;
+    rax = 7;
+    rdi = 64;
+    syscall();
+    run();
+    rax = 5;
+    syscall();
+    hlt();
+}

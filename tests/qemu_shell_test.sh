@@ -772,15 +772,15 @@ printf '%s\n' "$z1" | grep -q ' pag=0 ' || fail "zone 1 pages not released ($z1)
 printf '%s\n' "$z1" | grep -q 'proc=0/' || fail "zone 1 process leaked ($z1)"
 printf '%s\n' "$z1" | grep -q ' niega=91 ' || fail "denied syscalls and paths: want niega=91 (64 + 27) ($z1)"
 printf '%s\n' "$z1" | grep -q ' fuga=5 ' || fail "zone escapes: want fuga=5 ($z1)"
-printf '%s\n' "$z1" | grep -q ' max=12$' || fail "zone 1 quota 12 not reached exactly, or passed ($z1)"
+printf '%s\n' "$z1" | grep -q ' max=12 cpu=' || fail "zone 1 quota 12 not reached exactly, or passed ($z1)"
 z2=$(printf '%s\n' "$clean" | grep '^zone 2 b root=/zonas/b ' | tail -1)
 [ -n "$z2" ] || fail "zone B missing after exec"
-printf '%s\n' "$z2" | grep -q ' pag=0 niega=0 fuga=0 max=0$' || fail "zone B was touched by zone A ($z2)"
+printf '%s\n' "$z2" | grep -q ' pag=0 niega=0 fuga=0 max=0 cpu=' || fail "zone B was touched by zone A ($z2)"
 z3=$(printf '%s\n' "$clean" | grep '^zone 3 t root=/zonas/t ' | tail -1)
 [ -n "$z3" ] || fail "zone t missing"
 printf '%s\n' "$z3" | grep -q ' pag=0 ' || fail "zone t kept pages ($z3)"
 printf '%s\n' "$z3" | grep -q 'proc=0/' || fail "zone t kept a process ($z3)"
-printf '%s\n' "$z3" | grep -q ' max=1$' || fail "zone t passed its 1-page quota ($z3)"
+printf '%s\n' "$z3" | grep -q ' max=1 cpu=' || fail "zone t passed its 1-page quota ($z3)"
 # Disco: los intentos fuera del prefijo no dejaron archivos. Entre los dos
 # `fs ls` es el mismo; zbx y x no existen; c sigue vacío.
 ls1=$(printf '%s\n' "$clean" | awk '/^lapageria> fs ls$/ {k++; next} k && /^fs file / {c[k]=c[k] " " $3} END {print c[k-1]}')

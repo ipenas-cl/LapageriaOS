@@ -7,6 +7,7 @@ src/kernel/copihue/exec_img.lap
 src/kernel/copihue/zone_img.lap
 src/kernel/copihue/atk_img.lap
 src/kernel/copihue/par_img.lap
+src/kernel/copihue/parcpu_img.lap
 src/kernel/copihue/udpeco_img.lap
 src/kernel/copihue/udpdos_img.lap
 src/kernel/copihue/udpwait_img.lap

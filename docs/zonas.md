@@ -102,7 +102,45 @@ igual que `exec plant`, en la raíz global. El programa de `zone exec` se
 lee de la raíz global, no de la de la zona.
 
 `zone ls` muestra `root=/zonas/<nombre>` (`root=/` en la global), `cap`,
-`proc`, `pag`, `niega`, `fuga` y `max`.
+`proc`, `pag`, `niega`, `fuga`, `max` y, desde OB-03, `cpu=<cuota>/20` y
+`tot=<ticks cobrados>` (los mismos de `zone cpu`).
+
+## Administración de zonas (OB-03)
+
+Todos los comandos son del shell de la zona 0; en una zona dan `zone denied`.
+Una zona vive en una ranura de las 8 y su tabla está en RAM: no se guarda en
+el disco, así que tras un reinicio hay que volver a crearlas (los archivos de
+`/zonas/<nombre>` sí quedan).
+
+| Comando | Qué hace | Salida |
+|---|---|---|
+| `zone create <nombre> <páginas>` | crea la zona y su raíz `/zonas/<nombre>` (1 a 4096 páginas; nombre de hasta 8 letras o dígitos) | `zone created ...`; `zone fail 11` si el nombre está repetido o mal formado, `zone fail 6` si no hay ranura |
+| `zone ls` | una línea por zona viva | `zone <id> <nombre> root= cap= proc= pag= niega= fuga= max= cpu=<cuota>/20 tot=<ticks>` |
+| `zone destroy <nombre>` | libera la ranura; los archivos quedan | `zone destroyed N`, `zone busy` |
+| `zone rm <nombre> <ruta>` | borra recursivamente dentro de la raíz de la zona | `zone rm ok` |
+| `zone cpu <nombre> [n]` | cuota de CPU (n de 0 a 20 ticks por ventana de 20) y contadores | ver «Cuota de CPU» |
+| `zone sched <nombre>` | agrega a la máscara las syscalls 4, 25, 26 y 28 (ceder, ver, matar, ticks propios) | `zone sched ok` |
+| `zone trace <nombre>` | agrega 23 y 24 (`trace_ctl`, `trace_read`), acotadas a la propia zona | `zone trace ok` |
+| `zone net <nombre>` | agrega 12..22 (UDP y TCP) | `zone net ok` |
+| `zone exec <zona> <programa>` | corre un programa AXE1 del disco (raíz global) dentro de la zona | `zone exec ok` |
+| `zone pair <za> <zb> <programa>` | dos copias a la vez, una por zona (`global` vale) | `zone pair ok` |
+| `zone plant`, `zone atk`, `zone par`, `zone parcpu` | escriben en el disco los programas de prueba `ztest`, `zatk`, `par` y `parcpu` | `zone ... plant ok` |
+
+Receta para una zona completa, con observabilidad y tope de CPU:
+
+```
+zone create web 64        # raíz /zonas/web, 64 páginas
+zone sched web            # puede ceder la CPU y ver sus procesos
+zone trace web            # puede leer su propia traza
+zone net web              # puede usar UDP y TCP
+zone cpu web 10           # como mucho 10 de cada 20 ticks (50%)
+zone ls                   # cuota y uso: cpu=10/20 tot=<ticks>
+zone destroy web
+```
+
+Lo que `zone trace` no da: la zona solo ve sus eventos y no prende ni apaga
+sondas (ver la tabla de syscalls arriba). Quien las prende es la zona global
+(`trace on`, `traza ...`; ver `trace.md`).
 
 ## Cuota de CPU (FS-04, etapa 7)
 
@@ -134,8 +172,16 @@ valor de una zona nueva). `zone cpu <nombre>` muestra
   anillo 3; uno que esté dentro de una syscall en ese tick sigue hasta el
   siguiente (puede pasarse de la cuota por un tick).
 
-La prueba es `tests/qemu_cpu_test.sh` (`make qemu-cpu-test`): `zone pair za zb
-par` con el modo `h` de `par` (100 millones de vueltas sin syscalls).
+La prueba es `tests/qemu_cpu_test.sh` (`make qemu-cpu-test`, normal y con
+`-icount shift=4`): `zone pair za zb parcpu` con el modo `k<d>` de `parcpu`
+(`src/user/parcpu.lap`, salido de `par` en OB-03 porque `par` se quedó sin
+espacio): gasta CPU sin ceder hasta que el kernel le cobra `10*d` ticks.
+`parcpu` lee el contador a lo sumo 2000000 veces; si no llega, sale solo y
+deja un `0` en `r<pid>` de su zona (el modo `n<d>`, con 1000 lecturas, ejerce
+esa salida: `n9` pide 90 ticks y no llega). La prueba lo dice
+(`el contador de ticks no avanza`) en vez de esperar el plazo de 60 s. Si
+llega, no escribe nada: una escritura al disco tras llegar cobraría un tick
+más a la zona y rompería la cota del tope duro.
 
 ## Borrar dentro de la raíz de una zona
 
