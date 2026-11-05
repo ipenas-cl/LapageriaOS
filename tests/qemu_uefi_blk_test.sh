@@ -4,7 +4,9 @@
 # q35 no tiene IDE: `disk` y `fs` solo pueden andar por el backend AHCI de
 # blk.lap. La ESP va en un virtio-blk (no en el SATA, para que el único disco
 # SATA sea el de datos y `disk`/`fs` no toquen la ESP). Dos corridas:
-#   1. Con un disco SATA de datos (en cero, 2048 sectores): `blk` elige AHCI sin
+#   1. Con un disco SATA de datos en un `-device ahci` explícito (el ICH9
+#      integrado queda vacío; el kernel prueba un controlador tras otro). Disco
+#      en cero, 2048 sectores: `blk` elige AHCI sin
 #      que nadie lo pida (el ATA no existe), `disk` da ahci ok, blk ok, blk corrupt
 #      detected; `fs format`/`mkdir`/`write`/`cat`/`scrub` andan. Con QEMU parado
 #      el anfitrión ve AFS1 en el LBA 4 y ABLK en el LBA 5 del archivo SATA.
@@ -83,7 +85,9 @@ start_qemu() {
     rm -f "$MON"
     local extra=()
     if [ "$1" = con ]; then
-        extra=(-drive "id=sata0,file=$SATA,format=raw,if=none" -device ide-hd,drive=sata0,bus=ide.0)
+        # Controlador AHCI explícito (como qemu_ahci_fs_test.sh), no el ICH9
+        # integrado: no depende de cómo el firmware deje ese puerto.
+        extra=(-device ahci,id=ahci -drive "id=sata0,file=$SATA,format=raw,if=none" -device ide-hd,drive=sata0,bus=ahci.0)
     fi
     qemu-system-x86_64 -machine q35 -m 256 "${fw[@]}" ${QEMU_EXTRA:-} \
         -drive "id=esp,format=raw,file=fat:rw:$ESP,if=none" -device virtio-blk-pci,drive=esp,bootindex=0 \
