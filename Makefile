@@ -7,10 +7,12 @@
 #   qemu-udp-test  Solo la prueba de red por IRQ y UDP (tests/qemu_udp_test.sh).
 #   qemu-big-test  Solo programas de varias páginas, AXE2 (tests/qemu_big_test.sh).
 #   mkaxe-test  Solo scripts/mkaxe.sh en el anfitrión (tests/mkaxe_test.sh).
-#   qemu-axe2-test  Solo AXE2 de mkaxe.sh y ataques de anillo 3 (tests/qemu_axe2_test.sh).
+#   qemu-axe2-test  Solo AXE2 del compilador y ataques de anillo 3 (tests/qemu_axe2_test.sh).
 #   qemu-atk1-test  Solo ataques de anillo 3 contra un AXE1 (tests/qemu_atk1_test.sh).
 #   qemu-fast-test  Solo la retransmisión rápida de TCP con pérdida real (tests/qemu_fast_test.sh).
-#   qemu-stab-test  6 corridas de las dos baterías de ataques y de la retransmisión rápida,
+#   qemu-burst-test  Solo la pérdida de varios segmentos en una ráfaga de TCP (tests/qemu_burst_test.sh).
+#   qemu-shell-test  Solo el arranque, las demos (nx, hh, user, sched con guarda) y el resto del shell (tests/qemu_shell_test.sh).
+#   qemu-stab-test  6 corridas de las dos baterías de ataques, de la retransmisión rápida y de la pérdida en ráfaga,
 #              con -icount shift=7 y sin icount.
 #   qemu-tcp-test  Solo la prueba de TCP (tests/qemu_tcp_test.sh).
 #   qemu-trace-test  Solo la prueba de trazas (tests/qemu_trace_test.sh).
@@ -105,7 +107,7 @@ QEMU_CPU = -cpu qemu64
 # existir antes de esas reglas: si no, la etapa 1 y la etapa 2 no esperan
 # al compilador (el CI de la etapa 2 falló así la primera vez).
 COPIHUE_REPO   ?= https://github.com/ipenas-cl/copihue.git
-COPIHUE_COMMIT ?= v0.42.5
+COPIHUE_COMMIT ?= v0.44.1
 COPIHUE_DIR     = $(BUILD_DIR)/copihue
 COPIHUE       ?= $(COPIHUE_DIR)/copihue
 
@@ -150,7 +152,7 @@ COPIHUE_KERNEL_SRC = $(KERNEL_SRC)/copihue/console.lap \
                      $(KERNEL_SRC)/copihue/shell.lap \
                      $(KERNEL_SRC)/copihue/kernel.lap
 
-.PHONY: all qemu qemu-test mkaxe-test qemu-axe2-test qemu-atk1-test qemu-fast-test qemu-stab-test qemu-big-test qemu-udp-test qemu-tcp-test qemu-trace-test qemu-zswitch-test qemu-iso-test qemu-fs2-test qemu-fs3-test qemu-ata-test qemu-cpu-test debug clean help
+.PHONY: all qemu qemu-test qemu-shell-test mkaxe-test qemu-axe2-test qemu-atk1-test qemu-fast-test qemu-burst-test qemu-stab-test qemu-big-test qemu-udp-test qemu-tcp-test qemu-trace-test qemu-zswitch-test qemu-iso-test qemu-fs2-test qemu-fs3-test qemu-ata-test qemu-cpu-test debug clean help
 
 # Imagen de arranque: LBA 0 etapa 1, LBA 1 etapa 2, LBA KERNEL_LBA el kernel.
 all: $(OS_IMAGE)
@@ -257,43 +259,33 @@ $(GRANDE_IMG): src/user/grande.lap scripts/mkaxe.sh $(COPIHUE) | $(BUILD_DIR)
 	$(abspath $(COPIHUE)) --flat 0x400000 -o $(GRANDE_BIN) src/user/grande.lap
 	scripts/mkaxe.sh $(GRANDE_BIN) $(GRANDE_AXE) $@ grande_fill
 
-# Programa de dos páginas de imagen más bss (EX-02). Es el primero que
-# mkaxe.sh empaca como AXE2 de verdad: el texto es pag2.lap; la segunda página
-# es PAG2_DAT (4096 bytes: "SEG2" en el 0, DE AD BE EF en el 0x800, 'Z' en el
-# último, ceros) y la tercera es bss (-b 4096). `exec axe2plant` lo escribe
-# como pag2. El compilador no emite datos ni bss en --flat todavía
-# (docs/PEDIDOS_COPIHUE.md), por eso los datos se arman aquí con printf y dd.
-PAG2_BIN = $(BUILD_DIR)/pag2.bin
-PAG2_DAT = $(BUILD_DIR)/pag2.dat
+# Programa de tres páginas (EX-02, EX-05). El compilador (v0.44.1) arma el AXE2
+# entero: `copihue --flat 0x400000 --axe2 --sizes`. pag2.lap tiene texto en dos
+# páginas (`where` va con align(4096)), los `let` con valor como datos y un
+# `let` sin valor como bss, hasta cerrar la tercera página. --sizes se compara
+# con scripts/chksizes.sh y mkaxe.sh -a valida la cabecera y deja el .lap.
+# `exec axe2plant` lo escribe como pag2.
 PAG2_AXE = $(BUILD_DIR)/pag2.axe
+PAG2_SIZES = $(BUILD_DIR)/pag2.sizes
 PAG2_IMG = $(KERNEL_SRC)/copihue/pag2_img.lap
 
-$(PAG2_DAT): Makefile | $(BUILD_DIR)
-	dd if=/dev/zero of=$@ bs=4096 count=1 status=none
-	printf 'SEG2' | dd of=$@ bs=1 seek=0 conv=notrunc status=none
-	printf '\336\255\276\357' | dd of=$@ bs=1 seek=2048 conv=notrunc status=none
-	printf 'Z' | dd of=$@ bs=1 seek=4095 conv=notrunc status=none
-
-$(PAG2_IMG): src/user/pag2.lap $(PAG2_DAT) scripts/mkaxe.sh $(COPIHUE) | $(BUILD_DIR)
-	$(abspath $(COPIHUE)) --flat 0x400000 -o $(PAG2_BIN) src/user/pag2.lap
-	scripts/mkaxe.sh -d $(PAG2_DAT) -b 4096 $(PAG2_BIN) $(PAG2_AXE) $@ pag2_fill
+$(PAG2_IMG): src/user/pag2.lap scripts/mkaxe.sh scripts/chksizes.sh $(COPIHUE) | $(BUILD_DIR)
+	$(abspath $(COPIHUE)) --flat 0x400000 --axe2 --sizes -o $(PAG2_AXE) src/user/pag2.lap > $(PAG2_SIZES)
+	scripts/chksizes.sh $(PAG2_SIZES) data=12 bss=4084 text_bytes=8192 image=8204 memsize=12288 entry=0x400000
+	scripts/mkaxe.sh -a $(PAG2_AXE) $@ pag2_fill
 
 # Ataques de anillo 3 contra un AXE2 (EX-02). Texto de atk2.lap, una página de
-# datos con un `ret` (0xC3) en el byte 0 y "ATK2" en el 16, una de bss.
+# datos con un `ret` (0xC3) en el byte 0 y "ATK2" en el 16, y bss hasta
+# 0x403000: todo sale de dos `let` globales de atk2.lap (EX-05).
 # `exec axe2plant` lo escribe como atk2 (y atk2w, con 2 páginas de texto).
-ATK2_BIN = $(BUILD_DIR)/atk2.bin
-ATK2_DAT = $(BUILD_DIR)/atk2.dat
 ATK2_AXE = $(BUILD_DIR)/atk2.axe
+ATK2_SIZES = $(BUILD_DIR)/atk2.sizes
 ATK2_IMG = $(KERNEL_SRC)/copihue/atk2_img.lap
 
-$(ATK2_DAT): Makefile | $(BUILD_DIR)
-	dd if=/dev/zero of=$@ bs=4096 count=1 status=none
-	printf '\303' | dd of=$@ bs=1 seek=0 conv=notrunc status=none
-	printf 'ATK2' | dd of=$@ bs=1 seek=16 conv=notrunc status=none
-
-$(ATK2_IMG): src/user/atk2.lap $(ATK2_DAT) scripts/mkaxe.sh $(COPIHUE) | $(BUILD_DIR)
-	$(abspath $(COPIHUE)) --flat 0x400000 -o $(ATK2_BIN) src/user/atk2.lap
-	scripts/mkaxe.sh -d $(ATK2_DAT) -b 4096 $(ATK2_BIN) $(ATK2_AXE) $@ atk2_fill
+$(ATK2_IMG): src/user/atk2.lap scripts/mkaxe.sh scripts/chksizes.sh $(COPIHUE) | $(BUILD_DIR)
+	$(abspath $(COPIHUE)) --flat 0x400000 --axe2 --sizes -o $(ATK2_AXE) src/user/atk2.lap > $(ATK2_SIZES)
+	scripts/chksizes.sh $(ATK2_SIZES) data=20 bss=8172 text_bytes=4096 image=4116 memsize=12288 entry=0x400000
+	scripts/mkaxe.sh -a $(ATK2_AXE) $@ atk2_fill
 
 # Programa de la zona. Misma cabecera AXE1; zone plant lo escribe como ztest.
 ZONE_BIN = $(BUILD_DIR)/zona.bin
@@ -436,6 +428,7 @@ qemu-test: $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_atk1_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_tcp_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_fast_test.sh $(OS_IMAGE)
+	$(TESTS_DIR)/qemu_burst_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_trace_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_zswitch_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_iso_test.sh $(OS_IMAGE)
@@ -445,6 +438,12 @@ qemu-test: $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_cpu_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_cpu_test.sh $(OS_IMAGE) "-icount shift=4"
 	COPIHUE=$(abspath $(COPIHUE)) $(TESTS_DIR)/stage2_big_test.sh $(BUILD_DIR)
+
+# Solo el arranque y las demos (tests/qemu_shell_test.sh): nx, hh, user, sched,
+# disco, fs, exec, zonas, red de usuario y trazas. Reescribe el disco de datos.
+qemu-shell-test: $(OS_IMAGE)
+	dd if=/dev/zero of=$(DATA_IMG) bs=512 count=$(DATA_SECTORS) status=none
+	$(TESTS_DIR)/qemu_shell_test.sh $(OS_IMAGE)
 
 # Solo la red por IRQ y UDP. Usa una copia nueva del disco de datos.
 qemu-udp-test: $(OS_IMAGE)
@@ -471,10 +470,11 @@ qemu-atk1-test: $(OS_IMAGE)
 # Deja los registros en build/stab/ y falla si alguna corrida falla.
 STAB_N   ?= 6
 STAB_PAR ?= 3
+STAB_TESTS ?= axe2 atk1 fast burst
 STAB_DIR  = $(BUILD_DIR)/stab
 qemu-stab-test: $(OS_IMAGE)
 	rm -rf $(STAB_DIR) && mkdir -p $(STAB_DIR)
-	@set -e; for t in axe2 atk1 fast; do \
+	@set -e; for t in $(STAB_TESTS); do \
 	  echo "--- $$t, -icount shift=7"; \
 	  bash $(TESTS_DIR)/repeat.sh $(STAB_DIR)/$${t}_icount $(STAB_N) $(STAB_PAR) $(TESTS_DIR)/qemu_$${t}_test.sh $(OS_IMAGE) || rc=1; \
 	  echo "--- $$t, sin icount"; \
@@ -493,6 +493,11 @@ qemu-tcp-test: $(OS_IMAGE)
 # disco; QEMU_EXTRA="-icount shift=7" suma opciones a QEMU.
 qemu-fast-test: $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_fast_test.sh $(OS_IMAGE)
+
+# EX-05: pérdida de varios segmentos dentro de una ráfaga (par, separados,
+# tanda de 4 y cola) con tcpsnd. Mismas opciones que la anterior.
+qemu-burst-test: $(OS_IMAGE)
+	$(TESTS_DIR)/qemu_burst_test.sh $(OS_IMAGE)
 
 # Solo trazas (OB-01). Usa una copia nueva del disco de datos.
 qemu-trace-test: $(OS_IMAGE)
@@ -552,10 +557,12 @@ help:
 	@echo "  make qemu-udp-test  Solo esa prueba de red (tests/qemu_udp_test.sh)."
 	@echo "  make qemu-big-test  Solo programas de varias páginas, AXE2 (tests/qemu_big_test.sh)."
 	@echo "  make mkaxe-test  Solo scripts/mkaxe.sh en el anfitrión (tests/mkaxe_test.sh)."
-	@echo "  make qemu-axe2-test  Solo AXE2 de mkaxe.sh y ataques de anillo 3 (tests/qemu_axe2_test.sh)."
+	@echo "  make qemu-axe2-test  Solo AXE2 del compilador y ataques de anillo 3 (tests/qemu_axe2_test.sh)."
 	@echo "  make qemu-atk1-test  Solo ataques de anillo 3 contra un AXE1 (tests/qemu_atk1_test.sh)."
 	@echo "  make qemu-fast-test  Solo la retransmisión rápida de TCP con pérdida real (tests/qemu_fast_test.sh)."
-	@echo "  make qemu-stab-test  6 corridas de las baterías AXE2 y AXE1 y de la retransmisión rápida, con y sin -icount shift=7."
+	@echo "  make qemu-burst-test  Solo la pérdida de varios segmentos en una ráfaga de TCP (tests/qemu_burst_test.sh)."
+	@echo "  make qemu-shell-test  Solo el arranque, las demos (con guarda) y el shell (tests/qemu_shell_test.sh)."
+	@echo "  make qemu-stab-test  6 corridas de las baterías AXE2 y AXE1, de la retransmisión rápida y de la pérdida en ráfaga, con y sin -icount shift=7."
 	@echo "  make qemu-tcp-test  Solo la prueba de TCP (tests/qemu_tcp_test.sh)."
 	@echo "  make qemu-trace-test  Solo la prueba de trazas (tests/qemu_trace_test.sh)."
 	@echo "  make qemu-zswitch-test  Solo el cambio de zona en switch_to (tests/qemu_zswitch_test.sh)."

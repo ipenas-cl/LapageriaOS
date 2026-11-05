@@ -455,11 +455,11 @@ fn nx_test_user() -> i64 {
     nx_un = 0;
     let ns = &nx_prog_stack_end - &nx_prog_stack;
     let nd = &nx_prog_data_end - &nx_prog_data;
-    if (build_proc(0, &nx_prog_stack, ns, 0) == 0) {
+    if (build_proc_g(0, &nx_prog_stack, ns, 0) == 0) {
         puts("nx fail user\n");
         return 0;
     }
-    if (build_proc(1, &nx_prog_data, nd, 1) == 0) {
+    if (build_proc_g(1, &nx_prog_data, nd, 1) == 0) {
         release_proc(0);
         puts("nx fail user\n");
         return 0;
@@ -488,6 +488,14 @@ fn nx_test_user() -> i64 {
         puts("nx fail user\n");
         return 0;
     }
+    // EX-05: la pila con guarda de las demos.
+    if (guard_proc_ok(0) == 0 || guard_proc_ok(1) == 0) {
+        release_proc(0);
+        release_proc(1);
+        puts("nx fail guard\n");
+        return 0;
+    }
+    puts("nx ok guard\n");
     nx_clear_if(proc_ksp[0]);
     nx_clear_if(proc_ksp[1]);
     let iflags: u64 = irq_save();

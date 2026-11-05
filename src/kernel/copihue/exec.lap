@@ -178,10 +178,10 @@ fn exec_plant_big() -> i64 {
 }
 
 // `exec axe2plant` (EX-02): escribe en la raíz `pag2` y `atk2`, los AXE2 que
-// armó scripts/mkaxe.sh con texto, datos y bss (src/user/pag2.lap y
-// atk2.lap), y `atk2w`: atk2 con 2 páginas de texto (la segunda, que en atk2
-// es de datos, pasa a ser de solo lectura). Los bytes de pag2_fill y
-// atk2_fill llegan tal cual: la cabecera la hizo mkaxe, no el kernel.
+// armó el compilador con texto, datos y bss (copihue --flat --axe2 sobre
+// src/user/pag2.lap y atk2.lap; EX-05), y `atk2w`: atk2 con 2 páginas de texto
+// (la segunda, que en atk2 es de datos, pasa a ser de solo lectura). Los bytes
+// de pag2_fill y atk2_fill llegan tal cual: la cabecera la hizo el compilador.
 fn exec_plant_axe2() -> i64 {
     let n = pag2_fill(exec_buf);
     if (n < 33 || n > 65568) { return exec_fail(9); }
@@ -191,7 +191,16 @@ fn exec_plant_axe2() -> i64 {
     if (n < 33 || n > 65568) { return exec_fail(9); }
     r = fs_write("atk2", exec_buf, n);
     if (r != 0) { return exec_fail(r); }
+    // El compilador entrega los datos sin relleno (EX-05): para tener 2 páginas
+    // de texto la imagen se estira a 8192 bytes con ceros (la bss no cambia).
     let h: *Axe2 = axe2_of(exec_buf);
+    let i = n;
+    while (i < 32 + 8192) {
+        exec_buf[i] = 0;
+        i = i + 1;
+    }
+    n = 32 + 8192;
+    h.size = 8192;
     h.text = 8192;
     r = fs_write("atk2w", exec_buf, n);
     if (r != 0) { return exec_fail(r); }
@@ -276,8 +285,13 @@ fn exec_hdrcheck() -> i64 {
     h.entry = (0x400000 + tx) as u64;
     hdr_try("entend", n);
     pag2_fill(exec_buf);
-    h.entry = 0x401000 as u64;
+    h.entry = (0x400000 + tx + 8) as u64;
     hdr_try("entdata", n);
+    // EX-05: pag2 trae 2 páginas de texto (`where` está en la segunda, con
+    // align(4096)): una entrada en 0x401000 es válida.
+    pag2_fill(exec_buf);
+    h.entry = 0x401000 as u64;
+    hdr_try("entpage2", n);
     pag2_fill(exec_buf);
     h.entry = 0x410000 as u64;
     hdr_try("entio", n);

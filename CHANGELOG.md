@@ -8,6 +8,41 @@ para ese commit es `legacy-tempo`.
 
 ## 0.8
 
+EX-05, Copihue v0.44.1, AXE2 desde el compilador, pérdida de varios segmentos
+en una ráfaga de TCP y guarda en las demos. (1) El pin sube de v0.42.5 a
+v0.44.1 (commit `20c46c72ecec4d3190cf5c7ad8a534a259c92b7f`). `pag2` y `atk2` ya
+no llevan páginas de datos armadas con `printf` y `dd` en el Makefile: se
+compilan con `copihue --flat 0x400000 --axe2 --sizes`, los `let` con valor son
+los datos y los `let` sin valor la bss. `scripts/chksizes.sh` compara `--sizes`
+(`pag2`: `data=12 bss=4084 text_bytes=8192 image=8204 memsize=12288
+entry=0x400000`; `atk2`: `data=20 bss=8172 text_bytes=4096 image=4116
+memsize=12288`) y `mkaxe.sh -a` valida la cabecera del compilador (la entrada es
+la VA absoluta de `_start`) y deja el `.lap` sin tocar el AXE2; el camino viejo
+de `mkaxe.sh` sigue para AXE1. `pag2` pasa a texto de 2 páginas: `where`, con
+`align(4096)`, corre en `0x401000` (`lea rax, [rel $]`) y `exec pag2` lo exige;
+sigue en 3 páginas y devuelve 9. `atk2w` se arma en el kernel estirando la
+imagen a 8192 bytes. `exec hdrcheck` pasa a 29 casos (`entpage2`, válido).
+`kernel.bin` creció 16384 bytes por el costo de embeber. (2) `tests/qemu_burst_test.sh`
+(`make qemu-burst-test`, también en `qemu-test` y `qemu-stab-test`): cinco
+corridas de `tcpsnd` en un QEMU (sin pérdida, dos seguidos, el 20 y el 24, cuatro
+seguidos, el 20 y otro a más de un MSS, y los dos últimos). Exige los 32768
+bytes íntegros, `fast`, `rtos`, `retx` y `fdrop` por caso y que los `tcp-retx`
+de las trazas coincidan con `retx` y tengan `b 0`; la cola perdida se recupera
+por timer (no hay ACK repetidos detrás). Nuevo en el kernel: `tcp fault txdrop K
+C G` (además pierde el G-ésimo segmento tras la tanda) y `tcp fault left`. No hizo falta cambiar la
+lógica de recuperación: en ráfaga la retransmisión rápida se dispara. Un reenvío
+manda hasta un MSS de datos contiguos, así que huecos a menos de 1460 bytes se
+cubren con uno solo (`retx +1`). Los ecos de RD-03 siguen con `fast 0`: con
+respuestas de 1024 bytes caben a lo más 4 segmentos en vuelo y no llegan a 3
+ACK repetidos; no hay Early Retransmit. (3) Las demos `user`, `hh`, `nx` y
+`sched` ya tienen página de guarda: E/S en `0x401000`, `0x40E000` sin mapa y
+pila en `0x40F000` (`build_proc_g`; `user` a mano). Las pruebas miran las hojas
+de las tablas del proceso y leen `0x40E000` de verdad desde el kernel
+(`guard_probe`: #PF no presente), y `hh` desborda la pila en anillo 3 y exige
+`err 6` con cr2 en la guarda y sin fugas. Líneas nuevas: `nx ok guard`, `hh ok
+guard`, `user ok guard`, `sched ok guard`. Kernel: 1005 sectores (antes 965).
+Corridas reales y conteos en `patches/RESUMEN.md`.
+
 EX-04, página de guarda de la pila de un AXE1 y retransmisión rápida de TCP
 probada en QEMU. (1) La pila de un AXE1 compartía la página `0x401000` con la
 E/S. La E/S sigue sola en `0x401000` y las páginas de la syscall 8 siguen desde

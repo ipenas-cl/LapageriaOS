@@ -113,8 +113,8 @@ lectura. Ahora la E/S sigue sola en `0x401000` y las páginas de la syscall 8
 siguen desde `0x402000` (los programas que existen y los 16 ataques de
 `zatk` no cambian: las direcciones que usan son las mismas). Lo que se mueve
 es la pila: `0x40F000`..`0x410000`, con `0x40E000` sin mapa debajo. `build_proc`
-la arma cuando `exec_build` pone `build_guard` (las demos del kernel, `hh`, `nx` y
-`sched`, siguen con la distribución vieja); `proc_stk[pi]` guarda su base.
+la arma cuando `exec_build` pone `build_guard`; desde EX-05 también las demos del kernel (`hh`, `nx` y
+`sched` con `build_proc_g`, y `user` a mano), que antes seguían con la distribución vieja; `proc_stk[pi]` guarda su base.
 
 - El primer acceso de la pila a la guarda es un `#PF` en anillo 3 (`err=0x6`
   al escribir): el kernel mata solo a ese proceso y devuelve sus páginas.
@@ -192,21 +192,32 @@ inexistentes y una bss que no es un número. El `.lap` que genera limpia el
 buffer que le pasan y solo escribe las palabras no nulas: una página de datos
 casi vacía cuesta poco kernel, una llena unos 5 bytes por byte.
 
-Ejemplo (el Makefile lo hace así para `pag2` y `atk2`): `copihue --flat
-0x400000 -o pag2.bin src/user/pag2.lap` y `mkaxe.sh -d pag2.dat -b 4096 pag2.bin
-pag2.axe pag2_img.lap pag2_fill`. El compilador no emite datos ni bss en `--flat`
-(`docs/PEDIDOS_COPIHUE.md`): `pag2.dat` se arma con `printf` y `dd`, y el programa
-direcciona sus páginas con constantes (`0x401000` datos, `0x402000` bss).
+**Desde EX-05 lo arma el compilador** (Copihue v0.44.1): `copihue --flat
+0x400000 --axe2 --sizes -o pag2.axe src/user/pag2.lap` escribe el AXE2 entero,
+cabecera de 32 bytes incluida, y `--sizes` imprime `text`, `data`, `bss`,
+`text_bytes`, `image`, `memsize` y `entry` por la salida estándar. Los `let` con
+valor son los datos (empiezan en la página siguiente al texto), los `let` sin
+valor son la bss (pegada a los datos, sin bytes en el archivo) y `align(4096)
+fn` pone una función en la segunda página de texto. `entry` es la dirección
+virtual absoluta de `_start` (`0x400000`) y `text_bytes` el texto redondeado a
+páginas. Después `scripts/chksizes.sh` compara `--sizes` con lo esperado
+(`pag2`: `data=12 bss=4084 text_bytes=8192 image=8204 memsize=12288`; `atk2`:
+`data=20 bss=8172 text_bytes=4096 image=4116 memsize=12288`) y `mkaxe.sh -a
+pag2.axe pag2_img.lap pag2_fill` valida la cabecera (magic, imagen = archivo - 32,
+texto, memoria, reservado en cero, entrada dentro del texto), no toca el AXE2 y
+deja el `.lap` que lo embebe. El camino de antes (`mkaxe.sh -d datos -b bss
+payload.bin`, con las páginas armadas a mano) sigue para un compilador sin
+`--axe2`.
 
 `exec axe2plant` escribe en la raíz:
 
 | Nombre | Qué es |
 |---|---|
-| `pag2` | texto + 1 página de datos (`SEG2` en el byte 0, `DE AD BE EF` en el `0x800`, `Z` en el último) + 1 de bss. `exec pag2` imprime `pag2 ok`; toma 9 páginas |
-| `atk2` | texto de `src/user/atk2.lap`, 1 página de datos con un `ret` (`0xC3`) en el byte 0, 1 de bss |
-| `atk2w` | `atk2` con 2 páginas de texto: la segunda, que en `atk2` es de datos, es de solo lectura |
+| `pag2` | 2 páginas de texto (`where`, con `align(4096)`, está en `0x401000`) + 1 de datos y bss (`SEG2` en el byte 0, `DE AD BE EF` en el 4, `Z` en el 8, bss del 12 al final). `exec pag2` imprime `pag2 ok`; toma 9 páginas |
+| `atk2` | texto de `src/user/atk2.lap`, datos de 20 bytes en `0x401000` con un `ret` (`0xC3`) en el byte 0 y `ATK2` en el 16, y la bss hasta `0x403000` |
+| `atk2w` | `atk2` con 2 páginas de texto (el kernel estira la imagen a 8192 bytes con ceros y pone `text` en 8192): la segunda, que en `atk2` es de datos, es de solo lectura |
 
-`exec hdrcheck` arma `pag2` en memoria, le estropea la cabecera de a una (28
+`exec hdrcheck` arma `pag2` en memoria, le estropea la cabecera de a una (29
 casos) y pasa cada una por `exec_hdr`, la función que usan `exec`, `exec2` y
 `zone exec`. Imprime `hdr <caso> ok|bad size|bad entry|bad magic`; lo esperado
 está en `tests/qemu_axe2_test.sh`. Rechaza: tamaño de imagen 0, 65537, `0xFFFFFFFF`

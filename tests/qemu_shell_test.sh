@@ -320,6 +320,9 @@ if ! printf '%s\n' "$clean" | awk '
 '; then
     fail "nx ok lines were out of order"
 fi
+# EX-05: los procesos de la demo se arman con la pila con guarda (0x40E000 sin
+# mapa, pila en 0x40F000): hojas y una lectura real de la guarda desde el kernel.
+printf '%s\n' "$clean" | grep -qx "nx ok guard" || fail "nx demo processes have no guard page below the stack"
 echo "ok   nx fetch=${fex} write=${wex} user=${uex} audit wx=0 leaves=${aleaves} code=${acode} nx=${anx}"
 
 # Mitad alta. `pf` y `nx` ya corrieron. La identidad del kernel está
@@ -366,6 +369,13 @@ if ! printf '%s\n' "$clean" | awk '
 '; then
     fail "hh lines were out of order"
 fi
+# EX-05: desborde de pila de verdad en anillo 3: #PF de usuario, escritura, página
+# no presente (err 6), en la guarda 0x40E000.
+hh_g=$(printf '%s\n' "$clean" | sed -n 's/^hh ok guard err=\(0x[0-9a-f]*\) cr2=\(0x[0-9a-f]*\)$/\1 \2/p' | head -1)
+[ -n "${hh_g:-}" ] || fail "hh stack overflow did not land in the guard page (hh ok guard missing)"
+set -- $hh_g; hh_ge=$(($1)); hh_gc=$(($2))
+[ $((hh_ge & 7)) -eq 6 ] || fail "hh guard err $1 is not a not-present user write"
+[ $((hh_gc >> 12)) -eq $((0x40E)) ] || fail "hh guard cr2 $2 is not in 0x40E000"
 echo "ok   hh rip rsp low=#PF user wx=0 leaves=${hhleaves} code=${hhcode} nx=${hhnx}"
 
 typeline pmm
@@ -383,6 +393,7 @@ printf '%s\n' "$clean" | grep -qx "exception: vector 14 #PF page fault err=0x000
 printf '%s\n' "$clean" | grep -qx "user blocked" || fail "user #PF was not reported"
 printf '%s\n' "$clean" | grep -qx "user returned" || fail "shell did not resume after user #PF"
 printf '%s\n' "$clean" | grep -qx "user leak" && fail "ring 3 read of kernel memory succeeded"
+printf '%s\n' "$clean" | grep -qx "user ok guard" || fail "user demo stack has no guard page below it"
 if ! printf '%s\n' "$clean" | awk '
     /^user ok$/ { if (!a) a=NR }
     /^exception: vector 14 #PF page fault err=0x00000004 cr2=0x00010000$/ { if (a && !b) b=NR }
@@ -412,6 +423,7 @@ for _ in $(seq 200); do
 done
 [ "$sched_ok" = 1 ] || fail "sched did not finish"
 clean=$(tr -d '\r' < "$SERIAL")
+printf '%s\n' "$clean" | grep -qx "sched ok guard" || fail "sched processes have no guard page below the stack"
 
 pml4=$(printf '%s\n' "$clean" | sed -n 's/^pml4 a=\(0x[0-9a-f]*\) b=\(0x[0-9a-f]*\)$/\1 \2/p' | head -1)
 half=$(printf '%s\n' "$clean" | sed -n 's/^half a=\(0x[0-9a-f]*\) b=\(0x[0-9a-f]*\)$/\1 \2/p' | head -1)

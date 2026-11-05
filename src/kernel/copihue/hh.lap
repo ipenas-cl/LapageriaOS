@@ -110,6 +110,105 @@ fn hh_probe_low() -> i64 {
     return 1;
 }
 
+// EX-05: lee un byte de la guarda 0x40E000 desde el kernel, con las tablas
+// `root` (las de un proceso armado con build_proc_g). Tiene que dar #PF de
+// página no presente con cr2 = 0x40E000. 1 si fue así. Las tablas anteriores
+// se restauran.
+fn guard_probe(root: i64) -> i64 {
+    hh_miss = 1;
+    hh_last_err = 0 - 1;
+    hh_last_cr2 = 0;
+    let old = read_cr3();
+    let iflags: u64 = irq_save();
+    if (save_context(&hh_ctx) == 0) {
+        hh_ctx.rip = label_addr(after_guard_probe);
+        hh_probe = 1;
+        write_cr3(root);
+        let p: *u8 = 0x40E000;
+        let b = p[0];
+        hh_miss = 0;
+        hh_last_err = b;
+    }
+    label after_guard_probe;
+    hh_probe = 0;
+    write_cr3(old);
+    irq_restore(iflags);
+    if (hh_miss == 0 || hh_last_err != 0 || hh_last_cr2 != 0x40E000) { return 0; }
+    return 1;
+}
+
+// Desborda la pila hacia abajo: un push tras otro hasta que se acabe la página.
+naked fn hh_prog_overflow() {
+    while (1) { push(0); }
+}
+
+naked fn hh_prog_overflow_end() {
+    hlt();
+}
+
+// EX-05: desborde de pila en anillo 3 de verdad. El proceso se arma como las
+// demos (build_proc_g), empuja hasta salirse de su página de pila y tiene que
+// caer en la guarda: #PF de usuario, escritura, página no presente (err 6),
+// cr2 dentro de 0x40E000. Mata solo a ese proceso y no deja fugas.
+fn hh_guard_live() -> i64 {
+    build_zone = 0;
+    charge_zone = 0;
+    if (shared_init() == 0) {
+        puts("hh fail guard\n");
+        return 0;
+    }
+    let mem = pmm_free;
+    hh_un = 0;
+    let n = &hh_prog_overflow_end - &hh_prog_overflow;
+    if (build_proc_g(0, &hh_prog_overflow, n, 0) == 0) {
+        puts("hh fail guard\n");
+        return 0;
+    }
+    if (guard_proc_ok(0) == 0) {
+        release_proc(0);
+        puts("hh fail guard\n");
+        return 0;
+    }
+    nx_clear_if(proc_ksp[0]);
+    let iflags: u64 = irq_save();
+    if (save_context(&shell_ctx) == 0) {
+        shell_ctx.rip = label_addr(after_hh_guard);
+        cur_i = 0;
+        proc_state[0] = 2;
+        proc_state[1] = 0;
+        tss.rsp0 = proc_rsp0[0];
+        set_syscall_stack(proc_sys[0]);
+        write_cr3(proc_pml4[0]);
+        saved_ksp = proc_ksp[0];
+        sched_on = 1;
+        hh_user = 1;
+        resume_frame();
+    }
+    label after_hh_guard;
+    shell_ctx.rip = 0;
+    sched_on = 0;
+    hh_user = 0;
+    write_cr3(0x1000);
+    tss.rsp0 = 0x86000;
+    set_syscall_stack(0x81000);
+    irq_restore(iflags);
+    release_proc(0);
+    if (pmm_free != mem) {
+        puts("hh fail leak\n");
+        return 0;
+    }
+    if (hh_un != 1 || (hh_uerr0 & 7) != 6 || (hh_ucr20 >> 12) != 0x40E) {
+        puts("hh fail guard\n");
+        return 0;
+    }
+    puts("hh ok guard err=");
+    put_hex(hh_uerr0);
+    puts(" cr2=");
+    put_hex64(hh_ucr20);
+    puts("\n");
+    return 1;
+}
+
 // La dirección absoluta viaja con los bytes copiados a 0x400000.
 // No es relativa a RIP: en anillo 3 sigue siendo el kernel.
 naked fn hh_prog_read() {
@@ -161,13 +260,19 @@ fn hh_user_test() -> i64 {
     hh_un = 0;
     let nr = &hh_prog_read_end - &hh_prog_read;
     let nw = &hh_prog_write_end - &hh_prog_write;
-    if (build_proc(0, &hh_prog_read, nr, 0) == 0) {
+    if (build_proc_g(0, &hh_prog_read, nr, 0) == 0) {
         puts("hh fail user\n");
         return 0;
     }
-    if (build_proc(1, &hh_prog_write, nw, 0) == 0) {
+    if (build_proc_g(1, &hh_prog_write, nw, 0) == 0) {
         release_proc(0);
         puts("hh fail user\n");
+        return 0;
+    }
+    if (guard_proc_ok(0) == 0 || guard_proc_ok(1) == 0) {
+        release_proc(0);
+        release_proc(1);
+        puts("hh fail guard\n");
         return 0;
     }
     nx_clear_if(proc_ksp[0]);
@@ -233,6 +338,7 @@ fn cmd_hh() -> i64 {
     if (hh_cpu() == 0) { return 0; }
     if (hh_probe_low() == 0) { return 0; }
     if (hh_user_test() == 0) { return 0; }
+    if (hh_guard_live() == 0) { return 0; }
     nx_audit();
     let ok = 0;
     if (nx_wx == 0 && nx_huge == 0 && nx_miss == 0 && nx_code_bad == 0) {

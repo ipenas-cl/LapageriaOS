@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-# EX-02: AXE2 armado por scripts/mkaxe.sh (texto, datos y bss) y ataques de
-# anillo 3 contra un AXE2.
+# EX-02, EX-05: AXE2 armado por el compilador (copihue --flat --axe2: texto,
+# datos y bss) y ataques de anillo 3 contra un AXE2.
 #
-# `exec axe2plant` escribe en el disco `pag2`: lo que mkaxe.sh empacó de
-# src/user/pag2.lap (1 página de texto) + build/pag2.dat (1 página de datos con
-# marcadores) + 1 página de bss. Todo corre en anillo 3:
+# `exec axe2plant` escribe en el disco `pag2`: el AXE2 que el compilador armó de
+# src/user/pag2.lap (2 páginas de texto, la segunda con una función align(4096);
+# una página con los `let` con valor y la bss detrás). Todo corre en anillo 3:
 #
-#   exec pag2        lee los marcadores de la segunda página (que vienen del
-#                    archivo), la escribe entera y la lee de vuelta, comprueba
-#                    la bss en cero, la escribe y usa la página de E/S en
-#                    0x410000: `pag2 ok`. Al salir devuelve sus páginas.
+#   exec pag2        lee los marcadores de la página de datos (que vienen del
+#                    archivo), la escribe entera por dirección y por nombre,
+#                    comprueba la bss en cero, llama a la función de la segunda
+#                    página de texto (tiene que correr en 0x401000) y usa la
+#                    página de E/S en 0x410000: `pag2 ok`. Al salir devuelve
+#                    sus páginas.
 #   zone exec        el mismo programa en una zona con cupo justo y en una sin
 #                    cupo (`zone fail 6`, nada tomado).
 #
@@ -108,7 +110,7 @@ typewait "exec axe2plant" 400
 has "exec axe2 plant ok" || fail "exec axe2plant: $(since 'exec axe2plant')"
 typewait "fs ls" 100
 tr -d '\r' < "$SERIAL" | grep -q "pag2" || fail "fs ls no muestra pag2"
-echo "ok   exec axe2plant: pag2 (AXE2 de mkaxe.sh: texto + datos + bss) en el disco"
+echo "ok   exec axe2plant: pag2 (AXE2 del compilador: texto + datos + bss) en el disco"
 
 # 1. El programa de 3 páginas corre en anillo 3 y usa su segunda página.
 typewait "exec pag2" 600
@@ -117,7 +119,7 @@ printf '%s\n' "$out" | grep -qx "pag2 ok" || fail "exec pag2: $out"
 printf '%s\n' "$out" | grep -qx "exit pid=1 freed=9" || fail "exec pag2 no devolvió las 9 páginas: $out"
 printf '%s\n' "$out" | grep -qx "exec ok" || fail "exec pag2 no terminó: $out"
 printf '%s\n' "$out" | grep -q "user killed" && fail "exec pag2: lo mataron: $out"
-echo "ok   exec pag2: AXE2 de mkaxe.sh, lee los marcadores del archivo, escribe su segunda página y la bss, E/S en 0x410000, freed=9"
+echo "ok   exec pag2: AXE2 del compilador, lee los marcadores del archivo, escribe su página de datos y bss, corre where en la segunda página de texto (0x401000), E/S en 0x410000, freed=9"
 
 # 2. Se recicla: otra vez, y el shell sigue vivo.
 typewait "exec pag2" 600
@@ -157,6 +159,7 @@ hdr_want base "ok"
 hdr_want textall "ok"
 hdr_want mem16 "ok"
 hdr_want memodd "ok"
+hdr_want entpage2 "ok"
 for h in size0 size65537 sizemax sizelong memshort mem0 mem17 memmax text0 textlong textmax pad n31 n32 n15 short; do
     hdr_want "$h" "bad size"
 done
@@ -165,7 +168,7 @@ for h in entlow entend entdata entio entkern enthigh entbit63; do
 done
 hdr_want magic "bad magic"
 nh=$(tr -d '\r' < "$SERIAL" | grep -c '^hdr ')
-[ "$nh" = 28 ] || fail "hdrcheck: esperaba 28 líneas hdr, hay $nh"
+[ "$nh" = 29 ] || fail "hdrcheck: esperaba 29 líneas hdr, hay $nh"
 echo "ok   cabeceras AXE2 malas: tamaños, páginas fuera de 1..16, texto > imagen, entradas fuera del texto, reservado, magic y archivo corto rechazados; los bordes válidos pasan ($nh casos)"
 
 # 5. Ataques de anillo 3 contra un AXE2. Un programa (atk2, src/user/atk2.lap)

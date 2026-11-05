@@ -138,6 +138,8 @@ let tcp_f_rxat: i64 = 0;
 let tcp_f_rxn: i64 = 0;
 let tcp_f_txat: i64 = 0;
 let tcp_f_txn: i64 = 0;
+let tcp_f_txg: i64 = 0;
+let tcp_f_txs: i64 = 0;
 let tcp_f_swat: i64 = 0;
 let tcp_f_held: i64 = 0;
 let tcp_f_rel: i64 = 0;
@@ -250,6 +252,8 @@ fn tcp_reset() -> i64 {
     }
     tcp_f_rxn = 0;
     tcp_f_txn = 0;
+    tcp_f_txg = 0;
+    tcp_f_txs = 0;
     tcp_f_swat = 0;
     tcp_f_held = 0;
     i = 0;
@@ -389,11 +393,26 @@ fn tcp_build(out: *u8) -> i64 {
 // Transmite lo que dejó tcp_o_*. En seco (pruebas) deja la trama en tcp_last.
 fn tcp_emit() -> i64 {
     // Falla inyectada: el segmento con datos se pierde antes del chip.
-    if (tcp_f_txn > 0 && tcp_o_dlen > 0 && tcp_o_t >= 0) {
+    // EX-05: la segunda pérdida de `txdrop K C G` (tcp_f_txs = 1) cuenta solo
+    // segmentos nuevos: un reenvío (seq debajo de tc_max) no la adelanta, así
+    // que no depende de qué tan rápido lleguen los ACK repetidos.
+    let counted = 1;
+    if (tcp_f_txs != 0 && tcp_o_t >= 0 && tcp_sub(tcp_o_seq, tc_max[tcp_o_t]) < 0) { counted = 0; }
+    if (tcp_f_txn > 0 && tcp_o_dlen > 0 && tcp_o_t >= 0 && counted != 0) {
         tcp_f_txat = tcp_f_txat - 1;
         if (tcp_f_txat <= 0) {
             tcp_f_txn = tcp_f_txn - 1;
             tcp_fdrop = tcp_fdrop + 1;
+            // EX-05: `txdrop K C G` pierde además el G-ésimo segmento nuevo que
+            // sale después de la tanda (dos pérdidas separadas en una ráfaga).
+            if (tcp_f_txn == 0 && tcp_f_txg > 0) {
+                tcp_f_txat = tcp_f_txg;
+                tcp_f_txn = 1;
+                tcp_f_txg = 0;
+                tcp_f_txs = 1;
+            } else {
+                tcp_f_txs = 0;
+            }
             return 0;
         }
     }
@@ -2333,6 +2352,8 @@ fn tcp_selftest() -> i64 {
     tcp_peak = 0;
     tcp_f_rxn = 0;
     tcp_f_txn = 0;
+    tcp_f_txg = 0;
+    tcp_f_txs = 0;
     tcp_f_swat = 0;
     tcp_f_held = 0;
     tcp_dry = 0;
@@ -2432,9 +2453,10 @@ fn tcp_show() -> i64 {
     return 0;
 }
 
-// `tcp fault rxdrop K C` / `txdrop K C`: pierde C segmentos con datos
+// `tcp fault rxdrop K C` / `txdrop K C [G]`: pierde C segmentos con datos
 // seguidos, empezando por el K-ésimo desde ahora (K >= 1), al entrar al TCP
-// o antes de salir al chip. `swap K`: retiene el K-ésimo y lo entrega
+// o antes de salir al chip. Con G (solo txdrop) pierde además el G-ésimo que
+// sale después de la tanda. `swap K`: retiene el K-ésimo y lo entrega
 // después del siguiente. `off` borra todo. Es una falla del propio TCP del
 // invitado, no de la red: sirve para ejercitar la recuperación con tráfico
 // real de QEMU. Lee los números con parse_int desde pos.
@@ -2447,9 +2469,22 @@ fn tcp_fault_cmd(pos: i64) -> i64 {
     if (fs_is("off")) {
         tcp_f_rxn = 0;
         tcp_f_txn = 0;
+        tcp_f_txg = 0;
+        tcp_f_txs = 0;
         tcp_f_swat = 0;
         tcp_release_held();
         puts("tcp fault off\n");
+        return 0;
+    }
+    // EX-05: `tcp fault left` informa cuánto le falta a cada cuenta atrás. Con
+    // `txdrop 100000 1` armado y una corrida sin pérdidas, 100000 - txat es
+    // cuántos segmentos con datos salieron.
+    if (fs_is("left")) {
+        puts("tcp fault left rx ");
+        put_int(tcp_f_rxat);
+        puts(" tx ");
+        put_int(tcp_f_txat);
+        putc('\n');
         return 0;
     }
     let kind = 0;
@@ -2464,7 +2499,9 @@ fn tcp_fault_cmd(pos: i64) -> i64 {
     let k = parse_int();
     let c = 1;
     if (kind != 3) { c = parse_int(); }
-    if (k < 1 || k > 100000 || c < 1 || c > 1000) {
+    let g = 0;
+    if (kind == 2) { g = parse_int(); }
+    if (k < 1 || k > 100000 || c < 1 || c > 1000 || g < 0 || g > 1000) {
         puts("tcp fault fail arg\n");
         return 0;
     }
@@ -2475,6 +2512,7 @@ fn tcp_fault_cmd(pos: i64) -> i64 {
     if (kind == 2) {
         tcp_f_txat = k;
         tcp_f_txn = c;
+        tcp_f_txg = g;
     }
     if (kind == 3) { tcp_f_swat = k; }
     puts("tcp fault ok\n");

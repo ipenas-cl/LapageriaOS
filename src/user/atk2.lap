@@ -1,6 +1,7 @@
-// Ataques de anillo 3 contra un AXE2 (EX-02). copihue --flat 0x400000.
-// Corre como AXE2 armado por scripts/mkaxe.sh (texto de 1 página, datos de
-// 1 página con un `ret` (0xC3) en el byte 0, bss de 1 página):
+// Ataques de anillo 3 contra un AXE2 (EX-02, EX-05).
+// copihue --flat 0x400000 --axe2: el compilador arma el AXE2 completo (texto de
+// 1 página; los dos `let` de abajo son los datos, con un `ret` (0xC3) en el
+// byte 0 de la página 0x401000, y la bss llega hasta 0x403000):
 //
 //   0x400000 texto (RX)   0x401000 datos (RW, NX)   0x402000 bss (RW, NX)
 //   0x410000 E/S (RW, NX)  0x411000 guarda (sin mapa)
@@ -37,6 +38,11 @@
 //
 // Cada ataque (menos 'w' en atk2 y 'p') tiene que matar al proceso, así que
 // `atk2 survived` solo sale si el kernel NO lo negó.
+
+// Datos (20 bytes en 0x401000): un `ret` en el byte 0 y "ATK2" en el 16. La bss
+// (8172 bytes) sigue a los datos y cierra la página 0x402000 en 0x403000.
+let ret_page: [u8; 20] = [0xC3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x41, 0x54, 0x4B, 0x32];
+let bss_page: [u8; 8172];
 
 naked fn emit(c: i64) {
     rax = 1;
