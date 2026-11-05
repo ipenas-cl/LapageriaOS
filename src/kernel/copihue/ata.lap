@@ -57,9 +57,14 @@ fn ata_check(kind: i64) -> i64 {
 // Sirve con IF=0 (irq_save), con procesos corriendo y con el planificador
 // apagado; no usa `ticks` ni hlt. El contador da la vuelta cada 10 ms
 // (11931 cuentas a 1.193182 MHz), así que se muestrea cada 16 sondeos del
-// estado, muy por debajo de una vuelta. Tope: 5 s (5965910 cuentas).
+// estado, muy por debajo de una vuelta. Tope: 60 s (59659100 cuentas).
+// EX-01: eran 5 s. Con `-icount shift=7` el reloj virtual corre a 128 ns por
+// instrucción, así que 5 s son solo 39 millones de instrucciones; con seis
+// QEMU a la vez el anfitrión tarda más que eso en completar la E/S y salían
+// `exec fail 1` y `exec fail 8` en `udp plant`. Un disco que falta no espera
+// el tope (el estado 0xFF devuelve 3 al primer sondeo); solo uno colgado.
 let ATA_PIT_PERIOD: i64 = 11931;
-let ATA_PIT_TIMEOUT: i64 = 5965910;
+let ATA_PIT_TIMEOUT: i64 = 59659100;
 
 fn ata_pit_read() -> i64 {
     outb(0x43, 0x00);

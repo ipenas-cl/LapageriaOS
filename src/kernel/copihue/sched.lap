@@ -49,6 +49,11 @@ let proc_faults: [i64; 2];
 let proc_zone: [i64; 2];
 let proc_held: [i64; 2];
 let proc_uva: [i64; 2];
+// 1: la salida del proceso (syscall 1) sale por líneas enteras (usermode.lap).
+// Solo los programas del disco; las demos de `sched`, `nx` y `hh` se quedan
+// con salida carácter a carácter porque la prueba usa la mezcla de sus letras
+// como prueba de que el PIT los alterna.
+let proc_lbuf: [i64; 2];
 let shared_pdpt: i64 = 0;
 let shared_pd: i64 = 0;
 let sched_base: i64 = 0;
@@ -405,6 +410,8 @@ fn yield_current() -> i64 {
 }
 
 fn release_proc(pi: i64) -> i64 {
+    uline_flush(pi);
+    proc_lbuf[pi] = 0;
     let z = proc_zone[pi];
     charge_zone = z;
     let n = proc_npages[pi];
@@ -485,6 +492,7 @@ fn user_fault_rec() -> i64 {
 // exit (devuelve sus páginas y su cupo de zona) y sigue con el otro
 // proceso o vuelve al shell. addr es CR2 en un #PF y RIP en un #GP.
 fn user_kill(vec: i64, err: i64, addr: i64) -> i64 {
+    uline_flush(cur_i);
     putc('\n');
     puts("user killed pid=");
     put_int(proc_pid[cur_i]);
@@ -501,6 +509,7 @@ fn user_kill(vec: i64, err: i64, addr: i64) -> i64 {
 
 fn note_user_fault(err: i64) -> i64 {
     let addr = read_cr2();
+    uline_flush(cur_i);
     if (proc_faults[cur_i] == 0) { patch_rip = proc_rec0[cur_i]; }
     else { patch_rip = proc_rec1[cur_i]; }
     proc_faults[cur_i] = proc_faults[cur_i] + 1;
@@ -631,6 +640,8 @@ fn build_proc(pi: i64, src: i64, n: i64, secret: i64) -> i64 {
     }
     proc_uva[pi] = 0;
     proc_held[pi] = 0;
+    uline_n[pi] = 0;
+    proc_lbuf[pi] = 0;
     udp_release(pi);
     tcp_release(pi);
     proc_zone[pi] = build_zone;

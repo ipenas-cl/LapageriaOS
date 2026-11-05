@@ -533,6 +533,13 @@ fn udp_recv(me: i64, s: i64, fd: i64, buf: i64, max: i64, srcp: i64, tmo: i64) -
             udp_wait[me] = 1;
             udp_wdl[me] = ticks + tmo;
             udp_blk = udp_blk + 1;
+            // Marca para la prueba del anfitrión: desde aquí hasta que el
+            // proceso quede dormido no entra ninguna interrupción (IF=0), así
+            // que un datagrama enviado al ver esta línea siempre encuentra
+            // al proceso dormido y no en camino a recv.
+            puts("udp block ");
+            put_int(udp_port[s]);
+            putc('\n');
         }
         if (ticks >= udp_wdl[me]) {
             udp_wait[me] = 0;

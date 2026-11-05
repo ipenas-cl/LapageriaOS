@@ -27,6 +27,10 @@ if [ ! -f "$DATA_SRC" ]; then echo "FAIL: no data image $DATA_SRC"; exit 1; fi
 TMP=$(mktemp -d); MON=$TMP/mon.sock; SERIAL=$TMP/serial.log
 DATA=$TMP/data.img
 PCAP=$TMP/net.pcap
+# Copia de la imagen: QEMU bloquea el archivo, y así varias corridas en
+# paralelo no se pisan. QEMU_EXTRA="-icount shift=7" suma opciones a QEMU.
+BOOT=$TMP/boot.img
+cp "$IMAGE" "$BOOT"
 QPID=""
 HPORT=0
 SECTORS=$(( $(wc -c < "$DATA_SRC") / 512 ))
@@ -66,7 +70,8 @@ start_qemu() {
         HPORT=$((20000 + RANDOM % 30000))
         : > "$SERIAL"
         rm -f "$MON"
-        qemu-system-x86_64 -cpu qemu64 -drive format=raw,file="$IMAGE" \
+        # shellcheck disable=SC2086
+        qemu-system-x86_64 -cpu qemu64 ${QEMU_EXTRA:-} -drive format=raw,file="$BOOT" \
             -drive file="$DATA",format=raw,if=ide,index=1 \
             -display none -no-reboot \
             -nic none -netdev user,id=n0,hostfwd=udp:127.0.0.1:"$HPORT"-:7777,hostfwd=udp:127.0.0.1:$((HPORT + 1))-:7781,hostfwd=udp:127.0.0.1:$((HPORT + 2))-:7782,hostfwd=udp:127.0.0.1:$((HPORT + 3))-:7790,hostfwd=udp:127.0.0.1:$((HPORT + 4))-:7999 \
@@ -227,14 +232,43 @@ echo "ok   el puerto se libera al terminar el proceso"
 # datagramas salen juntos; cada proceso duerme en recv y lo despierta el suyo.
 typewait "udp stat" 30
 blk0=$(udp_field blk); woke0=$(udp_field woke)
+#
+# EX-01: las dos esperas son marcas explícitas, no reloj. La salida de anillo 3
+# sale por líneas enteras (usermode.lap), así que `udp dos listen` y
+# `udp listen` no se mezclan aunque el PIT corte a un proceso a medias. Y
+# `udp block P` lo imprime el kernel cuando un proceso se va a dormir en recv
+# del puerto P: desde esa línea hasta que queda dormido no entra ninguna
+# interrupción, así que un datagrama enviado al verla siempre despierta a un
+# proceso dormido (blk y woke dejan de depender de quién llegó primero).
+nb77=$(count 'udp block 7777'); nb81=$(count 'udp block 7781'); nb82=$(count 'udp block 7782')
 typeline "exec2 udpeco udpdos"
-for _ in $(seq 100); do [ "$(count 'udp listen')" -ge 4 ] && has "udp dos listen" && break; sleep 0.1; done
+waitline "udp dos listen" 300
+for _ in $(seq 300); do
+    [ "$(count 'udp block 7777')" -gt "$nb77" ] && [ "$(count 'udp block 7781')" -gt "$nb81" ] && break
+    sleep 0.1
+done
 [ "$(count 'udp listen')" -ge 4 ] || fail "exec2: udpeco no abrió su socket"
-has "udp dos listen" || fail "exec2: udpdos no abrió sus sockets"
-udp_ask "uno" "$HPORT" > "$TMP/r1" & p1=$!
-udp_ask "dos" "$((HPORT + 1))" > "$TMP/r2" & p2=$!
+[ "$(count 'udp block 7777')" -gt "$nb77" ] || fail "exec2: udpeco no llegó a dormir en recv"
+[ "$(count 'udp block 7781')" -gt "$nb81" ] || fail "exec2: udpdos no llegó a dormir en recv"
+# El primero en dormirse cede la CPU al otro (queda parado, estado 4); el
+# segundo se duerme en el kernel con hlt y nadie lo cambia de estado. Solo la
+# llegada del datagrama del primero cuenta como despertar (`woke`), y solo
+# si llega mientras el otro sigue dormido. Se le manda primero a él y se
+# espera su eco; el resto sale junto.
+first=$(sed -n '/exec2 udpeco udpdos/,$p' "$SERIAL" | tr -d '\r' | grep -m1 -xE 'udp block (7777|7781)')
+if [ "$first" = "udp block 7777" ]; then
+    udp_ask "uno" "$HPORT" > "$TMP/r1"
+    udp_ask "dos" "$((HPORT + 1))" > "$TMP/r2" & p2=$!
+else
+    [ "$first" = "udp block 7781" ] || fail "exec2: no vi quién durmió primero ($first)"
+    udp_ask "dos" "$((HPORT + 1))" > "$TMP/r2"
+    udp_ask "uno" "$HPORT" > "$TMP/r1" & p2=$!
+fi
+# El segundo socket de udpdos duerme recién cuando devolvió el primer eco.
+for _ in $(seq 300); do [ "$(count 'udp block 7782')" -gt "$nb82" ] && break; sleep 0.1; done
+[ "$(count 'udp block 7782')" -gt "$nb82" ] || fail "exec2: udpdos no llegó a dormir en el segundo socket"
 udp_ask "tres" "$((HPORT + 2))" > "$TMP/r3" & p3=$!
-wait "$p1" "$p2" "$p3"
+wait "$p2" "$p3"
 [ "$(cat "$TMP/r1")" = "uno" ] || fail "exec2: eco de udpeco [$(cat "$TMP/r1")]"
 [ "$(cat "$TMP/r2")" = "dos" ] || fail "exec2: eco del socket 0 de udpdos [$(cat "$TMP/r2")]"
 [ "$(cat "$TMP/r3")" = "tres" ] || fail "exec2: eco del socket 1 de udpdos [$(cat "$TMP/r3")]"
@@ -244,20 +278,28 @@ has "udp dos echo ok" || fail "exec2: udpdos no terminó el eco"
 for _ in $(seq 50); do [ "$(prompts)" -ge 8 ] && break; sleep 0.1; done
 typewait "udp stat" 30
 blk1=$(udp_field blk); woke1=$(udp_field woke)
-[ "$((blk1 - blk0))" -ge 2 ] || fail "exec2: blk $blk0 -> $blk1 (esperaba >= 2 recv dormidos)"
+[ "$((blk1 - blk0))" -ge 3 ] || fail "exec2: blk $blk0 -> $blk1 (esperaba >= 3 recv dormidos)"
 [ "$((woke1 - woke0))" -ge 1 ] || fail "exec2: woke $woke0 -> $woke1 (ningún despertar por llegada)"
 echo "ok   dos procesos a la vez (exec2): 3 ecos, 3 sockets, dormidos $((blk1 - blk0)), despertados por llegada $((woke1 - woke0))"
 
 # recv bloqueante con plazo, despertar por llegada y ráfaga de 64.
 tmo0=$(udp_field tmo); full0=$(udp_field full); rx0=$(udp_field rx); bad0=$(udp_field bad)
+# Cada envío espera la marca `udp block P` del recv que corresponde (EX-01):
+# el 7790 duerme dos veces (el plazo de 50 ticks y la espera larga), el 7791
+# una (la ráfaga).
+nw90=$(count 'udp block 7790'); nw91=$(count 'udp block 7791')
 typeline "exec udpwait"
-waitline "udp timeout ok" 100
+waitline "udp timeout ok" 300
 echo "ok   recv con plazo: -110 a los 50 ticks, el proceso durmió"
-waitline "udp sleep" 50
+waitline "udp sleep" 300
+for _ in $(seq 300); do [ "$(count 'udp block 7790')" -ge "$((nw90 + 2))" ] && break; sleep 0.1; done
+[ "$(count 'udp block 7790')" -ge "$((nw90 + 2))" ] || fail "udpwait no durmió esperando el despertar"
 printf '%s' "despierta" > /dev/udp/127.0.0.1/$((HPORT + 3))
-waitline "udp wake ok" 50
+waitline "udp wake ok" 300
 echo "ok   recv dormido: lo despertó el datagrama (antes del plazo de 600 ticks)"
-waitline "udp burst go" 50
+waitline "udp burst go" 300
+for _ in $(seq 300); do [ "$(count 'udp block 7791')" -gt "$nw91" ] && break; sleep 0.1; done
+[ "$(count 'udp block 7791')" -gt "$nw91" ] || fail "udpwait no durmió esperando la ráfaga"
 for i in $(seq 0 63); do
     printf "\\$(printf '%03o' $((33 + i)))x" > /dev/udp/127.0.0.1/$((HPORT + 3))
 done

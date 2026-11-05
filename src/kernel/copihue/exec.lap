@@ -132,6 +132,7 @@ fn exec_run() -> i64 {
         build_zone = 0;
         return exec_fail(6);
     }
+    proc_lbuf[0] = 1;
     forge(0, entry, 0x402000, 0x202);
     sched_go();
     irq_restore(iflags);
@@ -172,6 +173,8 @@ fn exec2_run(pos: i64) -> i64 {
         build_zone = 0;
         return exec_fail(6);
     }
+    proc_lbuf[0] = 1;
+    proc_lbuf[1] = 1;
     forge(0, ea, 0x402000, 0x202);
     forge(1, eb, 0x402000, 0x202);
     sched_go();

@@ -610,6 +610,7 @@ fn zone_run(z: i64) -> i64 {
     puts("zone used ");
     put_int(zone_pages[z]);
     putc('\n');
+    proc_lbuf[0] = 1;
     forge(0, entry, 0x402000, 0x202);
     sched_go();
     irq_restore(iflags);
@@ -818,6 +819,8 @@ fn zone_pair_run(pos: i64) -> i64 {
         return zone_fail(zone_errno);
     }
     build_zone = 0;
+    proc_lbuf[0] = 1;
+    proc_lbuf[1] = 1;
     forge(0, entry, 0x402000, 0x202);
     forge(1, entry, 0x402000, 0x202);
     zcpu_window_start();
