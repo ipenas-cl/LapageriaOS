@@ -191,6 +191,13 @@ fn exec_plant_axe2() -> i64 {
     if (n < 33 || n > 65568) { return exec_fail(9); }
     r = fs_write("atk2", exec_buf, n);
     if (r != 0) { return exec_fail(r); }
+    // cal (EX-08): const en [T; N] y align(4096) let, también del compilador.
+    n = cal_fill(exec_buf);
+    if (n < 33 || n > 65568) { return exec_fail(9); }
+    r = fs_write("cal", exec_buf, n);
+    if (r != 0) { return exec_fail(r); }
+    n = atk2_fill(exec_buf);
+    if (n < 33 || n > 65568) { return exec_fail(9); }
     // El compilador entrega los datos sin relleno (EX-05): para tener 2 páginas
     // de texto la imagen se estira a 8192 bytes con ceros (la bss no cambia).
     let h: *Axe2 = axe2_of(exec_buf);

@@ -1,0 +1,145 @@
+// const y align(4096) let (EX-08). Se compila con
+//
+//   copihue --flat 0x400000 --axe2 --sizes -o cal.axe cal.lap
+//
+// (Copihue v0.44.3). Un AXE2 de 3 páginas:
+//
+//   0x400000  texto (_start y el resto)
+//   0x401000  `tab`: align(4096) let con valor, [u8; N], en .data
+//   0x402000  `zbuf`: align(4096) let sin valor, [u8; N], en .bss (una página
+//             propia, sin relleno a mano; antes pag2 y atk2 ajustaban el largo
+//             del último `let`)
+//   0x410000  página de E/S      0x411000  guarda      0x412000  pila
+//
+// `N` sale de un `const` y está en los dos arreglos globales, en el arreglo
+// local y en los topes de los `while`; DATA y BSS son direcciones con nombre.
+// Pasos:
+//
+//   1 `tab` por nombre y por dirección (DATA) son los N bytes del archivo
+//   2 `zbuf` por nombre y por dirección (BSS) está en cero
+//   3 escribe `tab` por nombre y lo lee por dirección
+//   4 escribe `zbuf` por dirección y lo lee por nombre
+//   5 un arreglo local [u8; N] se llena y se suma
+//
+// Imprime `cal ok`, o `cal fail N`. Sin cadenas: la salida va por la syscall 1.
+
+const N = 8;
+const DATA = 0x401000;
+const BSS = 0x402000;
+
+align(4096) let tab: [u8; N] = [1, 2, 3, 4, 5, 6, 7, 8];
+align(4096) let zbuf: [u8; N];
+
+naked fn emit(c: i64) {
+    rax = 1;
+    syscall();
+}
+
+fn say_ok() {
+    emit(99);
+    emit(97);
+    emit(108);
+    emit(32);
+    emit(111);
+    emit(107);
+    emit(10);
+}
+
+fn say_fail(n: i64) {
+    emit(99);
+    emit(97);
+    emit(108);
+    emit(32);
+    emit(102);
+    emit(97);
+    emit(105);
+    emit(108);
+    emit(32);
+    emit(48 + n);
+    emit(10);
+}
+
+fn check_tab() -> i64 {
+    let p: *u8 = DATA as *u8;
+    let i: i64 = 0;
+    while (i < N) {
+        if (tab[i] != i + 1) { return 1; }
+        if (p[i] != i + 1) { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn check_zbuf() -> i64 {
+    let p: *u8 = BSS as *u8;
+    let i: i64 = 0;
+    while (i < N) {
+        if (zbuf[i] != 0) { return 2; }
+        if (p[i] != 0) { return 2; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn write_tab() -> i64 {
+    let p: *u8 = DATA as *u8;
+    let i: i64 = 0;
+    while (i < N) {
+        tab[i] = (100 + i) as u8;
+        i = i + 1;
+    }
+    i = 0;
+    while (i < N) {
+        if (p[i] != 100 + i) { return 3; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn write_zbuf() -> i64 {
+    let p: *u8 = BSS as *u8;
+    let i: i64 = 0;
+    while (i < N) {
+        p[i] = (50 + i) as u8;
+        i = i + 1;
+    }
+    i = 0;
+    while (i < N) {
+        if (zbuf[i] != 50 + i) { return 4; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn local_sum() -> i64 {
+    let loc: [u8; N];
+    let i: i64 = 0;
+    while (i < N) {
+        loc[i] = (i + 1) as u8;
+        i = i + 1;
+    }
+    let s: i64 = 0;
+    i = 0;
+    while (i < N) {
+        s = s + loc[i];
+        i = i + 1;
+    }
+    if (s != 36) { return 5; }
+    return 0;
+}
+
+fn cal_main() {
+    let r: i64 = check_tab();
+    if (r == 0) { r = check_zbuf(); }
+    if (r == 0) { r = write_tab(); }
+    if (r == 0) { r = write_zbuf(); }
+    if (r == 0) { r = local_sum(); }
+    if (r == 0) { say_ok(); } else { say_fail(r); }
+}
+
+naked fn _start() {
+    cal_main();
+    rax = 5;
+    syscall();
+    hlt();
+}

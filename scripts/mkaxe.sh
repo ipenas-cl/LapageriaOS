@@ -9,8 +9,9 @@
 # bss ya están hechos. mkaxe.sh no arma nada: comprueba la cabecera (magic,
 # imagen = archivo - 32, texto, memoria, reservado en cero, entrada dentro del
 # texto) y deja el .lap que lo embebe, con la misma comprobación de abajo. Es el
-# camino de los programas con datos y bss; sin -a se arma a mano, como antes
-# (AXE1, y AXE2 con un compilador sin --axe2).
+# camino de los programas con datos y bss; sin -a se arma a mano, como antes.
+# EX-08, -a también toma un AXE1 (`--axe1`, Copihue v0.44.3; el magic decide):
+# imagen = archivo - 16, de 1 a 4080 bytes, entrada dentro de la imagen.
 #
 # Sin opciones y con un payload de 1 a 4080 bytes sale un AXE1 (16 bytes de
 # cabecera, una página de código), igual que siempre. Sale un AXE2 (32 bytes
@@ -158,34 +159,47 @@ if [ "$from_cc" -eq 0 ]; then
         magic_want=41584532
     fi
 else
-    # EX-05: AXE2 del compilador. Se lee la cabecera tal como salió.
+    # EX-05, EX-08: AXE del compilador (`--axe2` desde v0.44.1, `--axe1` desde
+    # v0.44.3). Se lee la cabecera tal como salió; el tipo sale del magic.
     [ -f "$axe" ] || { echo "mkaxe: no hay archivo $axe" >&2; exit 1; }
-    kind=2
-    hdr=32
-    magic_want=41584532
     total=$(wc -c < "$axe")
     total=$((total))
-    [ "$total" -gt 32 ] || { echo "mkaxe: $axe mide $total; no tiene cabecera AXE2 e imagen" >&2; exit 1; }
     u32() {
         set -- $(od -An -tu1 -v -j "$2" -N4 "$1")
         echo $(($1 + $2 * 256 + $3 * 65536 + $4 * 16777216))
     }
+    [ "$total" -gt 16 ] || { echo "mkaxe: $axe mide $total; no tiene cabecera e imagen" >&2; exit 1; }
     magic=$(od -An -tx1 -N4 "$axe" | tr -d ' \n')
-    [ "$magic" = "$magic_want" ] || { echo "mkaxe: magic $magic, esperaba $magic_want" >&2; exit 1; }
+    case $magic in
+        41584531) kind=1; hdr=16; magic_want=41584531 ;;
+        41584532) kind=2; hdr=32; magic_want=41584532 ;;
+        *) echo "mkaxe: magic $magic, esperaba 41584531 (AXE1) o 41584532 (AXE2)" >&2; exit 1 ;;
+    esac
+    [ "$total" -gt "$hdr" ] || { echo "mkaxe: $axe mide $total; no tiene cabecera e imagen" >&2; exit 1; }
     img=$(u32 "$axe" 4)
     entry=$(u32 "$axe" 8)
     entry_hi=$(u32 "$axe" 12)
-    size=$(u32 "$axe" 16)
-    mem=$(u32 "$axe" 20)
-    rsv=$(( $(u32 "$axe" 24) + $(u32 "$axe" 28) ))
-    [ "$entry_hi" -eq 0 ] && [ "$rsv" -eq 0 ] || { echo "mkaxe: $axe: entrada alta o reservado distintos de cero" >&2; exit 1; }
-    [ "$img" -ge 1 ] && [ "$img" -le 65536 ] && [ "$total" -eq $((img + 32)) ] || { echo "mkaxe: $axe: imagen de $img bytes con archivo de $total" >&2; exit 1; }
-    [ "$size" -ge 1 ] && [ "$size" -le "$img" ] || { echo "mkaxe: $axe: texto de $size con imagen de $img" >&2; exit 1; }
-    [ "$mem" -ge "$img" ] && [ "$mem" -le 65536 ] || { echo "mkaxe: $axe: memoria de $mem con imagen de $img" >&2; exit 1; }
-    # La entrada es la dirección virtual de _start, absoluta (0x400000 + el
-    # desplazamiento): tiene que caer en el texto.
-    [ "$entry" -ge 4194304 ] && [ "$entry" -lt $((4194304 + size)) ] || { echo "mkaxe: $axe: entrada $entry fuera del texto" >&2; exit 1; }
-    pages=$(((mem + 4095) / 4096))
+    if [ "$kind" -eq 1 ]; then
+        # AXE1: magic, imagen u32, entrada u64; una página de código, de 1 a
+        # 4080 bytes. La cabecera no dice dónde acaban el texto y los datos: el
+        # kernel trata toda la imagen como código.
+        [ "$entry_hi" -eq 0 ] || { echo "mkaxe: $axe: entrada alta distinta de cero" >&2; exit 1; }
+        [ "$img" -ge 1 ] && [ "$img" -le 4080 ] && [ "$total" -eq $((img + 16)) ] || { echo "mkaxe: $axe: imagen de $img bytes con archivo de $total" >&2; exit 1; }
+        size=$img
+        [ "$entry" -ge 4194304 ] && [ "$entry" -lt $((4194304 + size)) ] || { echo "mkaxe: $axe: entrada $entry fuera del texto" >&2; exit 1; }
+    else
+        size=$(u32 "$axe" 16)
+        mem=$(u32 "$axe" 20)
+        rsv=$(( $(u32 "$axe" 24) + $(u32 "$axe" 28) ))
+        [ "$entry_hi" -eq 0 ] && [ "$rsv" -eq 0 ] || { echo "mkaxe: $axe: entrada alta o reservado distintos de cero" >&2; exit 1; }
+        [ "$img" -ge 1 ] && [ "$img" -le 65536 ] && [ "$total" -eq $((img + 32)) ] || { echo "mkaxe: $axe: imagen de $img bytes con archivo de $total" >&2; exit 1; }
+        [ "$size" -ge 1 ] && [ "$size" -le "$img" ] || { echo "mkaxe: $axe: texto de $size con imagen de $img" >&2; exit 1; }
+        [ "$mem" -ge "$img" ] && [ "$mem" -le 65536 ] || { echo "mkaxe: $axe: memoria de $mem con imagen de $img" >&2; exit 1; }
+        # La entrada es la dirección virtual de _start, absoluta (0x400000 + el
+        # desplazamiento): tiene que caer en el texto.
+        [ "$entry" -ge 4194304 ] && [ "$entry" -lt $((4194304 + size)) ] || { echo "mkaxe: $axe: entrada $entry fuera del texto" >&2; exit 1; }
+        pages=$(((mem + 4095) / 4096))
+    fi
 fi
 total=$(wc -c < "$axe")
 total=$((total))
@@ -267,7 +281,7 @@ if [ "$got" != "$want" ]; then
     exit 1
 fi
 if [ "$kind" -eq 1 ]; then
-    echo "mkaxe: $axe ($total bytes, codigo $size, entrada 0x400000)"
+    echo "mkaxe: $axe ($total bytes, codigo $size, entrada $(printf '0x%x' "${entry:-4194304}"))"
 else
     nz=$(grep -c ' [qp]\[' "$lap" || true)
     echo "mkaxe: $axe (AXE2, $total bytes, texto $size, imagen $img, memoria $mem, $pages paginas, entrada $(printf '0x%x' "${entry:-4194304}"), $nz escrituras)"

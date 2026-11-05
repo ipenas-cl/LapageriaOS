@@ -185,6 +185,39 @@ for p in pag2 atk2; do
     ok "-a: build/$p.axe, salida real de copihue --axe2, validada"
 done
 
+# 12. EX-08: -a con un AXE1 (copihue --axe1). Se arma uno con la cabecera de
+# 16 bytes (magic, imagen u32, entrada u64) y se valida.
+ax1() {
+    {
+        printf 'AXE1'
+        le32 "$2"
+        le32 "$3"; le32 0
+        head -c "$2" /dev/zero | tr '\0' 'x'
+    } > "$1"
+}
+ax1 "$TMP/e1.axe" 300 4194304
+"$MK" -a "$TMP/e1.axe" "$TMP/e1.lap" e1_fill > /dev/null || fail "-a AXE1 de 300 bytes"
+[ "$(wc -c < "$TMP/e1.axe" | tr -d ' ')" = 316 ] || fail "-a AXE1: el archivo cambió"
+grep -q '^fn e1_fill(p: \*u8) -> i64 {$' "$TMP/e1.lap" || fail "-a AXE1: nombre de la función"
+grep -q 'p\[z\] = 0;' "$TMP/e1.lap" && fail "-a AXE1: el .lap trae la limpieza del buffer (solo es de AXE2)"
+grep -q 'return 316;' "$TMP/e1.lap" || fail "-a AXE1: debía devolver 316"
+ax1 "$TMP/e2.axe" 4080 4198383
+"$MK" -a "$TMP/e2.axe" "$TMP/e2.lap" > /dev/null || fail "-a AXE1 en el borde (4080 bytes, entrada en el último byte)"
+ax1 "$TMP/e3.axe" 300 4194604
+"$MK" -a "$TMP/e3.axe" "$TMP/e3.lap" 2> /dev/null > /dev/null && fail "-a AXE1: entrada fuera de la imagen debía fallar"
+ax1 "$TMP/e4.axe" 4081 4194304
+"$MK" -a "$TMP/e4.axe" "$TMP/e4.lap" 2> /dev/null > /dev/null && fail "-a AXE1: 4081 bytes debía fallar"
+ax1 "$TMP/e5.axe" 300 4194303
+"$MK" -a "$TMP/e5.axe" "$TMP/e5.lap" 2> /dev/null > /dev/null && fail "-a AXE1: entrada bajo 0x400000 debía fallar"
+head -c 200 "$TMP/e1.axe" > "$TMP/e6.axe"
+"$MK" -a "$TMP/e6.axe" "$TMP/e6.lap" 2> /dev/null > /dev/null && fail "-a AXE1: archivo corto debía fallar"
+ok "-a AXE1: 300 bytes y borde de 4080 aceptados; entrada fuera, 4081 bytes, entrada bajo 0x400000 y archivo corto rechazados"
+f=$(dirname "$0")/../build/ataque.axe
+if [ -f "$f" ]; then
+    "$MK" -a "$f" "$TMP/atk.lap" atk_fill > /dev/null || fail "-a: build/ataque.axe"
+    ok "-a: build/ataque.axe, salida real de copihue --axe1, validada"
+fi
+
 if [ "$fails" -ne 0 ]; then
     echo "mkaxe_test: $fails fallas"
     exit 1

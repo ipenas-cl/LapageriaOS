@@ -128,6 +128,16 @@ typewait "echo vivo" 50
 has "vivo" || fail "el shell no respondió"
 echo "ok   las páginas se reciclan: exec pag2 otra vez, shell vivo"
 
+# 2b. EX-08: const en [T; N] y align(4096) let. `tab` (con valor) cae en
+# 0x401000 y `zbuf` (bss) en 0x402000: el programa los lee por nombre y por
+# dirección. Las direcciones también se comprueban en el Makefile (--sizes).
+typewait "exec cal" 600
+out=$(since "exec cal")
+printf '%s\n' "$out" | grep -qx "cal ok" || fail "exec cal: $out"
+printf '%s\n' "$out" | grep -qx "exit pid=1 freed=9" || fail "exec cal no devolvió las 9 páginas: $out"
+printf '%s\n' "$out" | grep -q "user killed" && fail "exec cal: lo mataron: $out"
+echo "ok   exec cal: const N en [T; N] y align(4096) let (datos en 0x401000, bss en 0x402000), freed=9"
+
 # 3. Zonas: cupo justo (9) y cupo corto (8).
 typewait "zone create p 9" 200
 typewait "zone exec p pag2" 900

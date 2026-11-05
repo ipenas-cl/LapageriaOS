@@ -148,15 +148,17 @@ tr -d '\r' < "$SERIAL" | grep '^user killed ' | grep -Eq 'vec=13 err=0x00000000 
 atk_run b 14 0x00000004 0x0000000000500000
 # SG-02: excepciones de CPU de anillo 3 que no son #PF ni #GP de memoria. El
 # addr de `user killed` es el RIP de la instrucción que falla; se exige que
-# esté dentro del programa y que los bytes de build/ataque.bin en ese RIP sean
+# esté dentro del programa y que los bytes de build/ataque.axe en ese RIP sean
 # la instrucción esperada.
-ATK_BIN=$(dirname "$IMAGE")/ataque.bin
+# ataque.axe es la salida de `copihue --axe1`: cabecera de 16 bytes e imagen, que
+# se carga en 0x400000; el RIP está en el archivo en rip - 0x400000 + 16.
+ATK_BIN=$(dirname "$IMAGE")/ataque.axe
 [ -f "$ATK_BIN" ] || fail "no $ATK_BIN to check the faulting instruction"
 exc_bytes() {
     local rip=$1 n=$2 off
     off=$((rip - 0x400000))
-    [ "$off" -ge 0 ] && [ "$off" -lt "$(wc -c < "$ATK_BIN")" ] || { echo "fuera"; return; }
-    od -An -tx1 -v -j "$off" -N "$n" "$ATK_BIN" | tr -d ' \n'
+    [ "$off" -ge 0 ] && [ "$off" -lt "$(($(wc -c < "$ATK_BIN") - 16))" ] || { echo "fuera"; return; }
+    od -An -tx1 -v -j "$((off + 16))" -N "$n" "$ATK_BIN" | tr -d ' \n'
 }
 # exc_run modo vec err regex_de_bytes_en_rip
 exc_run() {
