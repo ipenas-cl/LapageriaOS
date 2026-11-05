@@ -2,12 +2,13 @@
 
 Lapageria rosea es el nombre científico del copihue; antes AtomicOS.
 
-Compilador fijado en el Makefile: v0.44.1, commit
-`20c46c72ecec4d3190cf5c7ad8a534a259c92b7f` (EX-05). `git -C build/copihue
+Compilador fijado en el Makefile: v0.44.2, commit
+`eaadb4472935a542979ebfbd2f7d3c7ebf719212` (EX-06). `git -C build/copihue
 rev-parse HEAD` después del `make` devuelve ese commit. No se comprobó
 `git ls-remote` ni el objeto de la etiqueta, ni `HEAD` o `refs/heads/main`
-del remoto, ni la salida de `copihue --version`. Hasta EX-04 el pin era
-v0.42.5 (`ea898c6c2be6f1a1686cf06c5050c31e726ef177`); cada sección de más
+del remoto, ni la salida de `copihue --version`. En EX-05 el pin era v0.44.1
+(`20c46c72ecec4d3190cf5c7ad8a534a259c92b7f`) y hasta EX-04 v0.42.5
+(`ea898c6c2be6f1a1686cf06c5050c31e726ef177`); cada sección de más
 abajo dice con qué versión se escribió.
 Sin pedidos nuevos al subir desde v0.31.0: el kernel compila sin
 cambios de código. RD-01 parte 2 (UDP completo, recv bloqueante) tampoco
@@ -16,6 +17,21 @@ pidió nada: `syscall fn` con 6 parámetros, `syscall(n, a1..a5)` en anillo
 Sin `asm()` nuevo. Una función de 7 parámetros (`udp_recv`; el séptimo es
 el plazo) compila y la prueba de plazo la ejerce; `udp_park` usa globales
 por prudencia, no porque haya fallado algo.
+
+## EX-06 (sondeo de pila), con Copihue v0.44.2
+
+**CERRADO por v0.44.2: sondeo de pila / stack probing (pedido de EX-03, repetido
+en EX-04 y EX-05).** Un prólogo con marco N ≥ 4096 toca cada página: tras `push
+rbp` / `mov rbp, rsp` hace `mov r11, N` y en bucle `sub rsp, 4096` + `or qword
+[rsp], 0` + `sub r11, 4096` + `cmp` / `ja`; al final `sub rsp, r11` + `or qword
+[rsp], 0`. Los marcos de menos de 4096 quedan igual y la ABI no cambia (`r11`
+es el contador). Se probó en este repositorio, no solo se leyó la nota de la
+versión: `atk2 y` (`let b: [u8; 8192]`) antes saltaba la guarda y caía en la
+E/S y ahora muere en `0x411xxx` (`vec=14 err=0x4`) sin que corra el cuerpo;
+`tests/qemu_axe2_test.sh` lo exige (antes lo informaba). Kernel y programas de
+usuario se recompilaron con v0.44.2 y `make qemu-test` sigue verde.
+
+Sin pedidos nuevos del sondeo. No se probó un marco ≥ 4096 en un AXE1.
 
 ## EX-05 (AXE2 desde el compilador, align(N), guardas en demos), con Copihue v0.44.1
 
@@ -62,8 +78,8 @@ changelog):
 5. **Aviso de nasm 3.x** en cada compilación `--flat` (`implicit DEFAULT ABS is
    deprecated`, línea del asm generado). No rompe nada; se arregla emitiendo
    `default abs` o `default rel` al principio.
-6. **Lo de EX-04 sigue igual:** sin sondeo de pila para marcos de más de una
-   página, sin `const`, y el `hint` del `as u8`.
+6. **Lo de EX-04 sigue igual:** sin `const` y el `hint` del `as u8`. El sondeo
+   de pila quedó *CERRADO en v0.44.2 (EX-06)*.
 
 Nada del lenguaje obligó a un parche externo: los programas de usuario, el
 kernel y los arreglos son Copihue; el Makefile y las pruebas son `make`, `sh`,
@@ -81,7 +97,7 @@ la función que lo usa. Lo que apareció y lo que se pide:
    constante compila. Se resolvió con `q[0] = v as u8;`, sin pedido de cambio de
    semántica; solo que el mensaje no dice que el `as u8` es la salida. Un
    `hint: use 'as u8'` en el error bastaría.
-2. **Sondeo de pila** (sigue abierto, ya pedido en EX-03). La guarda de un AXE1
+2. **Sondeo de pila** *(CERRADO en v0.44.2, EX-06; ver arriba)*. La guarda de un AXE1
    cubre la recursión y los `push` y no un marco local de más de 4096 bytes. No
    se probó `atk` con un arreglo grande en un AXE1 porque el resultado es el del
    AXE2 (`atk2` modo `y`).
@@ -94,7 +110,8 @@ Nada del lenguaje obligó a un parche externo: los programas de usuario
 `rsp = rdi;` y `push(0);` dentro de un `naked fn`, y un arreglo local
 `[u8; 8192]` compilaron a la primera, sin `asm()`. Un pedido:
 
-1. **Sondeo de pila para marcos de más de una página.** Un `let b: [u8; 8192]`
+1. **Sondeo de pila para marcos de más de una página.** *CERRADO en v0.44.2
+   (EX-06).* Un `let b: [u8; 8192]`
    baja `rsp` ocho mil bytes de una vez y no toca las páginas intermedias, así
    que una guarda de una página no lo detiene (`atk2` modo `y`, ver
    docs/exec.md). Hace falta que el prólogo toque una palabra por página al
