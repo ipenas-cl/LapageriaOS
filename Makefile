@@ -150,7 +150,7 @@ COPIHUE_KERNEL_SRC = $(KERNEL_SRC)/copihue/console.lap \
                      $(KERNEL_SRC)/copihue/shell.lap \
                      $(KERNEL_SRC)/copihue/kernel.lap
 
-.PHONY: all qemu qemu-test mkaxe-test qemu-axe2-test qemu-atk1-test qemu-fast-test qemu-stab-test qemu-big-test qemu-udp-test qemu-tcp-test qemu-trace-test qemu-zswitch-test qemu-iso-test qemu-fs2-test qemu-fs3-test qemu-ata-test qemu-cpu-test debug clean help
+.PHONY: all qemu qemu-test mkaxe-test qemu-axe2-test qemu-atk1-test qemu-fast-test qemu-burst-test qemu-stab-test qemu-big-test qemu-udp-test qemu-tcp-test qemu-trace-test qemu-zswitch-test qemu-iso-test qemu-fs2-test qemu-fs3-test qemu-ata-test qemu-cpu-test debug clean help
 
 # Imagen de arranque: LBA 0 etapa 1, LBA 1 etapa 2, LBA KERNEL_LBA el kernel.
 all: $(OS_IMAGE)
@@ -426,6 +426,7 @@ qemu-test: $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_atk1_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_tcp_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_fast_test.sh $(OS_IMAGE)
+	$(TESTS_DIR)/qemu_burst_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_trace_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_zswitch_test.sh $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_iso_test.sh $(OS_IMAGE)
@@ -464,7 +465,7 @@ STAB_PAR ?= 3
 STAB_DIR  = $(BUILD_DIR)/stab
 qemu-stab-test: $(OS_IMAGE)
 	rm -rf $(STAB_DIR) && mkdir -p $(STAB_DIR)
-	@set -e; for t in axe2 atk1 fast; do \
+	@set -e; for t in axe2 atk1 fast burst; do \
 	  echo "--- $$t, -icount shift=7"; \
 	  bash $(TESTS_DIR)/repeat.sh $(STAB_DIR)/$${t}_icount $(STAB_N) $(STAB_PAR) $(TESTS_DIR)/qemu_$${t}_test.sh $(OS_IMAGE) || rc=1; \
 	  echo "--- $$t, sin icount"; \
@@ -483,6 +484,11 @@ qemu-tcp-test: $(OS_IMAGE)
 # disco; QEMU_EXTRA="-icount shift=7" suma opciones a QEMU.
 qemu-fast-test: $(OS_IMAGE)
 	$(TESTS_DIR)/qemu_fast_test.sh $(OS_IMAGE)
+
+# EX-05: pérdida de varios segmentos dentro de una ráfaga (par, separados,
+# tanda de 4 y cola) con tcpsnd. Mismas opciones que la anterior.
+qemu-burst-test: $(OS_IMAGE)
+	$(TESTS_DIR)/qemu_burst_test.sh $(OS_IMAGE)
 
 # Solo trazas (OB-01). Usa una copia nueva del disco de datos.
 qemu-trace-test: $(OS_IMAGE)
