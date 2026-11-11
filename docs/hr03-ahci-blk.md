@@ -1,7 +1,7 @@
 # HR-03: AHCI detrás de `blk.lap` (disco bajo UEFI)
 
 Tercera tajada sobre `docs/hr01-uefi-ahci.md` y `docs/hr02-uefi-ahci.md`. Pin de
-Copihue en HR-03: **v0.44.4** (desde EX-11 el pin es v0.44.7). El camino BIOS + IDE no cambia: sigue siendo el
+Copihue en HR-03: **v0.44.4** (desde EX-12 el pin es v0.45.1). El camino BIOS + IDE no cambia: sigue siendo el
 backend por omisión.
 
 ## Qué arranca

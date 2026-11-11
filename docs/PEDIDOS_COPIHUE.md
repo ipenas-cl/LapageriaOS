@@ -2,10 +2,11 @@
 
 Lapageria rosea es el nombre científico del copihue; antes AtomicOS.
 
-Compilador fijado en el Makefile: v0.44.7, commit
-`53dfca74e0f0b2d5c091aefcee305419cb01394e` (EX-11). `git -C build/copihue
-rev-parse HEAD` después del `make` devolvió ese commit. v0.44.7 trae
-`--flat ADDR --pic` (RIP-relative); en EX-11 no se usa todavía. Hasta EX-10 el pin
+Compilador fijado en el Makefile: v0.45.1, commit
+`d1a5fc392d5d3f1951d45d615cb7c6bca6d8607f` (EX-12). `git -C build/copihue
+rev-parse HEAD` después del `make` devolvió ese commit. Salta v0.45.0. Hasta EX-11
+el pin era v0.44.7 (`53dfca74e0f0b2d5c091aefcee305419cb01394e`, trae
+`--flat ADDR --pic`, que usa el cargador UEFI desde HR-04). Hasta EX-10 el pin
 era v0.44.6 (`509746b53d2c79daf816532c8a30abec3b83757d`, trae `ms64 fn` para UEFI;
 `efi_call*` sigue igual). Salta directo desde v0.44.4. Hasta EX-09 el pin era v0.44.4
 (`dd708bc4854e0cfc9f2037c902c28b8501331211`). Hasta EX-08 el pin era
@@ -21,6 +22,26 @@ pidió nada: `syscall fn` con 6 parámetros, `syscall(n, a1..a5)` en anillo
 Sin `asm()` nuevo. Una función de 7 parámetros (`udp_recv`; el séptimo es
 el plazo) compila y la prueba de plazo la ejerce; `udp_park` usa globales
 por prudencia, no porque haya fallado algo.
+
+## EX-12 (pin v0.45.1: structs por valor, `str`/`[]T` como campo)
+
+Sin pedidos nuevos. v0.45.1 vuelve error de compilación `P{...}.x`,
+`let p: P = Q{...}`, un literal de struct como argumento en `naked fn` o en
+`bits 16`/`bits 32`, `gb->ptr[i]` con un puntero global, `&x[i]` sobre algo que
+no es arreglo ni puntero y un literal de arreglo con más valores que elementos o
+fuera de un `let`. Se revisó todo el `.lap` del árbol (kernel, arranque, cargador
+UEFI, programas de usuario y `tests/copihue`): no hay literales de struct, no hay
+`->campo[i]`, los literales de arreglo son `let` globales con tantos valores como
+elementos y todos los `&x[i]` caen sobre arreglos o punteros. Todo compila sin
+cambios de código; `kernel.bin` y `stage2.bin` salen idénticos byte a byte a los
+de v0.44.7.
+
+Sigue abierto en el lenguaje (no se pide nada porque el árbol no lo usa): en un
+arreglo **local** de structs un índice fuera de rango todavía no atrapa, y
+`ps[i].y = v` no comprueba límites en hosted. Los tres arreglos de structs del
+kernel (`zone_name`, `idt`, `tr_ring`) son globales. Regla para código nuevo:
+no declarar arreglos locales de structs indexados con un valor dinámico sin
+comprobar el índice antes.
 
 ## EX-09 (pin v0.44.4: store por llamada y error en no-lvalue)
 
