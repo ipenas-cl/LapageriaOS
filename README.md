@@ -225,6 +225,7 @@ docs/red.md                   e1000, ARP e ICMP en la red de usuario
 docs/nx.md                    bit NX, W^X y el comando nx
 docs/higher-half.md           mapa de la mitad alta y el comando hh
 docs/PEDIDOS_COPIHUE.md       arreglos que el compilador todavía no tiene
+docs/seguridad.md           reglas de diseño: centinelas, errores distintos de denegación, pruebas de borde
 scripts/run_lapageriaos.sh
 scripts/pre-commit.sh
 scripts/release.sh
@@ -239,6 +240,8 @@ docs/lapageriaos-demo.mp4
 ## Hoja de ruta
 
 El estado de cada etapa es el de la imagen que arranca `make qemu-test`.
+
+Las reglas de diseño que no se doblan (centinelas, errores distintos de denegación, pruebas de borde) están en [docs/seguridad.md](docs/seguridad.md).
 
 ### 1. Arranque y consola — en la imagen
 
