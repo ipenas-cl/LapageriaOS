@@ -8,6 +8,19 @@ para ese commit es `legacy-tempo`.
 
 ## 0.8
 
+EX-12, pin de Copihue v0.45.1 (`d1a5fc3`), saltando v0.45.0. v0.45.1 trae structs
+por valor como retorno, `-> str`/`-> []T` y `str`/`[]T` como campo de struct, y
+arregla corrupción de memoria con structs por valor (literal como argumento; copia
+desde un campo, un global o `*q`). Vuelve error de compilación `P{...}.x`,
+`let p: P = Q{...}`, un literal de struct como argumento en `naked fn` o
+`bits 16`/`32`, `gb->ptr[i]` con puntero global, `&x[i]` sobre algo que no es
+arreglo ni puntero y un literal de arreglo con más valores o fuera de `let`. Se
+revisó todo el `.lap`: ninguno aparece y no hay arreglos locales de structs (los
+tres del kernel son globales). Sin cambios de código: `kernel.bin` (535886 bytes,
+1047 sectores) y `stage2.bin` (1990 bytes) salen idénticos byte a byte.
+`make qemu-test` da 235 `ok` (incluido `stage2_big_test`); `make qemu-uefi-test`,
+`make qemu-uefi-blk-test` y `make copihue-gaps-test` pasan.
+
 HR-04, el cargador UEFI usa `ms64 fn` y `--pic` (Copihue v0.44.7). El `naked fn
 efi_call` (puente SysV a Microsoft x64 en asm) se reemplaza por una variable
 `let f: ms64 fn = tabla[i]; f(...)`; no hay `efi_call2` ni `efi_call4` en el árbol.
